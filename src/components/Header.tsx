@@ -1,8 +1,9 @@
 
 import React from 'react';
 import { Button } from '@/components/ui/button';
+import { Avatar, AvatarImage, AvatarFallback } from '@/components/ui/avatar';
 import { 
-  Heart, Video, MessageSquare, User, CreditCard, Menu, X 
+  Heart, Video, MessageSquare, User, CreditCard, Menu, X, Bell
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
@@ -11,17 +12,20 @@ const Header = () => {
   const navigate = useNavigate();
 
   return (
-    <header className="bg-white shadow-sm sticky top-0 z-50">
+    <header className="bg-white shadow-md sticky top-0 z-50 w-full">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex justify-between h-16">
+        <div className="flex justify-between items-center h-16">
           <div className="flex items-center">
-            <div className="flex-shrink-0 flex items-center">
+            <div 
+              className="flex-shrink-0 flex items-center cursor-pointer"
+              onClick={() => navigate('/')}
+            >
               <span className="text-mediblue-600 font-bold text-2xl">MedicoMatch</span>
             </div>
           </div>
           
           {/* Desktop navigation */}
-          <nav className="hidden md:flex space-x-6">
+          <nav className="hidden md:flex space-x-4">
             <Button
               variant="ghost"
               className="flex items-center space-x-1 text-gray-600 hover:text-mediblue-600"
@@ -52,20 +56,38 @@ const Header = () => {
               onClick={() => navigate('/astrologer')}
             >
               <CreditCard size={18} />
-              <span>Consult Astrologer</span>
+              <span>Astrologer</span>
             </Button>
-            <Button
-              variant="ghost"
-              className="flex items-center space-x-1 text-gray-600 hover:text-mediblue-600"
-              onClick={() => navigate('/profile')}
-            >
-              <User size={18} />
-              <span>Profile</span>
-            </Button>
+            
+            <div className="flex items-center ml-4">
+              <Button
+                variant="ghost"
+                className="relative p-2 rounded-full text-gray-600 hover:text-mediblue-600 hover:bg-gray-100"
+              >
+                <Bell size={20} />
+                <span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full"></span>
+              </Button>
+              
+              <Avatar 
+                className="h-9 w-9 cursor-pointer ml-2 border-2 border-mediblue-100 hover:border-mediblue-300 transition-colors"
+                onClick={() => navigate('/profile')}
+              >
+                <AvatarImage src="https://randomuser.me/api/portraits/women/33.jpg" />
+                <AvatarFallback>MR</AvatarFallback>
+              </Avatar>
+            </div>
           </nav>
 
           {/* Mobile menu button */}
           <div className="md:hidden flex items-center">
+            <Avatar 
+              className="h-8 w-8 cursor-pointer mr-4 border-2 border-mediblue-100"
+              onClick={() => navigate('/profile')}
+            >
+              <AvatarImage src="https://randomuser.me/api/portraits/women/33.jpg" />
+              <AvatarFallback>MR</AvatarFallback>
+            </Avatar>
+            
             <button
               className="text-gray-600 hover:text-mediblue-600 focus:outline-none"
               onClick={() => setIsMenuOpen(!isMenuOpen)}

@@ -9,13 +9,31 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useToast } from '@/components/ui/use-toast';
-import { Edit, Upload, Star, Settings, History, Heart, CameraIcon, Trash2, PlusCircle, X } from 'lucide-react';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { 
+  Edit, Upload, Star, Settings, History, Heart, 
+  CameraIcon, Trash2, PlusCircle, X, Check 
+} from 'lucide-react';
+import { 
+  Carousel,
+  CarouselContent,
+  CarouselItem,
+  CarouselNext,
+  CarouselPrevious
+} from '@/components/ui/carousel';
 
 const ProfilePage = () => {
   const { toast } = useToast();
   const [isEditing, setIsEditing] = useState(false);
   const [interests, setInterests] = useState(['Yoga', 'Reading', 'Traveling', 'Music', 'Cooking']);
   const [newInterest, setNewInterest] = useState('');
+  const [profilePhotos, setProfilePhotos] = useState([
+    { id: 1, url: 'https://randomuser.me/api/portraits/women/33.jpg', isPrimary: true },
+    { id: 2, url: 'https://randomuser.me/api/portraits/women/30.jpg', isPrimary: false },
+    { id: 3, url: 'https://randomuser.me/api/portraits/women/31.jpg', isPrimary: false },
+    { id: 4, url: 'https://randomuser.me/api/portraits/women/32.jpg', isPrimary: false },
+  ]);
   
   const handleSaveProfile = () => {
     setIsEditing(false);
@@ -35,6 +53,56 @@ const ProfilePage = () => {
   const handleRemoveInterest = (interest: string) => {
     setInterests(interests.filter(i => i !== interest));
   };
+
+  const handleSetPrimaryPhoto = (id: number) => {
+    setProfilePhotos(profilePhotos.map(photo => ({
+      ...photo,
+      isPrimary: photo.id === id
+    })));
+    
+    toast({
+      title: "Profile photo updated",
+      description: "Your primary profile photo has been changed."
+    });
+  };
+  
+  const handleRemovePhoto = (id: number) => {
+    // Don't allow removing the primary photo
+    if (profilePhotos.find(p => p.id === id)?.isPrimary) {
+      toast({
+        title: "Cannot remove primary photo",
+        description: "Please set another photo as primary first.",
+        variant: "destructive"
+      });
+      return;
+    }
+    
+    setProfilePhotos(profilePhotos.filter(photo => photo.id !== id));
+    
+    toast({
+      title: "Photo removed",
+      description: "The photo has been removed from your profile."
+    });
+  };
+  
+  const handleAddPhoto = () => {
+    // In a real app, this would open a file picker
+    // For demo purposes, we'll just add a random photo
+    const newId = Math.max(...profilePhotos.map(p => p.id)) + 1;
+    setProfilePhotos([
+      ...profilePhotos, 
+      { 
+        id: newId, 
+        url: `https://randomuser.me/api/portraits/women/${35 + newId}.jpg`, 
+        isPrimary: false 
+      }
+    ]);
+    
+    toast({
+      title: "Photo added",
+      description: "Your new photo has been added to your profile."
+    });
+  };
   
   return (
     <div className="min-h-screen flex flex-col bg-gray-50">
@@ -50,12 +118,15 @@ const ProfilePage = () => {
                   <div className="relative">
                     <div className="w-28 h-28 rounded-full border-4 border-white overflow-hidden bg-white">
                       <img 
-                        src="https://randomuser.me/api/portraits/women/33.jpg" 
+                        src={profilePhotos.find(p => p.isPrimary)?.url} 
                         alt="Profile" 
                         className="w-full h-full object-cover"
                       />
                     </div>
-                    <button className="absolute bottom-1 right-1 bg-white text-mediblue-600 rounded-full p-1 shadow-md hover:bg-gray-100">
+                    <button 
+                      className="absolute bottom-1 right-1 bg-white text-mediblue-600 rounded-full p-1 shadow-md hover:bg-gray-100"
+                      onClick={() => document.getElementById('photo-gallery')?.scrollIntoView({ behavior: 'smooth' })}
+                    >
                       <CameraIcon size={16} />
                     </button>
                   </div>
@@ -70,10 +141,84 @@ const ProfilePage = () => {
               </button>
             </div>
             
+            {/* Photo Gallery - Moved to top of profile */}
+            <div id="photo-gallery" className="px-6 py-6 border-b">
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="text-lg font-semibold">Profile Photos</h3>
+                {isEditing && (
+                  <Button size="sm" onClick={handleAddPhoto}>
+                    <PlusCircle size={16} className="mr-2" />
+                    Add Photo
+                  </Button>
+                )}
+              </div>
+
+              <Carousel className="w-full max-w-4xl mx-auto">
+                <CarouselContent>
+                  {profilePhotos.map((photo) => (
+                    <CarouselItem key={photo.id} className="md:basis-1/3 lg:basis-1/4">
+                      <div className="relative aspect-square rounded-lg overflow-hidden border shadow-sm group">
+                        <img 
+                          src={photo.url} 
+                          alt="Profile" 
+                          className="w-full h-full object-cover"
+                        />
+                        {photo.isPrimary && (
+                          <div className="absolute top-2 left-2 bg-green-500 text-white p-1 rounded-full">
+                            <Check size={14} />
+                          </div>
+                        )}
+                        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-all flex items-center justify-center opacity-0 group-hover:opacity-100">
+                          <div className="flex gap-2">
+                            {!photo.isPrimary && (
+                              <Button 
+                                size="sm" 
+                                variant="secondary"
+                                className="rounded-full"
+                                onClick={() => handleSetPrimaryPhoto(photo.id)}
+                              >
+                                <Star size={14} className="mr-1" />
+                                Set as Main
+                              </Button>
+                            )}
+                            {isEditing && (
+                              <Button 
+                                size="sm" 
+                                variant="destructive"
+                                className="rounded-full"
+                                onClick={() => handleRemovePhoto(photo.id)}
+                              >
+                                <Trash2 size={14} />
+                              </Button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </CarouselItem>
+                  ))}
+                  {isEditing && (
+                    <CarouselItem className="md:basis-1/3 lg:basis-1/4">
+                      <div 
+                        className="aspect-square bg-gray-100 rounded-lg flex items-center justify-center border-2 border-dashed border-gray-300 cursor-pointer hover:bg-gray-50"
+                        onClick={handleAddPhoto}
+                      >
+                        <div className="text-center">
+                          <Upload className="h-8 w-8 text-gray-400 mx-auto mb-1" />
+                          <p className="text-sm text-gray-500">Add Photo</p>
+                        </div>
+                      </div>
+                    </CarouselItem>
+                  )}
+                </CarouselContent>
+                <CarouselPrevious className="left-0" />
+                <CarouselNext className="right-0" />
+              </Carousel>
+            </div>
+            
             {/* Profile Tabs */}
-            <Tabs defaultValue="profile">
-              <div className="px-6 border-b">
-                <TabsList className="bg-transparent border-b-0 p-0">
+            <Tabs defaultValue="profile" className="w-full">
+              <div className="px-6 border-b sticky top-16 bg-white z-10 shadow-sm">
+                <TabsList className="bg-transparent border-b-0 p-0 w-full justify-start overflow-x-auto">
                   <TabsTrigger 
                     value="profile" 
                     className="py-4 px-6 data-[state=active]:border-b-2 data-[state=active]:border-mediblue-500 data-[state=active]:shadow-none rounded-none"
@@ -245,55 +390,9 @@ const ProfilePage = () => {
                     </div>
                   </div>
                 </div>
-                
-                <div className="mt-8 pt-6 border-t">
-                  <h3 className="text-lg font-semibold mb-4">Profile Photos</h3>
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                    <div className="aspect-square bg-gray-100 rounded-lg overflow-hidden relative">
-                      <img 
-                        src="https://randomuser.me/api/portraits/women/33.jpg" 
-                        alt="Profile" 
-                        className="w-full h-full object-cover"
-                      />
-                      <div className="absolute top-2 right-2 flex space-x-1">
-                        <button className="bg-white/80 hover:bg-white p-1 rounded-full text-gray-700">
-                          <Star size={14} className="text-yellow-500" />
-                        </button>
-                        {isEditing && (
-                          <button className="bg-white/80 hover:bg-white p-1 rounded-full text-red-500">
-                            <Trash2 size={14} />
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                    
-                    {Array(3).fill(null).map((_, index) => (
-                      <div key={index} className="aspect-square bg-gray-100 rounded-lg overflow-hidden relative">
-                        <img 
-                          src={`https://randomuser.me/api/portraits/women/${30 + index}.jpg`} 
-                          alt="Profile" 
-                          className="w-full h-full object-cover"
-                        />
-                        {isEditing && (
-                          <button className="absolute top-2 right-2 bg-white/80 hover:bg-white p-1 rounded-full text-red-500">
-                            <Trash2 size={14} />
-                          </button>
-                        )}
-                      </div>
-                    ))}
-                    
-                    {isEditing && (
-                      <div className="aspect-square bg-gray-100 rounded-lg flex items-center justify-center border-2 border-dashed border-gray-300 cursor-pointer hover:bg-gray-50">
-                        <div className="text-center">
-                          <Upload className="h-8 w-8 text-gray-400 mx-auto mb-1" />
-                          <p className="text-sm text-gray-500">Add Photo</p>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
               </TabsContent>
               
+              {/* Account Settings Tab */}
               <TabsContent value="settings" className="p-6">
                 <h2 className="text-xl font-bold text-gray-800 mb-6">Account Settings</h2>
                 
@@ -344,6 +443,7 @@ const ProfilePage = () => {
                 </div>
               </TabsContent>
               
+              {/* Match Preferences Tab */}
               <TabsContent value="preferences" className="p-6">
                 <h2 className="text-xl font-bold text-gray-800 mb-6">Match Preferences</h2>
                 
