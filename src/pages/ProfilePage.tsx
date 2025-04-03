@@ -1,4 +1,3 @@
-
 import React, { useState } from 'react';
 import Header from '@/components/Header';
 import { Button } from '@/components/ui/button';
@@ -67,7 +66,6 @@ const ProfilePage = () => {
   };
   
   const handleRemovePhoto = (id: number) => {
-    // Don't allow removing the primary photo
     if (profilePhotos.find(p => p.id === id)?.isPrimary) {
       toast({
         title: "Cannot remove primary photo",
@@ -86,8 +84,6 @@ const ProfilePage = () => {
   };
   
   const handleAddPhoto = () => {
-    // In a real app, this would open a file picker
-    // For demo purposes, we'll just add a random photo
     const newId = Math.max(...profilePhotos.map(p => p.id)) + 1;
     setProfilePhotos([
       ...profilePhotos, 
@@ -111,7 +107,6 @@ const ProfilePage = () => {
       <main className="flex-grow p-4 md:p-8">
         <div className="max-w-6xl mx-auto">
           <div className="bg-white rounded-xl shadow-md overflow-hidden">
-            {/* Profile Header/Banner */}
             <div className="relative h-56 bg-gradient-to-r from-mediblue-600 to-mediteal-500">
               <div className="absolute bottom-0 left-0 right-0 p-6 text-white">
                 <div className="flex items-end">
@@ -141,7 +136,6 @@ const ProfilePage = () => {
               </button>
             </div>
             
-            {/* Photo Gallery - Moved to top of profile */}
             <div id="photo-gallery" className="px-6 py-6 border-b">
               <div className="flex justify-between items-center mb-4">
                 <h3 className="text-lg font-semibold">Profile Photos</h3>
@@ -215,27 +209,26 @@ const ProfilePage = () => {
               </Carousel>
             </div>
             
-            {/* Profile Tabs */}
             <Tabs defaultValue="profile" className="w-full">
               <div className="px-6 border-b sticky top-16 bg-white z-10 shadow-sm">
-                <TabsList className="bg-transparent border-b-0 p-0 w-full justify-start overflow-x-auto">
+                <TabsList className="grid grid-cols-3 gap-1 w-full px-0">
                   <TabsTrigger 
                     value="profile" 
-                    className="py-4 px-6 data-[state=active]:border-b-2 data-[state=active]:border-mediblue-500 data-[state=active]:shadow-none rounded-none"
+                    className="py-3 text-sm data-[state=active]:bg-mediblue-50 data-[state=active]:text-mediblue-600 rounded-md"
                   >
                     Profile
                   </TabsTrigger>
                   <TabsTrigger 
                     value="settings" 
-                    className="py-4 px-6 data-[state=active]:border-b-2 data-[state=active]:border-mediblue-500 data-[state=active]:shadow-none rounded-none"
+                    className="py-3 text-sm data-[state=active]:bg-mediblue-50 data-[state=active]:text-mediblue-600 rounded-md"
                   >
-                    Account Settings
+                    Settings
                   </TabsTrigger>
                   <TabsTrigger 
                     value="preferences" 
-                    className="py-4 px-6 data-[state=active]:border-b-2 data-[state=active]:border-mediblue-500 data-[state=active]:shadow-none rounded-none"
+                    className="py-3 text-sm data-[state=active]:bg-mediblue-50 data-[state=active]:text-mediblue-600 rounded-md"
                   >
-                    Match Preferences
+                    Matches
                   </TabsTrigger>
                 </TabsList>
               </div>
@@ -392,7 +385,6 @@ const ProfilePage = () => {
                 </div>
               </TabsContent>
               
-              {/* Account Settings Tab */}
               <TabsContent value="settings" className="p-6">
                 <h2 className="text-xl font-bold text-gray-800 mb-6">Account Settings</h2>
                 
@@ -443,7 +435,6 @@ const ProfilePage = () => {
                 </div>
               </TabsContent>
               
-              {/* Match Preferences Tab */}
               <TabsContent value="preferences" className="p-6">
                 <h2 className="text-xl font-bold text-gray-800 mb-6">Match Preferences</h2>
                 
