@@ -98,63 +98,63 @@ const Header = () => {
         </div>
       </div>
 
-      {/* Mobile menu */}
+      {/* Mobile menu - updated to show icons with text in a grid */}
       {isMenuOpen && (
         <div className="md:hidden bg-white pt-2 pb-4 px-4 shadow-lg animate-fade-in">
-          <div className="flex flex-col space-y-2">
+          <div className="grid grid-cols-2 gap-2">
             <Button
               variant="ghost"
-              className="flex items-center space-x-2 text-gray-600 hover:text-mediblue-600 justify-start"
+              className="flex items-center justify-start space-x-2 text-gray-600 hover:text-mediblue-600 text-sm"
               onClick={() => {
                 navigate('/matches');
                 setIsMenuOpen(false);
               }}
             >
-              <Heart size={18} />
-              <span>Matches</span>
+              <Heart size={16} />
+              <span className="truncate">Matches</span>
             </Button>
             <Button
               variant="ghost"
-              className="flex items-center space-x-2 text-gray-600 hover:text-mediblue-600 justify-start"
+              className="flex items-center justify-start space-x-2 text-gray-600 hover:text-mediblue-600 text-sm"
               onClick={() => {
                 navigate('/video-dates');
                 setIsMenuOpen(false);
               }}
             >
-              <Video size={18} />
-              <span>Video Dates</span>
+              <Video size={16} />
+              <span className="truncate">Video Dates</span>
             </Button>
             <Button
               variant="ghost"
-              className="flex items-center space-x-2 text-gray-600 hover:text-mediblue-600 justify-start"
+              className="flex items-center justify-start space-x-2 text-gray-600 hover:text-mediblue-600 text-sm"
               onClick={() => {
                 navigate('/messages');
                 setIsMenuOpen(false);
               }}
             >
-              <MessageSquare size={18} />
-              <span>Messages</span>
+              <MessageSquare size={16} />
+              <span className="truncate">Messages</span>
             </Button>
             <Button
               variant="ghost"
-              className="flex items-center space-x-2 text-gray-600 hover:text-mediblue-600 justify-start"
+              className="flex items-center justify-start space-x-2 text-gray-600 hover:text-mediblue-600 text-sm"
               onClick={() => {
                 navigate('/astrologer');
                 setIsMenuOpen(false);
               }}
             >
-              <CreditCard size={18} />
-              <span>Consult Astrologer</span>
+              <CreditCard size={16} />
+              <span className="truncate">Astrologer</span>
             </Button>
             <Button
               variant="ghost"
-              className="flex items-center space-x-2 text-gray-600 hover:text-mediblue-600 justify-start"
+              className="col-span-2 flex items-center justify-start space-x-2 text-gray-600 hover:text-mediblue-600 text-sm"
               onClick={() => {
                 navigate('/profile');
                 setIsMenuOpen(false);
               }}
             >
-              <User size={18} />
+              <User size={16} />
               <span>Profile</span>
             </Button>
           </div>
