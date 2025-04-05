@@ -2,6 +2,7 @@
 import React from 'react';
 import { SignUp as ClerkSignUp } from '@clerk/clerk-react';
 import { useNavigate } from 'react-router-dom';
+import { Facebook, Instagram, Twitter } from 'lucide-react';
 
 const SignUp = () => {
   const navigate = useNavigate();
@@ -10,6 +11,34 @@ const SignUp = () => {
     <div className="flex min-h-screen flex-col items-center justify-center bg-gray-50 px-4 py-8">
       <h1 className="mb-8 text-2xl font-bold text-mediblue-600">MedicoMatch</h1>
       <div className="w-full max-w-md">
+        {/* Social signup buttons above email field */}
+        <div className="mb-4 bg-white p-6 rounded-lg shadow-md text-center">
+          <p className="mb-4 text-gray-600 font-medium">Sign up with</p>
+          <div className="flex justify-center space-x-6">
+            <button 
+              onClick={() => window.location.href = '/sign-up?strategy=oauth_facebook'}
+              className="flex items-center justify-center h-12 w-12 rounded-full bg-blue-600 hover:bg-blue-700 text-white transition-colors"
+              aria-label="Sign up with Facebook"
+            >
+              <Facebook size={24} />
+            </button>
+            <button 
+              onClick={() => window.location.href = '/sign-up?strategy=oauth_instagram'}
+              className="flex items-center justify-center h-12 w-12 rounded-full bg-gradient-to-r from-purple-500 via-pink-500 to-orange-500 hover:from-purple-600 hover:via-pink-600 hover:to-orange-600 text-white transition-colors"
+              aria-label="Sign up with Instagram"
+            >
+              <Instagram size={24} />
+            </button>
+            <button 
+              onClick={() => window.location.href = '/sign-up?strategy=oauth_twitter'}
+              className="flex items-center justify-center h-12 w-12 rounded-full bg-black hover:bg-gray-800 text-white transition-colors"
+              aria-label="Sign up with X (Twitter)"
+            >
+              <Twitter size={24} />
+            </button>
+          </div>
+        </div>
+        
         <ClerkSignUp 
           routing="path" 
           path="/sign-up" 
@@ -27,30 +56,7 @@ const SignUp = () => {
           }}
         />
         
-        {/* Add custom social buttons below the Clerk component */}
-        <div className="mt-4 text-center">
-          <p className="text-sm text-gray-600 mb-3">Or sign up with</p>
-          <div className="grid grid-cols-3 gap-2">
-            <button 
-              onClick={() => window.location.href = '/sign-up?strategy=oauth_facebook'}
-              className="flex items-center justify-center py-2 px-3 rounded-md transition-colors bg-blue-600 hover:bg-blue-700 text-white"
-            >
-              Facebook
-            </button>
-            <button 
-              onClick={() => window.location.href = '/sign-up?strategy=oauth_instagram'}
-              className="flex items-center justify-center py-2 px-3 rounded-md transition-colors bg-gradient-to-r from-purple-500 via-pink-500 to-orange-500 text-white"
-            >
-              Instagram
-            </button>
-            <button 
-              onClick={() => window.location.href = '/sign-up?strategy=oauth_twitter'}
-              className="flex items-center justify-center py-2 px-3 rounded-md transition-colors bg-black hover:bg-gray-800 text-white"
-            >
-              X
-            </button>
-          </div>
-        </div>
+        {/* Remove the old custom social buttons section */}
       </div>
     </div>
   );
