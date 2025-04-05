@@ -11,7 +11,7 @@ const PUBLISHABLE_KEY = "pk_test_ZnVsbC1rcmlsbC03MS5jbGVyay5hY2NvdW50cy5kZXYk";
 // Check if we have a valid key
 const hasValidClerkKey = PUBLISHABLE_KEY && 
   PUBLISHABLE_KEY !== 'pk_test_placeholder_value' && 
-  !PUBLISHABLE_KEY.includes('placeholder');
+  !PUBLISHABLE_KEY.includes('placeholder' as string);
 
 // Create a DemoApp component that shows instructions when no valid Clerk key is found
 const DemoApp = () => {
