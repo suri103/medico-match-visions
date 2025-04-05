@@ -8,9 +8,10 @@ import './index.css';
 // Use the provided publishable key
 const PUBLISHABLE_KEY = "pk_test_ZnVsbC1rcmlsbC03MS5jbGVyay5hY2NvdW50cy5kZXYk";
 
-// Check if we have a valid key
+// Check if we have a valid key - we need to fix the type error by removing the literal comparison
 const hasValidClerkKey = PUBLISHABLE_KEY && 
-  PUBLISHABLE_KEY !== 'pk_test_placeholder_value' && 
+  typeof PUBLISHABLE_KEY === 'string' && 
+  PUBLISHABLE_KEY.length > 0 && 
   !PUBLISHABLE_KEY.includes('placeholder');
 
 // Create a DemoApp component that shows instructions when no valid Clerk key is found
