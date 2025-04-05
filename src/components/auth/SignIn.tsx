@@ -25,46 +25,32 @@ const SignIn = () => {
               footerAction: "text-mediblue-600 hover:text-mediblue-700"
             }
           }}
-          socialButtonsPlacement="top"
-          localization={{
-            socialButtonsBlockButton: {
-              dividerLabel: "or continue with"
-            }
-          }}
-        >
-          {/* Customize social login buttons */}
-          <ClerkSignIn.SocialButtons>
-            {({ socialProviderButtons }) => (
-              <div className="grid grid-cols-3 gap-2 mb-4">
-                {socialProviderButtons
-                  .filter(button => 
-                    ['oauth_facebook', 'oauth_instagram', 'oauth_twitter'].includes(button.props['data-social-strategy'])
-                  )
-                  .map((button, i) => {
-                    // Custom styling based on provider
-                    const provider = button.props['data-social-strategy'].replace('oauth_', '');
-                    const socialClasses = {
-                      facebook: "bg-blue-600 hover:bg-blue-700 text-white",
-                      instagram: "bg-gradient-to-r from-purple-500 via-pink-500 to-orange-500 text-white",
-                      twitter: "bg-black hover:bg-gray-800 text-white"
-                    };
-                    
-                    return (
-                      <button
-                        key={i}
-                        onClick={button.props.onClick}
-                        className={`flex items-center justify-center py-2 px-3 rounded-md transition-colors ${socialClasses[provider as keyof typeof socialClasses]}`}
-                      >
-                        {provider === 'facebook' && 'Facebook'}
-                        {provider === 'instagram' && 'Instagram'}
-                        {provider === 'twitter' && 'X'}
-                      </button>
-                    );
-                  })}
-              </div>
-            )}
-          </ClerkSignIn.SocialButtons>
-        </ClerkSignIn>
+        />
+        
+        {/* Add custom social buttons below the Clerk component */}
+        <div className="mt-4 text-center">
+          <p className="text-sm text-gray-600 mb-3">Or sign in with</p>
+          <div className="grid grid-cols-3 gap-2">
+            <button 
+              onClick={() => window.location.href = '/sign-in?strategy=oauth_facebook'}
+              className="flex items-center justify-center py-2 px-3 rounded-md transition-colors bg-blue-600 hover:bg-blue-700 text-white"
+            >
+              Facebook
+            </button>
+            <button 
+              onClick={() => window.location.href = '/sign-in?strategy=oauth_instagram'}
+              className="flex items-center justify-center py-2 px-3 rounded-md transition-colors bg-gradient-to-r from-purple-500 via-pink-500 to-orange-500 text-white"
+            >
+              Instagram
+            </button>
+            <button 
+              onClick={() => window.location.href = '/sign-in?strategy=oauth_twitter'}
+              className="flex items-center justify-center py-2 px-3 rounded-md transition-colors bg-black hover:bg-gray-800 text-white"
+            >
+              X
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );
