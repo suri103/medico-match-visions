@@ -5,10 +5,10 @@ import { ClerkProvider } from '@clerk/clerk-react';
 import App from './App';
 import './index.css';
 
-// Get the publishable key from environment variable
-const PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
+// Use the provided publishable key
+const PUBLISHABLE_KEY = "pk_test_ZnVsbC1rcmlsbC03MS5jbGVyay5hY2NvdW50cy5kZXYk";
 
-// Check if we have a valid key that doesn't use the placeholder value
+// Check if we have a valid key
 const hasValidClerkKey = PUBLISHABLE_KEY && 
   PUBLISHABLE_KEY !== 'pk_test_placeholder_value' && 
   !PUBLISHABLE_KEY.includes('placeholder');
@@ -42,7 +42,7 @@ const DemoApp = () => {
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
   <React.StrictMode>
     {hasValidClerkKey ? (
-      <ClerkProvider publishableKey={PUBLISHABLE_KEY!}>
+      <ClerkProvider publishableKey={PUBLISHABLE_KEY}>
         <App />
       </ClerkProvider>
     ) : (
