@@ -6,9 +6,10 @@ import App from './App';
 import './index.css';
 
 // Get the publishable key from environment variable
-const PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
+const PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY || 'pk_test_placeholder_value';
 
-if (!PUBLISHABLE_KEY) {
+// Only throw error in production environment
+if (!PUBLISHABLE_KEY && import.meta.env.PROD) {
   throw new Error("Missing Clerk Publishable Key. Set the VITE_CLERK_PUBLISHABLE_KEY environment variable.");
 }
 
