@@ -28,7 +28,6 @@ import {
 } from '@/components/ui/pagination';
 import { toast } from '@/hooks/use-toast';
 
-// Sample data for doctor chats
 const doctorChats = [
   {
     id: '1',
@@ -82,7 +81,6 @@ const doctorChats = [
   }
 ];
 
-// Sample notifications data
 const notifications = [
   {
     id: '1',
@@ -131,24 +129,20 @@ const MessagesPage = () => {
   const [showAdvancedSearch, setShowAdvancedSearch] = useState(false);
   const messagesPerPage = 3;
   
-  // Calculate pagination
   const indexOfLastMessage = currentPage * messagesPerPage;
   const indexOfFirstMessage = indexOfLastMessage - messagesPerPage;
   const totalPages = Math.ceil(doctorChats.length / messagesPerPage);
   
-  // Filter chats based on search term
   const filteredChats = doctorChats.filter(chat => 
     chat.name.toLowerCase().includes(searchTerm.toLowerCase())
   );
   
   const currentMessages = filteredChats.slice(indexOfFirstMessage, indexOfLastMessage);
   
-  // Get selected chat data
   const selectedChatData = selectedChat
     ? doctorChats.find(chat => chat.id === selectedChat)
     : null;
   
-  // Handle message selection
   const toggleMessageSelection = (id: string) => {
     if (selectedMessages.includes(id)) {
       setSelectedMessages(selectedMessages.filter(messageId => messageId !== id));
@@ -157,7 +151,6 @@ const MessagesPage = () => {
     }
   };
   
-  // Handle select all messages
   const toggleSelectAll = () => {
     if (selectedMessages.length === currentMessages.length) {
       setSelectedMessages([]);
@@ -166,10 +159,7 @@ const MessagesPage = () => {
     }
   };
   
-  // Handle bulk delete
   const handleBulkDelete = () => {
-    // In a real app, this would delete the messages from the database
-    // Here we're just showing a toast notification
     toast({
       title: "Messages Deleted",
       description: `${selectedMessages.length} messages have been deleted.`,
@@ -177,17 +167,14 @@ const MessagesPage = () => {
     setSelectedMessages([]);
   };
   
-  // Handle page change
   const handlePageChange = (page: number) => {
     setCurrentPage(page);
   };
 
-  // Get notification count by type
   const getNotificationCount = (type: string) => {
     return notifications.filter(n => n.type === type && !n.read).length;
   };
 
-  // Get icon for notification type
   const getNotificationIcon = (type: string) => {
     switch (type) {
       case 'message':
@@ -208,7 +195,6 @@ const MessagesPage = () => {
       <Header />
       
       <main className="flex-grow flex flex-col md:flex-row overflow-hidden p-4 gap-4">
-        {/* Left sidebar: Tabs for Messages and What's New */}
         <div className={`w-full md:w-1/4 bg-white rounded-lg shadow-sm overflow-hidden flex flex-col`}>
           <Tabs 
             defaultValue="messages" 
@@ -234,7 +220,6 @@ const MessagesPage = () => {
             </div>
 
             <TabsContent value="messages" className="flex-grow flex flex-col">
-              {/* Message actions and search */}
               <div className="px-4 py-2 flex justify-between items-center border-b">
                 {selectedMessages.length > 0 ? (
                   <div className="flex items-center space-x-2">
@@ -270,7 +255,6 @@ const MessagesPage = () => {
                 </Button>
               </div>
 
-              {/* Advanced search panel */}
               {showAdvancedSearch && (
                 <div className="p-3 bg-gray-50 border-b">
                   <div className="relative mb-2">
@@ -284,7 +268,6 @@ const MessagesPage = () => {
                     />
                   </div>
                   
-                  {/* Could add more filters here */}
                   <div className="flex justify-between mt-2">
                     <Button variant="outline" size="sm" className="text-xs">Save Search</Button>
                     <Button variant="ghost" size="sm" className="text-xs" onClick={() => setShowAdvancedSearch(false)}>Close</Button>
@@ -292,7 +275,6 @@ const MessagesPage = () => {
                 </div>
               )}
 
-              {/* Messages list */}
               <div className="flex-grow overflow-y-auto">
                 {currentMessages.length > 0 ? (
                   currentMessages.map((chat) => (
@@ -373,7 +355,6 @@ const MessagesPage = () => {
                 )}
               </div>
 
-              {/* Pagination */}
               {filteredChats.length > messagesPerPage && (
                 <div className="p-2 border-t">
                   <Pagination>
@@ -388,7 +369,6 @@ const MessagesPage = () => {
                       {Array.from({ length: totalPages }).map((_, idx) => {
                         const pageNumber = idx + 1;
                         
-                        // Show first page, last page, and pages around current page
                         if (
                           pageNumber === 1 ||
                           pageNumber === totalPages ||
@@ -406,7 +386,6 @@ const MessagesPage = () => {
                           );
                         }
                         
-                        // Show ellipsis
                         if (pageNumber === 2 && currentPage > 3) {
                           return (
                             <PaginationItem key="ellipsis-start">
@@ -442,7 +421,6 @@ const MessagesPage = () => {
               <div className="p-4">
                 <h3 className="text-lg font-semibold text-gray-700 mb-4">Notifications</h3>
                 
-                {/* Notification stats */}
                 <div className="grid grid-cols-2 gap-3 mb-4">
                   <div className="bg-white p-3 rounded-lg border shadow-sm">
                     <div className="flex items-center">
@@ -493,7 +471,6 @@ const MessagesPage = () => {
                   </div>
                 </div>
                 
-                {/* Notification list */}
                 <div className="space-y-4">
                   {notifications.map(notification => (
                     <div 
@@ -543,7 +520,6 @@ const MessagesPage = () => {
           </Tabs>
         </div>
         
-        {/* Right section: Chat window or empty state */}
         <div className={`w-full ${selectedChat ? 'md:w-3/4' : 'md:w-3/4'} h-full`}>
           {selectedChatData ? (
             <Chat
@@ -588,7 +564,6 @@ const MessagesPage = () => {
   );
 };
 
-// Helper function to format message timestamps
 const formatMessageTime = (date: Date) => {
   const now = new Date();
   const diffInDays = Math.floor((now.getTime() - date.getTime()) / (1000 * 60 * 60 * 24));
