@@ -1,4 +1,3 @@
-
 import { useState } from 'react';
 import { toast } from '@/hooks/use-toast';
 
@@ -49,7 +48,7 @@ const doctorChats = [
     name: 'Sanjay Kumar',
     specialty: 'Orthopedic Surgeon',
     imageUrl: 'https://randomuser.me/api/portraits/men/32.jpg',
-    lastMessage: 'I'll be attending the conference next month.',
+    lastMessage: 'I\'ll be attending the conference next month.',
     timestamp: new Date(Date.now() - 1000 * 60 * 60 * 24 * 1),
     unread: 1,
     isOnline: false
