@@ -14,7 +14,7 @@ export interface Notification {
 const notifications = [
   {
     id: '1',
-    type: 'message',
+    type: 'message' as const,
     from: 'Priya Sharma',
     content: 'You have 2 unread messages',
     timestamp: new Date(Date.now() - 1000 * 60 * 5),
@@ -23,7 +23,7 @@ const notifications = [
   },
   {
     id: '2',
-    type: 'profile_view',
+    type: 'profile_view' as const,
     from: 'Arjun Nair',
     content: 'viewed your profile',
     timestamp: new Date(Date.now() - 1000 * 60 * 60 * 2),
@@ -32,7 +32,7 @@ const notifications = [
   },
   {
     id: '3',
-    type: 'interest',
+    type: 'interest' as const,
     from: 'Leela Krishnan',
     content: 'expressed interest in connecting with you',
     timestamp: new Date(Date.now() - 1000 * 60 * 60 * 6),
@@ -41,7 +41,7 @@ const notifications = [
   },
   {
     id: '4',
-    type: 'video_request',
+    type: 'video_request' as const,
     from: 'Vikram Singh',
     content: 'wants to schedule a video date',
     timestamp: new Date(Date.now() - 1000 * 60 * 60 * 12),
@@ -51,7 +51,7 @@ const notifications = [
 ];
 
 export const useNotifications = () => {
-  const [notificationsData] = useState(notifications);
+  const [notificationsData] = useState<Notification[]>(notifications);
 
   const getNotificationCount = (type: string) => {
     return notificationsData.filter(n => n.type === type && !n.read).length;

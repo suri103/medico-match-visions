@@ -3,6 +3,7 @@ import React from 'react';
 import NotificationCard from './NotificationCard';
 import NotificationStats from './NotificationStats';
 import { useNotifications } from '../hooks/useNotifications';
+import { Notification } from '../hooks/useNotifications';
 
 const NotificationsList: React.FC = () => {
   const { notifications, getNotificationCount } = useNotifications();
@@ -15,7 +16,7 @@ const NotificationsList: React.FC = () => {
       
       <div className="space-y-4">
         {notifications && notifications.length > 0 ? (
-          notifications.map(notification => (
+          notifications.map((notification: Notification) => (
             <NotificationCard
               key={notification.id}
               notification={notification}
