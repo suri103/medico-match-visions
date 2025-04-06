@@ -14,14 +14,14 @@ const NotificationsList: React.FC = () => {
       <NotificationStats getNotificationCount={getNotificationCount} />
       
       <div className="space-y-4">
-        {notifications.map(notification => (
-          <NotificationCard
-            key={notification.id}
-            notification={notification}
-          />
-        ))}
-        
-        {notifications.length === 0 && (
+        {notifications && notifications.length > 0 ? (
+          notifications.map(notification => (
+            <NotificationCard
+              key={notification.id}
+              notification={notification}
+            />
+          ))
+        ) : (
           <div className="py-8 text-center text-gray-500">
             No new notifications
           </div>

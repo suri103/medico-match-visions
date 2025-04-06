@@ -1,5 +1,7 @@
 
 export const formatMessageTime = (date: Date) => {
+  if (!date) return '';
+  
   const now = new Date();
   const diffInDays = Math.floor((now.getTime() - date.getTime()) / (1000 * 60 * 60 * 24));
   
