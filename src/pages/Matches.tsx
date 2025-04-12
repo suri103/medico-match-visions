@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import Header from '@/components/Header';
 import DoctorCard from '@/components/DoctorCard';
@@ -19,6 +18,7 @@ import {
   PaginationLink,
   PaginationNext,
   PaginationPrevious,
+  PaginationEllipsis,
 } from '@/components/ui/pagination';
 import {
   Select,
@@ -36,6 +36,22 @@ import {
 } from '@/components/ui/form';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarFooter,
+  SidebarGroup,
+  SidebarGroupContent,
+  SidebarGroupLabel,
+  SidebarHeader,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  SidebarProvider,
+  SidebarTrigger,
+  useSidebar
+} from '@/components/ui/sidebar';
+import { LocationSearch } from '@/components/LocationSearch';
 
 // Sample data for doctor profiles
 const doctorProfiles = [
@@ -225,6 +241,14 @@ const citiesByState = {
     { value: 'bangalore', label: 'Bangalore' },
     { value: 'mysore', label: 'Mysore' },
   ],
+  tamil_nadu: [
+    { value: 'chennai', label: 'Chennai' },
+    { value: 'coimbatore', label: 'Coimbatore' },
+  ],
+  telangana: [
+    { value: 'hyderabad', label: 'Hyderabad' },
+    { value: 'warangal', label: 'Warangal' },
+  ],
   new_york: [
     { value: 'nyc', label: 'New York City' },
     { value: 'buffalo', label: 'Buffalo' },
@@ -287,6 +311,9 @@ const defaultSavedSearches: SavedSearch[] = [
 
 const specialtiesList = ['Cardiologist', 'Neurologist', 'Pediatrician', 'Orthopedic Surgeon', 'Dermatologist', 'Psychiatrist', 'Oncologist', 'General Practitioner'];
 const orientationsList = ['Straight', 'Gay', 'Lesbian', 'Bisexual'];
+const ethnicityList = ['Asian', 'Black', 'Hispanic', 'White', 'Middle Eastern', 'Native American', 'Pacific Islander', 'Other'];
+const castList = ['No preference', 'Brahmin', 'Kshatriya', 'Vaishya', 'Shudra', 'Other'];
+const colorList = ['Fair', 'Light', 'Medium', 'Olive', 'Brown', 'Dark'];
 
 const ITEMS_PER_PAGE = 6;
 
@@ -316,9 +343,12 @@ const Matches = () => {
   const [selectedCountry, setSelectedCountry] = useState<string | null>(null);
   const [selectedState, setSelectedState] = useState<string | null>(null);
   const [selectedCity, setSelectedCity] = useState<string | null>(null);
+  const [selectedOrientation, setSelectedOrientation] = useState<string[]>([]);
+  const [selectedEthnicity, setSelectedEthnicity] = useState<string[]>([]);
+  const [selectedCast, setSelectedCast] = useState<string>('No preference');
+  const [selectedColor, setSelectedColor] = useState<string>('');
   const [availableStates, setAvailableStates] = useState<{value: string, label: string}[]>([]);
   const [availableCities, setAvailableCities] = useState<{value: string, label: string}[]>([]);
-  const [selectedOrientation, setSelectedOrientation] = useState<string[]>([]);
 
   // Update available states when country changes
   useEffect(() => {
@@ -351,7 +381,7 @@ const Matches = () => {
     if (currentPage > totalPages) {
       setCurrentPage(1);
     }
-  }, [filteredDoctors]);
+  }, [filteredDoctors, currentPage]);
 
   // Reset search term and filters when switching between basic and advanced search
   useEffect(() => {
@@ -424,6 +454,9 @@ const Matches = () => {
     setSelectedState(null);
     setSelectedCity(null);
     setSelectedOrientation([]);
+    setSelectedEthnicity([]);
+    setSelectedCast('No preference');
+    setSelectedColor('');
     setUsernameSearch('');
     setKeywordSearch('');
     setFilteredDoctors(doctorProfiles);
@@ -560,6 +593,14 @@ const Matches = () => {
     );
   };
 
+  const handleEthnicityChange = (ethnicity: string) => {
+    setSelectedEthnicity(
+      selectedEthnicity.includes(ethnicity)
+        ? selectedEthnicity.filter((e) => e !== ethnicity)
+        : [...selectedEthnicity, ethnicity]
+    );
+  };
+
   const getPaginatedDoctors = () => {
     const startIndex = (currentPage - 1) * ITEMS_PER_PAGE;
     const endIndex = startIndex + ITEMS_PER_PAGE;
@@ -575,581 +616,458 @@ const Matches = () => {
       <Header />
       
       {activeView === 'matches' && (
-        <main className="flex-grow p-4 md:p-8">
-          <div className="max-w-7xl mx-auto">
-            <div className="flex flex-col md:flex-row justify-between items-center mb-8">
-              <h1 className="text-2xl md:text-3xl font-bold text-mediblue-800 mb-4 md:mb-0">
-                Your Matches
-              </h1>
+        <SidebarProvider defaultOpen={true}>
+          <div className="flex flex-1 w-full">
+            {/* Sidebar */}
+            <Sidebar variant="sidebar" collapsible="icon">
+              <SidebarHeader className="flex justify-between items-center p-4 border-b">
+                <h2 className="text-lg font-semibold flex items-center">
+                  <Filter size={18} className="mr-2" />
+                  Filter Matches
+                </h2>
+                <SidebarTrigger />
+              </SidebarHeader>
               
-              <div className="w-full md:w-auto flex flex-col md:flex-row items-center space-y-4 md:space-y-0 md:space-x-4">
-                <Button
-                  variant="outline" 
-                  size="sm"
-                  className={`flex items-center space-x-2 ${showSavedSearches ? 'bg-blue-50' : ''}`}
-                  onClick={() => setShowSavedSearches(!showSavedSearches)}
-                >
-                  <Save size={16} />
-                  <span>Saved Searches</span>
-                </Button>
-                
-                <Tabs 
-                  value={searchTab} 
-                  onValueChange={(value) => setSearchTab(value as 'basic' | 'advanced')}
-                  className="w-full md:w-auto"
-                >
-                  <TabsList className="grid w-full grid-cols-2">
-                    <TabsTrigger value="basic">Basic Search</TabsTrigger>
-                    <TabsTrigger value="advanced">Advanced Search</TabsTrigger>
-                  </TabsList>
-                </Tabs>
-              </div>
-            </div>
-            
-            {showSavedSearches && (
-              <div className="mb-6 p-4 bg-white rounded-xl shadow-sm animate-fade-in">
-                <div className="flex justify-between items-center mb-4">
-                  <h2 className="text-lg font-semibold text-mediblue-800">Saved Searches</h2>
-                  <Button 
-                    variant="ghost" 
-                    size="sm"
-                    onClick={() => setShowSavedSearches(false)}
-                  >
-                    <X size={18} />
-                  </Button>
-                </div>
-                
-                {savedSearches.length > 0 ? (
-                  <div className="overflow-x-auto">
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead>Name</TableHead>
-                          <TableHead>Criteria</TableHead>
-                          <TableHead className="w-[120px] text-right">Actions</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {savedSearches.map((search) => (
-                          <TableRow 
-                            key={search.id}
-                            className={selectedSavedSearch === search.id ? "bg-blue-50" : ""}
-                          >
-                            <TableCell className="font-medium">{search.name}</TableCell>
-                            <TableCell>
-                              <div className="text-sm text-gray-600">
-                                {search.specialties.length > 0 && 
-                                  <span className="mr-3">
-                                    {search.specialties.join(", ")}
-                                  </span>
-                                }
-                                {search.minAge[0] !== 25 || search.maxAge[0] !== 45 && 
-                                  <span className="mr-3">
-                                    {search.minAge[0]}-{search.maxAge[0]} y/o
-                                  </span>
-                                }
-                                {search.country && 
-                                  <span className="mr-3 flex items-center">
-                                    <MapPin size={12} className="mr-1" />
-                                    {countries.find(c => c.value === search.country)?.label}
-                                    {search.state && `, ${statesByCountry[search.country as keyof typeof statesByCountry]?.find(s => s.value === search.state)?.label}`}
-                                  </span>
-                                }
-                                {search.onlineOnly && 
-                                  <span className="text-green-600 font-medium">Online only</span>
-                                }
-                              </div>
-                            </TableCell>
-                            <TableCell className="text-right space-x-1">
-                              <Button 
-                                variant="ghost" 
-                                size="icon" 
-                                onClick={() => loadSavedSearch(search.id)}
-                                className="h-8 w-8"
-                              >
-                                <Search size={14} />
-                              </Button>
-                              <Button 
-                                variant="ghost" 
-                                size="icon"
-                                onClick={() => editSavedSearch(search.id)}
-                                className="h-8 w-8"
-                              >
-                                <Edit size={14} />
-                              </Button>
-                              <Button 
-                                variant="ghost" 
-                                size="icon" 
-                                onClick={() => deleteSavedSearch(search.id)}
-                                className="h-8 w-8 text-red-500 hover:text-red-600"
-                              >
-                                <Delete size={14} />
-                              </Button>
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </div>
-                ) : (
-                  <div className="text-center py-8 text-gray-500">
-                    <Save className="mx-auto h-12 w-12 text-gray-300 mb-3" />
-                    <p>You haven't saved any searches yet.</p>
-                    <p className="text-sm mt-1">Use the search panel and save your criteria for future use.</p>
-                  </div>
-                )}
-              </div>
-            )}
-            
-            {searchTab === 'basic' && (
-              <div className="mb-8">
-                <form onSubmit={handleSearch} className="flex flex-col md:flex-row space-y-4 md:space-y-0 md:space-x-4">
-                  <div className="relative flex-grow">
-                    <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={18} />
-                    <Input
-                      type="text"
-                      placeholder="Search by name, specialty, city..."
-                      value={searchTerm}
-                      onChange={(e) => setSearchTerm(e.target.value)}
-                      className="pl-10 pr-4 py-2 w-full"
-                    />
-                  </div>
-                  <Button type="submit">Search</Button>
-                  <Button type="button" variant="outline" onClick={handleReset}>Reset</Button>
-                  <Button 
-                    type="button"
-                    variant="outline"
-                    className="flex items-center space-x-2"
-                    onClick={() => setIsFilterVisible(!isFilterVisible)}
-                  >
-                    <Filter size={18} />
-                    <span>Filters</span>
-                  </Button>
-                </form>
-              </div>
-            )}
-            
-            {searchTab === 'advanced' && (
-              <div className="mb-8 p-6 bg-white rounded-xl shadow-sm animate-fade-in">
-                <div className="flex justify-between items-center mb-4">
-                  <h2 className="text-xl font-semibold text-mediblue-800">Advanced Search</h2>
-                  {!isFilterVisible && (
-                    <Button 
-                      variant="ghost" 
-                      size="icon"
-                      onClick={() => setIsFilterVisible(true)}
-                    >
-                      <Filter size={18} />
-                    </Button>
-                  )}
-                </div>
-                
+              <SidebarContent>
                 <form onSubmit={handleSearch}>
-                  <div className="grid md:grid-cols-3 gap-6 mb-6">
-                    <div>
-                      <Label htmlFor="keywords" className="block mb-2">Keywords</Label>
-                      <Input
-                        id="keywords"
-                        placeholder="Search by keywords"
-                        value={searchTerm}
-                        onChange={(e) => setSearchTerm(e.target.value)}
-                      />
-                    </div>
-                    
-                    <div>
-                      <Label htmlFor="username" className="block mb-2">Username</Label>
-                      <Input
-                        id="username"
-                        placeholder="Search by username"
-                        value={usernameSearch}
-                        onChange={(e) => setUsernameSearch(e.target.value)}
-                      />
-                    </div>
-                    
-                    <div>
-                      <Label htmlFor="interests" className="block mb-2">Interests/Skills</Label>
-                      <Input
-                        id="interests"
-                        placeholder="Search interests or skills"
-                        value={keywordSearch}
-                        onChange={(e) => setKeywordSearch(e.target.value)}
-                      />
-                    </div>
-                  </div>
+                  <SidebarGroup>
+                    <SidebarGroupLabel>Search</SidebarGroupLabel>
+                    <SidebarGroupContent className="space-y-4 p-4">
+                      <div>
+                        <Label htmlFor="sidebar-search" className="block mb-2">Keywords</Label>
+                        <div className="relative">
+                          <Search className="absolute left-2.5 top-2.5 text-gray-400" size={15} />
+                          <Input
+                            id="sidebar-search"
+                            placeholder="Search by name, specialty..."
+                            value={searchTerm}
+                            onChange={(e) => setSearchTerm(e.target.value)}
+                            className="pl-9"
+                          />
+                        </div>
+                      </div>
+                    </SidebarGroupContent>
+                  </SidebarGroup>
                   
-                  {isFilterVisible && (
-                    <>
-                      <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6 mb-6">
-                        <div>
-                          <Label className="block mb-3">Age Range</Label>
-                          <div className="space-y-6">
-                            <div>
-                              <div className="flex justify-between mb-2">
-                                <span className="text-sm text-gray-500">Min Age: {minAge}</span>
-                                <span className="text-sm text-gray-500">Max Age: {maxAge}</span>
-                              </div>
-                              <div className="px-2">
-                                <Slider 
-                                  defaultValue={[25]} 
-                                  max={65} 
-                                  min={18} 
-                                  step={1}
-                                  value={minAge}
-                                  onValueChange={setMinAge}
-                                  className="mb-6"
-                                />
-                                <Slider 
-                                  defaultValue={[45]} 
-                                  max={65} 
-                                  min={18} 
-                                  step={1}
-                                  value={maxAge}
-                                  onValueChange={setMaxAge}
-                                />
-                              </div>
-                            </div>
-                          </div>
+                  <SidebarGroup>
+                    <SidebarGroupLabel>Location</SidebarGroupLabel>
+                    <SidebarGroupContent className="p-4">
+                      <LocationSearch
+                        selectedCountry={selectedCountry}
+                        setSelectedCountry={setSelectedCountry}
+                        selectedState={selectedState}
+                        setSelectedState={setSelectedState}
+                        selectedCity={selectedCity}
+                        setSelectedCity={setSelectedCity}
+                        className="space-y-4"
+                      />
+                    </SidebarGroupContent>
+                  </SidebarGroup>
+                  
+                  <SidebarGroup>
+                    <SidebarGroupLabel>Age Range</SidebarGroupLabel>
+                    <SidebarGroupContent className="p-4">
+                      <div className="space-y-4">
+                        <div className="flex justify-between mb-2">
+                          <span className="text-sm text-gray-500">Min Age: {minAge}</span>
+                          <span className="text-sm text-gray-500">Max Age: {maxAge}</span>
                         </div>
-                        
-                        <div>
-                          <Label className="block mb-3">Specialty</Label>
-                          <div className="grid grid-cols-2 gap-2 h-48 overflow-y-auto pr-2">
-                            {specialtiesList.map((specialty) => (
-                              <div key={specialty} className="flex items-center space-x-2">
-                                <Checkbox 
-                                  id={specialty} 
-                                  checked={specialties.includes(specialty)}
-                                  onCheckedChange={(checked) => {
-                                    if (checked) {
-                                      setSpecialties([...specialties, specialty]);
-                                    } else {
-                                      setSpecialties(specialties.filter(s => s !== specialty));
-                                    }
-                                  }}
-                                />
-                                <Label htmlFor={specialty} className="cursor-pointer">{specialty}</Label>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                        
-                        <div>
-                          <Label className="block mb-3">Sexual Orientation</Label>
-                          <div className="space-y-2">
-                            {orientationsList.map((orientation) => (
-                              <div key={orientation} className="flex items-center space-x-2">
-                                <Checkbox 
-                                  id={`orientation-${orientation}`} 
-                                  checked={selectedOrientation.includes(orientation)}
-                                  onCheckedChange={() => handleOrientationChange(orientation)}
-                                />
-                                <Label htmlFor={`orientation-${orientation}`} className="cursor-pointer">
-                                  {orientation}
-                                </Label>
-                              </div>
-                            ))}
-                          </div>
+                        <div className="px-2">
+                          <Slider 
+                            defaultValue={[25]} 
+                            max={65} 
+                            min={18} 
+                            step={1}
+                            value={minAge}
+                            onValueChange={setMinAge}
+                            className="mb-6"
+                          />
+                          <Slider 
+                            defaultValue={[45]} 
+                            max={65} 
+                            min={18} 
+                            step={1}
+                            value={maxAge}
+                            onValueChange={setMaxAge}
+                          />
                         </div>
                       </div>
-                      
-                      <div className="grid md:grid-cols-3 gap-6 mb-6">
-                        <div>
-                          <Label htmlFor="country" className="block mb-2">Country</Label>
-                          <Select 
-                            value={selectedCountry || ""} 
-                            onValueChange={(value) => setSelectedCountry(value || null)}
-                          >
-                            <SelectTrigger id="country">
-                              <SelectValue placeholder="Select country" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="">Any country</SelectItem>
-                              {countries.map((country) => (
-                                <SelectItem key={country.value} value={country.value}>
-                                  {country.label}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-                        
-                        <div>
-                          <Label htmlFor="state" className="block mb-2">State/Province</Label>
-                          <Select 
-                            value={selectedState || ""} 
-                            onValueChange={(value) => setSelectedState(value || null)}
-                            disabled={!selectedCountry || availableStates.length === 0}
-                          >
-                            <SelectTrigger id="state">
-                              <SelectValue placeholder={selectedCountry ? "Select state" : "Select country first"} />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="">Any state</SelectItem>
-                              {availableStates.map((state) => (
-                                <SelectItem key={state.value} value={state.value}>
-                                  {state.label}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-                        
-                        <div>
-                          <Label htmlFor="city" className="block mb-2">City</Label>
-                          <Select 
-                            value={selectedCity || ""} 
-                            onValueChange={(value) => setSelectedCity(value || null)}
-                            disabled={!selectedState || availableCities.length === 0}
-                          >
-                            <SelectTrigger id="city">
-                              <SelectValue placeholder={selectedState ? "Select city" : "Select state first"} />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="">Any city</SelectItem>
-                              {availableCities.map((city) => (
-                                <SelectItem key={city.value} value={city.value}>
-                                  {city.label}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
+                    </SidebarGroupContent>
+                  </SidebarGroup>
+                  
+                  <SidebarGroup>
+                    <SidebarGroupLabel>Specialty</SidebarGroupLabel>
+                    <SidebarGroupContent className="p-4">
+                      <div className="grid grid-cols-1 gap-2 h-40 overflow-y-auto pr-2">
+                        {specialtiesList.map((specialty) => (
+                          <div key={specialty} className="flex items-center space-x-2">
+                            <Checkbox 
+                              id={`sidebar-${specialty}`} 
+                              checked={specialties.includes(specialty)}
+                              onCheckedChange={(checked) => {
+                                if (checked) {
+                                  setSpecialties([...specialties, specialty]);
+                                } else {
+                                  setSpecialties(specialties.filter(s => s !== specialty));
+                                }
+                              }}
+                            />
+                            <Label htmlFor={`sidebar-${specialty}`} className="cursor-pointer text-sm">{specialty}</Label>
+                          </div>
+                        ))}
                       </div>
-                      
+                    </SidebarGroupContent>
+                  </SidebarGroup>
+                  
+                  <SidebarGroup>
+                    <SidebarGroupLabel>Sexual Orientation</SidebarGroupLabel>
+                    <SidebarGroupContent className="p-4">
+                      <div className="space-y-2">
+                        {orientationsList.map((orientation) => (
+                          <div key={orientation} className="flex items-center space-x-2">
+                            <Checkbox 
+                              id={`sidebar-orientation-${orientation}`} 
+                              checked={selectedOrientation.includes(orientation)}
+                              onCheckedChange={() => handleOrientationChange(orientation)}
+                            />
+                            <Label htmlFor={`sidebar-orientation-${orientation}`} className="cursor-pointer text-sm">
+                              {orientation}
+                            </Label>
+                          </div>
+                        ))}
+                      </div>
+                    </SidebarGroupContent>
+                  </SidebarGroup>
+                  
+                  <SidebarGroup>
+                    <SidebarGroupLabel>Ethnicity</SidebarGroupLabel>
+                    <SidebarGroupContent className="p-4">
+                      <div className="grid grid-cols-1 gap-2 h-40 overflow-y-auto pr-2">
+                        {ethnicityList.map((ethnicity) => (
+                          <div key={ethnicity} className="flex items-center space-x-2">
+                            <Checkbox 
+                              id={`sidebar-ethnicity-${ethnicity}`} 
+                              checked={selectedEthnicity.includes(ethnicity)}
+                              onCheckedChange={() => handleEthnicityChange(ethnicity)}
+                            />
+                            <Label htmlFor={`sidebar-ethnicity-${ethnicity}`} className="cursor-pointer text-sm">{ethnicity}</Label>
+                          </div>
+                        ))}
+                      </div>
+                    </SidebarGroupContent>
+                  </SidebarGroup>
+                  
+                  <SidebarGroup>
+                    <SidebarGroupLabel>Cast</SidebarGroupLabel>
+                    <SidebarGroupContent className="p-4">
+                      <Select 
+                        value={selectedCast} 
+                        onValueChange={setSelectedCast}
+                      >
+                        <SelectTrigger id="cast">
+                          <SelectValue placeholder="Select cast" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {castList.map((cast) => (
+                            <SelectItem key={cast} value={cast}>
+                              {cast}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </SidebarGroupContent>
+                  </SidebarGroup>
+                  
+                  <SidebarGroup>
+                    <SidebarGroupLabel>Skin Tone</SidebarGroupLabel>
+                    <SidebarGroupContent className="p-4">
+                      <Select 
+                        value={selectedColor} 
+                        onValueChange={setSelectedColor}
+                      >
+                        <SelectTrigger id="color">
+                          <SelectValue placeholder="Select skin tone" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="">Any</SelectItem>
+                          {colorList.map((color) => (
+                            <SelectItem key={color} value={color}>
+                              {color}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </SidebarGroupContent>
+                  </SidebarGroup>
+                  
+                  <SidebarGroup>
+                    <SidebarGroupContent className="p-4">
                       <div className="flex items-center space-x-2 mb-6">
                         <Checkbox 
-                          id="online" 
+                          id="sidebar-online" 
                           checked={onlineOnly}
                           onCheckedChange={(checked) => setOnlineOnly(!!checked)}
                         />
-                        <Label htmlFor="online" className="cursor-pointer">Show only online doctors</Label>
+                        <Label htmlFor="sidebar-online" className="cursor-pointer">Show only online doctors</Label>
                       </div>
                       
-                      <div className="border-t pt-6 mb-2">
-                        <div className="flex items-center space-x-4 mb-4">
-                          <Label htmlFor="search-name" className="whitespace-nowrap">Save this search:</Label>
-                          <Input
-                            id="search-name"
-                            placeholder="Enter name for this search"
-                            value={searchName}
-                            onChange={(e) => setSearchName(e.target.value)}
-                            className="max-w-xs"
-                          />
-                          <Button 
-                            type="button" 
-                            onClick={saveCurrentSearch}
-                            variant="outline"
-                            size="sm"
-                          >
-                            {editingSavedSearchId ? "Update search" : "Save search"}
-                          </Button>
-                          {editingSavedSearchId && (
-                            <Button 
-                              type="button" 
-                              onClick={() => {
-                                setEditingSavedSearchId(null);
-                                setSearchName('');
-                              }}
-                              variant="ghost"
-                              size="sm"
-                            >
-                              Cancel
-                            </Button>
-                          )}
-                        </div>
+                      <div className="flex flex-col gap-2">
+                        <Button type="submit">Apply Filters</Button>
+                        <Button type="button" variant="outline" onClick={handleReset}>Reset Filters</Button>
                       </div>
-                    </>
-                  )}
-                  
-                  <div className="flex justify-end space-x-3 mt-4">
-                    <Button variant="outline" type="button" onClick={handleReset}>Reset All</Button>
-                    {isFilterVisible && (
-                      <Button 
-                        variant="outline" 
-                        type="button" 
-                        onClick={() => setIsFilterVisible(false)}
-                      >
-                        Close Filters
-                      </Button>
-                    )}
-                    <Button type="submit">Search</Button>
-                  </div>
+                    </SidebarGroupContent>
+                  </SidebarGroup>
                 </form>
-              </div>
-            )}
-            
-            {/* Active filters summary */}
-            {(minAge[0] !== 25 || maxAge[0] !== 45 || specialties.length > 0 || 
-              onlineOnly || selectedCountry || selectedOrientation.length > 0 || 
-              usernameSearch || keywordSearch) && (
-              <div className="mb-4 p-3 bg-blue-50 rounded-lg">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-sm font-medium text-blue-700">Active filters:</span>
+              </SidebarContent>
+            </Sidebar>
+
+            {/* Main content */}
+            <main className="flex-grow p-4 md:p-8">
+              <div className="max-w-7xl mx-auto">
+                <div className="flex flex-col md:flex-row justify-between items-center mb-8">
+                  <h1 className="text-2xl md:text-3xl font-bold text-mediblue-800 mb-4 md:mb-0">
+                    Your Matches
+                  </h1>
                   
-                  {minAge[0] !== 25 || maxAge[0] !== 45 ? (
-                    <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-                      Age: {minAge[0]}-{maxAge[0]}
-                    </span>
-                  ) : null}
-                  
-                  {specialties.length > 0 && (
-                    <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-                      {specialties.length > 1 ? `${specialties.length} specialties` : specialties[0]}
-                    </span>
-                  )}
-                  
-                  {selectedCountry && (
-                    <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-                      {countries.find(c => c.value === selectedCountry)?.label}
-                      {selectedState && ` > ${statesByCountry[selectedCountry as keyof typeof statesByCountry]?.find(s => s.value === selectedState)?.label}`}
-                      {selectedCity && ` > ${citiesByState[selectedState as keyof typeof citiesByState]?.find(c => c.value === selectedCity)?.label}`}
-                    </span>
-                  )}
-                  
-                  {selectedOrientation.length > 0 && (
-                    <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-                      {selectedOrientation.length > 1 ? `${selectedOrientation.length} orientations` : selectedOrientation[0]}
-                    </span>
-                  )}
-                  
-                  {usernameSearch && (
-                    <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-                      Username: {usernameSearch}
-                    </span>
-                  )}
-                  
-                  {keywordSearch && (
-                    <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-                      Keyword: {keywordSearch}
-                    </span>
-                  )}
-                  
-                  {onlineOnly && (
-                    <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                      Online only
-                    </span>
-                  )}
-                  
-                  <Button 
-                    variant="ghost" 
-                    size="sm" 
-                    className="ml-auto text-xs h-7 px-2"
-                    onClick={handleReset}
-                  >
-                    Clear all
-                  </Button>
-                </div>
-              </div>
-            )}
-            
-            {/* Results */}
-            {getPaginatedDoctors().length > 0 ? (
-              <>
-                <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
-                  {getPaginatedDoctors().map((doctor) => (
-                    <DoctorCard
-                      key={doctor.id}
-                      id={doctor.id}
-                      name={doctor.name}
-                      age={doctor.age}
-                      specialty={doctor.specialty}
-                      hospital={doctor.hospital}
-                      city={doctor.city}
-                      imageUrl={doctor.imageUrl}
-                      matchPercentage={doctor.matchPercentage}
-                      interests={doctor.interests}
-                      isOnline={doctor.isOnline}
-                      onLike={handleLike}
-                      onVideo={handleVideoCall}
-                      onMessage={handleChat}
-                    />
-                  ))}
+                  <div className="w-full md:w-auto flex flex-col md:flex-row items-center space-y-4 md:space-y-0 md:space-x-4">
+                    <Button
+                      variant="outline" 
+                      size="sm"
+                      className={`flex items-center space-x-2 ${showSavedSearches ? 'bg-blue-50' : ''}`}
+                      onClick={() => setShowSavedSearches(!showSavedSearches)}
+                    >
+                      <Save size={16} />
+                      <span>Saved Searches</span>
+                    </Button>
+                  </div>
                 </div>
                 
-                {/* Pagination */}
-                {totalPages > 1 && (
-                  <Pagination className="mb-8">
-                    <PaginationContent>
-                      {currentPage > 1 && (
-                        <PaginationItem>
-                          <PaginationPrevious 
-                            href="#" 
-                            onClick={(e) => {
-                              e.preventDefault();
-                              setCurrentPage(currentPage - 1);
-                            }} 
-                          />
-                        </PaginationItem>
-                      )}
-                      
-                      {Array.from({ length: totalPages }, (_, i) => i + 1).map((page) => {
-                        // Show first page, last page, and pages around current page
-                        if (
-                          page === 1 || 
-                          page === totalPages || 
-                          (page >= currentPage - 1 && page <= currentPage + 1)
-                        ) {
-                          return (
-                            <PaginationItem key={page}>
-                              <PaginationLink 
+                {/* Saved searches section */}
+                {showSavedSearches && (
+                  <div className="mb-6 p-4 bg-white rounded-xl shadow-sm animate-fade-in">
+                    <div className="flex justify-between items-center mb-4">
+                      <h2 className="text-lg font-semibold text-mediblue-800">Saved Searches</h2>
+                      <Button 
+                        variant="ghost" 
+                        size="sm"
+                        onClick={() => setShowSavedSearches(false)}
+                      >
+                        <X size={18} />
+                      </Button>
+                    </div>
+                    
+                    {savedSearches.length > 0 ? (
+                      <div className="overflow-x-auto">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Name</TableHead>
+                              <TableHead>Criteria</TableHead>
+                              <TableHead className="w-[120px] text-right">Actions</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {savedSearches.map((search) => (
+                              <TableRow 
+                                key={search.id}
+                                className={selectedSavedSearch === search.id ? "bg-blue-50" : ""}
+                              >
+                                <TableCell className="font-medium">{search.name}</TableCell>
+                                <TableCell>
+                                  <div className="text-sm text-gray-600">
+                                    {search.specialties.length > 0 && 
+                                      <span className="mr-3">
+                                        {search.specialties.join(", ")}
+                                      </span>
+                                    }
+                                    {search.minAge[0] !== 25 || search.maxAge[0] !== 45 && 
+                                      <span className="mr-3">
+                                        {search.minAge[0]}-{search.maxAge[0]} y/o
+                                      </span>
+                                    }
+                                    {search.country && 
+                                      <span className="mr-3 flex items-center">
+                                        <MapPin size={12} className="mr-1" />
+                                        {countries.find(c => c.value === search.country)?.label}
+                                        {search.state && `, ${statesByCountry[search.country as keyof typeof statesByCountry]?.find(s => s.value === search.state)?.label}`}
+                                      </span>
+                                    }
+                                    {search.onlineOnly && 
+                                      <span className="text-green-600 font-medium">Online only</span>
+                                    }
+                                  </div>
+                                </TableCell>
+                                <TableCell className="text-right space-x-1">
+                                  <Button 
+                                    variant="ghost" 
+                                    size="icon" 
+                                    onClick={() => loadSavedSearch(search.id)}
+                                    className="h-8 w-8"
+                                  >
+                                    <Search size={14} />
+                                  </Button>
+                                  <Button 
+                                    variant="ghost" 
+                                    size="icon"
+                                    onClick={() => editSavedSearch(search.id)}
+                                    className="h-8 w-8"
+                                  >
+                                    <Edit size={14} />
+                                  </Button>
+                                  <Button 
+                                    variant="ghost" 
+                                    size="icon" 
+                                    onClick={() => deleteSavedSearch(search.id)}
+                                    className="h-8 w-8 text-red-500 hover:text-red-600"
+                                  >
+                                    <Delete size={14} />
+                                  </Button>
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </div>
+                    ) : (
+                      <div className="text-center py-8 text-gray-500">
+                        <Save className="mx-auto h-12 w-12 text-gray-300 mb-3" />
+                        <p>You haven't saved any searches yet.</p>
+                        <p className="text-sm mt-1">Use the search panel and save your criteria for future use.</p>
+                      </div>
+                    )}
+                  </div>
+                )}
+                
+                {/* Results display */}
+                <div className="mb-4">
+                  <div className="flex justify-between items-center">
+                    <p className="text-gray-600">
+                      Found <span className="font-semibold">{filteredDoctors.length}</span> matches
+                    </p>
+                    <Select defaultValue="match" onValueChange={() => {}}>
+                      <SelectTrigger className="w-[180px]">
+                        <SelectValue placeholder="Sort by" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="match">Match %</SelectItem>
+                        <SelectItem value="recent">Recently active</SelectItem>
+                        <SelectItem value="ageAsc">Age: Low to High</SelectItem>
+                        <SelectItem value="ageDesc">Age: High to Low</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                
+                {/* Results */}
+                {getPaginatedDoctors().length > 0 ? (
+                  <>
+                    <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
+                      {getPaginatedDoctors().map((doctor) => (
+                        <DoctorCard
+                          key={doctor.id}
+                          id={doctor.id}
+                          name={doctor.name}
+                          age={doctor.age}
+                          specialty={doctor.specialty}
+                          hospital={doctor.hospital}
+                          city={doctor.city}
+                          imageUrl={doctor.imageUrl}
+                          matchPercentage={doctor.matchPercentage}
+                          interests={doctor.interests}
+                          isOnline={doctor.isOnline}
+                          onLike={handleLike}
+                          onVideo={handleVideoCall}
+                          onMessage={handleChat}
+                        />
+                      ))}
+                    </div>
+                    
+                    {/* Pagination */}
+                    {totalPages > 1 && (
+                      <Pagination className="mb-8">
+                        <PaginationContent>
+                          {currentPage > 1 && (
+                            <PaginationItem>
+                              <PaginationPrevious 
                                 href="#" 
-                                isActive={page === currentPage}
                                 onClick={(e) => {
                                   e.preventDefault();
-                                  setCurrentPage(page);
-                                }}
-                              >
-                                {page}
-                              </PaginationLink>
+                                  setCurrentPage(currentPage - 1);
+                                }} 
+                              />
                             </PaginationItem>
-                          );
-                        }
-                        
-                        // Show ellipsis for gaps
-                        if (page === 2 && currentPage > 3) {
-                          return (
-                            <PaginationItem key="ellipsis-start">
-                              <PaginationEllipsis />
+                          )}
+                          
+                          {Array.from({ length: totalPages }, (_, i) => i + 1).map((page) => {
+                            // Show first page, last page, and pages around current page
+                            if (
+                              page === 1 || 
+                              page === totalPages || 
+                              (page >= currentPage - 1 && page <= currentPage + 1)
+                            ) {
+                              return (
+                                <PaginationItem key={page}>
+                                  <PaginationLink 
+                                    href="#" 
+                                    isActive={page === currentPage}
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      setCurrentPage(page);
+                                    }}
+                                  >
+                                    {page}
+                                  </PaginationLink>
+                                </PaginationItem>
+                              );
+                            }
+                            
+                            // Show ellipsis for gaps
+                            if (page === 2 && currentPage > 3) {
+                              return (
+                                <PaginationItem key="ellipsis-start">
+                                  <PaginationEllipsis />
+                                </PaginationItem>
+                              );
+                            }
+                            
+                            if (page === totalPages - 1 && currentPage < totalPages - 2) {
+                              return (
+                                <PaginationItem key="ellipsis-end">
+                                  <PaginationEllipsis />
+                                </PaginationItem>
+                              );
+                            }
+                            
+                            return null;
+                          })}
+                          
+                          {currentPage < totalPages && (
+                            <PaginationItem>
+                              <PaginationNext 
+                                href="#" 
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  setCurrentPage(currentPage + 1);
+                                }} 
+                              />
                             </PaginationItem>
-                          );
-                        }
-                        
-                        if (page === totalPages - 1 && currentPage < totalPages - 2) {
-                          return (
-                            <PaginationItem key="ellipsis-end">
-                              <PaginationEllipsis />
-                            </PaginationItem>
-                          );
-                        }
-                        
-                        return null;
-                      })}
-                      
-                      {currentPage < totalPages && (
-                        <PaginationItem>
-                          <PaginationNext 
-                            href="#" 
-                            onClick={(e) => {
-                              e.preventDefault();
-                              setCurrentPage(currentPage + 1);
-                            }} 
-                          />
-                        </PaginationItem>
-                      )}
-                    </PaginationContent>
-                  </Pagination>
+                          )}
+                        </PaginationContent>
+                      </Pagination>
+                    )}
+                  </>
+                ) : (
+                  <div className="text-center py-16">
+                    <Users className="mx-auto h-16 w-16 text-gray-300 mb-4" />
+                    <h3 className="text-xl font-medium text-gray-900">No matches found</h3>
+                    <p className="text-gray-500 mt-2">Try adjusting your filters or search criteria</p>
+                    <Button className="mt-4" onClick={handleReset}>Reset Filters</Button>
+                  </div>
                 )}
-              </>
-            ) : (
-              <div className="text-center py-16">
-                <Users className="mx-auto h-16 w-16 text-gray-300 mb-4" />
-                <h3 className="text-xl font-medium text-gray-900">No matches found</h3>
-                <p className="text-gray-500 mt-2">Try adjusting your filters or search criteria</p>
-                <Button className="mt-4" onClick={handleReset}>Reset Filters</Button>
               </div>
-            )}
+            </main>
           </div>
-        </main>
+        </SidebarProvider>
       )}
       
       {activeView === 'video' && selectedDoctorData && (
@@ -1181,4 +1099,3 @@ const Matches = () => {
 };
 
 export default Matches;
-

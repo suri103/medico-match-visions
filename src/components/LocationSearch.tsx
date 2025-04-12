@@ -1,5 +1,5 @@
 
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import {
   Select,
   SelectContent,
@@ -8,6 +8,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Label } from '@/components/ui/label';
+import { MapPin, Globe, Building2 } from 'lucide-react';
 
 // Sample data for countries
 const countries = [
@@ -83,10 +84,53 @@ const citiesByState = {
     { value: 'san_francisco', label: 'San Francisco' },
     { value: 'san_diego', label: 'San Diego' },
   ],
+  texas: [
+    { value: 'houston', label: 'Houston' },
+    { value: 'dallas', label: 'Dallas' },
+    { value: 'austin', label: 'Austin' },
+  ],
+  florida: [
+    { value: 'miami', label: 'Miami' },
+    { value: 'orlando', label: 'Orlando' },
+    { value: 'tampa', label: 'Tampa' },
+  ],
   ontario: [
     { value: 'toronto', label: 'Toronto' },
     { value: 'ottawa', label: 'Ottawa' },
     { value: 'hamilton', label: 'Hamilton' },
+  ],
+  quebec: [
+    { value: 'montreal', label: 'Montreal' },
+    { value: 'quebec_city', label: 'Quebec City' },
+  ],
+  british_columbia: [
+    { value: 'vancouver', label: 'Vancouver' },
+    { value: 'victoria', label: 'Victoria' },
+  ],
+  new_south_wales: [
+    { value: 'sydney', label: 'Sydney' },
+    { value: 'newcastle', label: 'Newcastle' },
+  ],
+  victoria: [
+    { value: 'melbourne', label: 'Melbourne' },
+    { value: 'geelong', label: 'Geelong' },
+  ],
+  queensland: [
+    { value: 'brisbane', label: 'Brisbane' },
+    { value: 'gold_coast', label: 'Gold Coast' },
+  ],
+  england: [
+    { value: 'london', label: 'London' },
+    { value: 'manchester', label: 'Manchester' },
+    { value: 'birmingham', label: 'Birmingham' },
+  ],
+  scotland: [
+    { value: 'edinburgh', label: 'Edinburgh' },
+    { value: 'glasgow', label: 'Glasgow' },
+  ],
+  wales: [
+    { value: 'cardiff', label: 'Cardiff' },
+    { value: 'swansea', label: 'Swansea' },
   ],
 };
 
@@ -109,45 +153,40 @@ const LocationSearch: React.FC<LocationSearchProps> = ({
   setSelectedCity,
   className
 }) => {
-  const [availableStates, setAvailableStates] = useState<{value: string, label: string}[]>([]);
-  const [availableCities, setAvailableCities] = useState<{value: string, label: string}[]>([]);
-
-  // Update available states when country changes
-  useEffect(() => {
+  // Get appropriate lists based on selections
+  const getAvailableStates = () => {
     if (selectedCountry) {
-      setAvailableStates(statesByCountry[selectedCountry as keyof typeof statesByCountry] || []);
-      setSelectedState(null);
-      setSelectedCity(null);
-    } else {
-      setAvailableStates([]);
-      setSelectedState(null);
-      setSelectedCity(null);
+      return statesByCountry[selectedCountry as keyof typeof statesByCountry] || [];
     }
-  }, [selectedCountry, setSelectedState, setSelectedCity]);
+    return [];
+  };
 
-  // Update available cities when state changes
-  useEffect(() => {
+  const getAvailableCities = () => {
     if (selectedState) {
-      setAvailableCities(citiesByState[selectedState as keyof typeof citiesByState] || []);
-      setSelectedCity(null);
-    } else {
-      setAvailableCities([]);
-      setSelectedCity(null);
+      return citiesByState[selectedState as keyof typeof citiesByState] || [];
     }
-  }, [selectedState, setSelectedCity]);
+    return [];
+  };
 
   return (
-    <div className={`grid grid-cols-1 md:grid-cols-3 gap-4 ${className}`}>
+    <div className={`space-y-4 ${className}`}>
       <div>
-        <Label htmlFor="country" className="block mb-2">Country</Label>
+        <Label htmlFor="country" className="flex items-center gap-1 mb-1.5">
+          <Globe className="h-4 w-4" />
+          Country
+        </Label>
         <Select 
           value={selectedCountry || ""} 
-          onValueChange={(value) => setSelectedCountry(value !== "" ? value : null)}
+          onValueChange={(value) => {
+            setSelectedCountry(value !== "" ? value : null);
+            setSelectedState(null);
+            setSelectedCity(null);
+          }}
         >
-          <SelectTrigger id="country">
+          <SelectTrigger id="country" className="w-full">
             <SelectValue placeholder="Select country" />
           </SelectTrigger>
-          <SelectContent className="max-h-[400px]">
+          <SelectContent className="max-h-[240px]">
             <SelectItem value="">Any country</SelectItem>
             {countries.map((country) => (
               <SelectItem key={country.value} value={country.value}>
@@ -159,18 +198,24 @@ const LocationSearch: React.FC<LocationSearchProps> = ({
       </div>
       
       <div>
-        <Label htmlFor="state" className="block mb-2">State/Province</Label>
+        <Label htmlFor="state" className="flex items-center gap-1 mb-1.5">
+          <MapPin className="h-4 w-4" />
+          State/Province
+        </Label>
         <Select 
           value={selectedState || ""} 
-          onValueChange={(value) => setSelectedState(value !== "" ? value : null)}
-          disabled={!selectedCountry || availableStates.length === 0}
+          onValueChange={(value) => {
+            setSelectedState(value !== "" ? value : null);
+            setSelectedCity(null);
+          }}
+          disabled={!selectedCountry}
         >
-          <SelectTrigger id="state">
+          <SelectTrigger id="state" className="w-full">
             <SelectValue placeholder={selectedCountry ? "Select state" : "Select country first"} />
           </SelectTrigger>
-          <SelectContent className="max-h-[400px]">
+          <SelectContent className="max-h-[240px]">
             <SelectItem value="">Any state</SelectItem>
-            {availableStates.map((state) => (
+            {getAvailableStates().map((state) => (
               <SelectItem key={state.value} value={state.value}>
                 {state.label}
               </SelectItem>
@@ -180,18 +225,21 @@ const LocationSearch: React.FC<LocationSearchProps> = ({
       </div>
       
       <div>
-        <Label htmlFor="city" className="block mb-2">City</Label>
+        <Label htmlFor="city" className="flex items-center gap-1 mb-1.5">
+          <Building2 className="h-4 w-4" />
+          City
+        </Label>
         <Select 
           value={selectedCity || ""} 
           onValueChange={(value) => setSelectedCity(value !== "" ? value : null)}
-          disabled={!selectedState || availableCities.length === 0}
+          disabled={!selectedState}
         >
-          <SelectTrigger id="city">
+          <SelectTrigger id="city" className="w-full">
             <SelectValue placeholder={selectedState ? "Select city" : "Select state first"} />
           </SelectTrigger>
-          <SelectContent className="max-h-[400px]">
+          <SelectContent className="max-h-[240px]">
             <SelectItem value="">Any city</SelectItem>
-            {availableCities.map((city) => (
+            {getAvailableCities().map((city) => (
               <SelectItem key={city.value} value={city.value}>
                 {city.label}
               </SelectItem>
