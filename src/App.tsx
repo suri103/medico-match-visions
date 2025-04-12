@@ -8,10 +8,15 @@ import { SignedIn, SignedOut, useAuth } from '@clerk/clerk-react';
 import Index from "./pages/Index";
 import NotFound from "./pages/NotFound";
 import Matches from "./pages/Matches";
+import Search from "./pages/Search";
 import VideoDatePage from "./pages/VideoDatePage";
 import MessagesPage from "./pages/MessagesPage";
 import ProfilePage from "./pages/ProfilePage";
 import AstrologerPage from "./pages/AstrologerPage";
+import FavoritesPage from "./pages/FavoritesPage";
+import SuccessStoriesPage from "./pages/SuccessStoriesPage";
+import PlanPage from "./pages/PlanPage";
+import HelpPage from "./pages/HelpPage";
 import SignIn from "./components/auth/SignIn";
 import SignUp from "./components/auth/SignUp";
 
@@ -51,10 +56,15 @@ const App = () => (
           {/* Protected routes */}
           <Route path="/" element={<ProtectedRoute><Index /></ProtectedRoute>} />
           <Route path="/matches" element={<ProtectedRoute><Matches /></ProtectedRoute>} />
+          <Route path="/search" element={<ProtectedRoute><Search /></ProtectedRoute>} />
+          <Route path="/favorites" element={<ProtectedRoute><FavoritesPage /></ProtectedRoute>} />
           <Route path="/video-dates" element={<ProtectedRoute><VideoDatePage /></ProtectedRoute>} />
           <Route path="/messages" element={<ProtectedRoute><MessagesPage /></ProtectedRoute>} />
           <Route path="/profile" element={<ProtectedRoute><ProfilePage /></ProtectedRoute>} />
           <Route path="/astrologer" element={<ProtectedRoute><AstrologerPage /></ProtectedRoute>} />
+          <Route path="/success-stories" element={<ProtectedRoute><SuccessStoriesPage /></ProtectedRoute>} />
+          <Route path="/plan" element={<ProtectedRoute><PlanPage /></ProtectedRoute>} />
+          <Route path="/help" element={<ProtectedRoute><HelpPage /></ProtectedRoute>} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </BrowserRouter>

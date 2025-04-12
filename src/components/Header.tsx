@@ -3,15 +3,16 @@ import React from 'react';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarImage, AvatarFallback } from '@/components/ui/avatar';
 import { 
-  Heart, Video, MessageSquare, User, CreditCard, Menu, X, Bell, LogOut
+  Heart, Video, MessageSquare, User, CreditCard, Menu, X, Bell, LogOut, Star, Trophy, Calendar, HelpCircle
 } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { useClerk, useUser } from '@clerk/clerk-react';
 import { toast } from '@/hooks/use-toast';
 
 const Header = () => {
   const [isMenuOpen, setIsMenuOpen] = React.useState(false);
   const navigate = useNavigate();
+  const location = useLocation();
   const { signOut } = useClerk();
   const { user, isSignedIn } = useUser();
 
@@ -26,6 +27,10 @@ const Header = () => {
 
   const userImage = user?.imageUrl || "https://randomuser.me/api/portraits/women/33.jpg";
   const userInitials = user?.firstName?.[0] ?? "" + user?.lastName?.[0] ?? "MR";
+  
+  const isActive = (path: string) => {
+    return location.pathname === path;
+  };
 
   return (
     <header className="bg-white shadow-md sticky top-0 z-50 w-full">
@@ -43,10 +48,10 @@ const Header = () => {
           {isSignedIn ? (
             <>
               {/* Desktop navigation */}
-              <nav className="hidden md:flex space-x-4">
+              <nav className="hidden md:flex space-x-3">
                 <Button
                   variant="ghost"
-                  className="flex items-center space-x-1 text-gray-600 hover:text-mediblue-600"
+                  className={`flex items-center space-x-1 ${isActive('/matches') ? 'text-mediblue-600 bg-gray-100' : 'text-gray-600 hover:text-mediblue-600'}`}
                   onClick={() => navigate('/matches')}
                 >
                   <Heart size={18} />
@@ -54,7 +59,23 @@ const Header = () => {
                 </Button>
                 <Button
                   variant="ghost"
-                  className="flex items-center space-x-1 text-gray-600 hover:text-mediblue-600"
+                  className={`flex items-center space-x-1 ${isActive('/search') ? 'text-mediblue-600 bg-gray-100' : 'text-gray-600 hover:text-mediblue-600'}`}
+                  onClick={() => navigate('/search')}
+                >
+                  <User size={18} />
+                  <span>Search</span>
+                </Button>
+                <Button
+                  variant="ghost"
+                  className={`flex items-center space-x-1 ${isActive('/favorites') ? 'text-mediblue-600 bg-gray-100' : 'text-gray-600 hover:text-mediblue-600'}`}
+                  onClick={() => navigate('/favorites')}
+                >
+                  <Star size={18} />
+                  <span>Favorites</span>
+                </Button>
+                <Button
+                  variant="ghost"
+                  className={`flex items-center space-x-1 ${isActive('/video-dates') ? 'text-mediblue-600 bg-gray-100' : 'text-gray-600 hover:text-mediblue-600'}`}
                   onClick={() => navigate('/video-dates')}
                 >
                   <Video size={18} />
@@ -62,7 +83,7 @@ const Header = () => {
                 </Button>
                 <Button
                   variant="ghost"
-                  className="flex items-center space-x-1 text-gray-600 hover:text-mediblue-600"
+                  className={`flex items-center space-x-1 ${isActive('/messages') ? 'text-mediblue-600 bg-gray-100' : 'text-gray-600 hover:text-mediblue-600'}`}
                   onClick={() => navigate('/messages')}
                 >
                   <MessageSquare size={18} />
@@ -70,7 +91,31 @@ const Header = () => {
                 </Button>
                 <Button
                   variant="ghost"
-                  className="flex items-center space-x-1 text-gray-600 hover:text-mediblue-600"
+                  className={`flex items-center space-x-1 ${isActive('/success-stories') ? 'text-mediblue-600 bg-gray-100' : 'text-gray-600 hover:text-mediblue-600'}`}
+                  onClick={() => navigate('/success-stories')}
+                >
+                  <Trophy size={18} />
+                  <span>Success Stories</span>
+                </Button>
+                <Button
+                  variant="ghost"
+                  className={`flex items-center space-x-1 ${isActive('/plan') ? 'text-mediblue-600 bg-gray-100' : 'text-gray-600 hover:text-mediblue-600'}`}
+                  onClick={() => navigate('/plan')}
+                >
+                  <Calendar size={18} />
+                  <span>Plan</span>
+                </Button>
+                <Button
+                  variant="ghost"
+                  className={`flex items-center space-x-1 ${isActive('/help') ? 'text-mediblue-600 bg-gray-100' : 'text-gray-600 hover:text-mediblue-600'}`}
+                  onClick={() => navigate('/help')}
+                >
+                  <HelpCircle size={18} />
+                  <span>Help</span>
+                </Button>
+                <Button
+                  variant="ghost"
+                  className={`flex items-center space-x-1 ${isActive('/astrologer') ? 'text-mediblue-600 bg-gray-100' : 'text-gray-600 hover:text-mediblue-600'}`}
                   onClick={() => navigate('/astrologer')}
                 >
                   <CreditCard size={18} />
@@ -149,7 +194,7 @@ const Header = () => {
           <div className="grid grid-cols-2 gap-2">
             <Button
               variant="ghost"
-              className="flex items-center justify-start space-x-2 text-gray-600 hover:text-mediblue-600 text-sm"
+              className={`flex items-center justify-start space-x-2 ${isActive('/matches') ? 'text-mediblue-600 bg-gray-100' : 'text-gray-600'} text-sm`}
               onClick={() => {
                 navigate('/matches');
                 setIsMenuOpen(false);
@@ -160,7 +205,29 @@ const Header = () => {
             </Button>
             <Button
               variant="ghost"
-              className="flex items-center justify-start space-x-2 text-gray-600 hover:text-mediblue-600 text-sm"
+              className={`flex items-center justify-start space-x-2 ${isActive('/search') ? 'text-mediblue-600 bg-gray-100' : 'text-gray-600'} text-sm`}
+              onClick={() => {
+                navigate('/search');
+                setIsMenuOpen(false);
+              }}
+            >
+              <User size={16} />
+              <span className="truncate">Search</span>
+            </Button>
+            <Button
+              variant="ghost"
+              className={`flex items-center justify-start space-x-2 ${isActive('/favorites') ? 'text-mediblue-600 bg-gray-100' : 'text-gray-600'} text-sm`}
+              onClick={() => {
+                navigate('/favorites');
+                setIsMenuOpen(false);
+              }}
+            >
+              <Star size={16} />
+              <span className="truncate">Favorites</span>
+            </Button>
+            <Button
+              variant="ghost"
+              className={`flex items-center justify-start space-x-2 ${isActive('/video-dates') ? 'text-mediblue-600 bg-gray-100' : 'text-gray-600'} text-sm`}
               onClick={() => {
                 navigate('/video-dates');
                 setIsMenuOpen(false);
@@ -171,7 +238,7 @@ const Header = () => {
             </Button>
             <Button
               variant="ghost"
-              className="flex items-center justify-start space-x-2 text-gray-600 hover:text-mediblue-600 text-sm"
+              className={`flex items-center justify-start space-x-2 ${isActive('/messages') ? 'text-mediblue-600 bg-gray-100' : 'text-gray-600'} text-sm`}
               onClick={() => {
                 navigate('/messages');
                 setIsMenuOpen(false);
@@ -182,7 +249,40 @@ const Header = () => {
             </Button>
             <Button
               variant="ghost"
-              className="flex items-center justify-start space-x-2 text-gray-600 hover:text-mediblue-600 text-sm"
+              className={`flex items-center justify-start space-x-2 ${isActive('/success-stories') ? 'text-mediblue-600 bg-gray-100' : 'text-gray-600'} text-sm`}
+              onClick={() => {
+                navigate('/success-stories');
+                setIsMenuOpen(false);
+              }}
+            >
+              <Trophy size={16} />
+              <span className="truncate">Success Stories</span>
+            </Button>
+            <Button
+              variant="ghost"
+              className={`flex items-center justify-start space-x-2 ${isActive('/plan') ? 'text-mediblue-600 bg-gray-100' : 'text-gray-600'} text-sm`}
+              onClick={() => {
+                navigate('/plan');
+                setIsMenuOpen(false);
+              }}
+            >
+              <Calendar size={16} />
+              <span className="truncate">Plan</span>
+            </Button>
+            <Button
+              variant="ghost"
+              className={`flex items-center justify-start space-x-2 ${isActive('/help') ? 'text-mediblue-600 bg-gray-100' : 'text-gray-600'} text-sm`}
+              onClick={() => {
+                navigate('/help');
+                setIsMenuOpen(false);
+              }}
+            >
+              <HelpCircle size={16} />
+              <span className="truncate">Help</span>
+            </Button>
+            <Button
+              variant="ghost"
+              className={`flex items-center justify-start space-x-2 ${isActive('/astrologer') ? 'text-mediblue-600 bg-gray-100' : 'text-gray-600'} text-sm`}
               onClick={() => {
                 navigate('/astrologer');
                 setIsMenuOpen(false);
@@ -193,7 +293,7 @@ const Header = () => {
             </Button>
             <Button
               variant="ghost"
-              className="flex items-center justify-start space-x-2 text-gray-600 hover:text-mediblue-600 text-sm"
+              className={`flex items-center justify-start space-x-2 ${isActive('/profile') ? 'text-mediblue-600 bg-gray-100' : 'text-gray-600'} text-sm`}
               onClick={() => {
                 navigate('/profile');
                 setIsMenuOpen(false);
