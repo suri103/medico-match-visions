@@ -135,7 +135,7 @@ const Header = () => {
                     className="h-9 w-9 cursor-pointer ml-2 border-2 border-mediblue-100 hover:border-mediblue-300 transition-colors"
                     onClick={() => navigate('/profile')}
                   >
-                    <AvatarImage src={userImage} />
+                    <AvatarImage src={userImage} alt={user?.firstName || "User"} />
                     <AvatarFallback>{userInitials}</AvatarFallback>
                   </Avatar>
                   
@@ -156,7 +156,7 @@ const Header = () => {
                   className="h-8 w-8 cursor-pointer mr-4 border-2 border-mediblue-100"
                   onClick={() => navigate('/profile')}
                 >
-                  <AvatarImage src={userImage} />
+                  <AvatarImage src={userImage} alt={user?.firstName || "User"} />
                   <AvatarFallback>{userInitials}</AvatarFallback>
                 </Avatar>
                 
@@ -188,9 +188,9 @@ const Header = () => {
         </div>
       </div>
 
-      {/* Mobile menu - updated to show icons with text in a grid */}
+      {/* Mobile menu - with fixed position to prevent page scrolling issues */}
       {isMenuOpen && isSignedIn && (
-        <div className="md:hidden bg-white pt-2 pb-4 px-4 shadow-lg animate-fade-in">
+        <div className="fixed top-16 left-0 right-0 bottom-0 z-50 md:hidden bg-white pt-2 pb-4 px-4 shadow-lg overflow-y-auto">
           <div className="grid grid-cols-2 gap-2">
             <Button
               variant="ghost"
