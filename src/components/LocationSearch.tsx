@@ -176,9 +176,9 @@ const LocationSearch: React.FC<LocationSearchProps> = ({
           Country
         </Label>
         <Select 
-          value={selectedCountry || ""} 
+          value={selectedCountry || "any_country"} 
           onValueChange={(value) => {
-            setSelectedCountry(value !== "" ? value : null);
+            setSelectedCountry(value !== "any_country" ? value : null);
             setSelectedState(null);
             setSelectedCity(null);
           }}
@@ -187,7 +187,7 @@ const LocationSearch: React.FC<LocationSearchProps> = ({
             <SelectValue placeholder="Select country" />
           </SelectTrigger>
           <SelectContent className="max-h-[240px]">
-            <SelectItem value="">Any country</SelectItem>
+            <SelectItem value="any_country">Any country</SelectItem>
             {countries.map((country) => (
               <SelectItem key={country.value} value={country.value}>
                 {country.label}
@@ -203,9 +203,9 @@ const LocationSearch: React.FC<LocationSearchProps> = ({
           State/Province
         </Label>
         <Select 
-          value={selectedState || ""} 
+          value={selectedState || "any_state"} 
           onValueChange={(value) => {
-            setSelectedState(value !== "" ? value : null);
+            setSelectedState(value !== "any_state" ? value : null);
             setSelectedCity(null);
           }}
           disabled={!selectedCountry}
@@ -214,7 +214,7 @@ const LocationSearch: React.FC<LocationSearchProps> = ({
             <SelectValue placeholder={selectedCountry ? "Select state" : "Select country first"} />
           </SelectTrigger>
           <SelectContent className="max-h-[240px]">
-            <SelectItem value="">Any state</SelectItem>
+            <SelectItem value="any_state">Any state</SelectItem>
             {getAvailableStates().map((state) => (
               <SelectItem key={state.value} value={state.value}>
                 {state.label}
@@ -230,15 +230,15 @@ const LocationSearch: React.FC<LocationSearchProps> = ({
           City
         </Label>
         <Select 
-          value={selectedCity || ""} 
-          onValueChange={(value) => setSelectedCity(value !== "" ? value : null)}
+          value={selectedCity || "any_city"} 
+          onValueChange={(value) => setSelectedCity(value !== "any_city" ? value : null)}
           disabled={!selectedState}
         >
           <SelectTrigger id="city" className="w-full">
             <SelectValue placeholder={selectedState ? "Select city" : "Select state first"} />
           </SelectTrigger>
           <SelectContent className="max-h-[240px]">
-            <SelectItem value="">Any city</SelectItem>
+            <SelectItem value="any_city">Any city</SelectItem>
             {getAvailableCities().map((city) => (
               <SelectItem key={city.value} value={city.value}>
                 {city.label}

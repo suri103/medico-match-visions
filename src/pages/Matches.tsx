@@ -53,139 +53,10 @@ import {
 } from '@/components/ui/sidebar';
 import { LocationSearch } from '@/components/LocationSearch';
 
-// Sample data for doctor profiles
 const doctorProfiles = [
-  {
-    id: '1',
-    name: 'Priya Sharma',
-    age: 32,
-    specialty: 'Cardiologist',
-    hospital: 'Apollo Hospital',
-    city: 'Mumbai',
-    state: 'Maharashtra',
-    country: 'India',
-    imageUrl: 'https://randomuser.me/api/portraits/women/44.jpg',
-    matchPercentage: 95,
-    interests: ['Yoga', 'Travel', 'Reading', 'Cuisine'],
-    isOnline: true,
-    gender: 'Female',
-    sexualOrientation: 'Straight'
-  },
-  {
-    id: '2',
-    name: 'Rajiv Mehta',
-    age: 35,
-    specialty: 'Neurologist',
-    hospital: 'AIIMS',
-    city: 'Delhi',
-    state: 'Delhi',
-    country: 'India',
-    imageUrl: 'https://randomuser.me/api/portraits/men/42.jpg',
-    matchPercentage: 88,
-    interests: ['Tennis', 'Music', 'Hiking'],
-    isOnline: false,
-    gender: 'Male',
-    sexualOrientation: 'Straight'
-  },
-  {
-    id: '3',
-    name: 'Ananya Patel',
-    age: 29,
-    specialty: 'Pediatrician',
-    hospital: 'Fortis Hospital',
-    city: 'Bangalore',
-    state: 'Karnataka',
-    country: 'India',
-    imageUrl: 'https://randomuser.me/api/portraits/women/67.jpg',
-    matchPercentage: 84,
-    interests: ['Dancing', 'Cooking', 'Photography'],
-    isOnline: true,
-    gender: 'Female',
-    sexualOrientation: 'Bisexual'
-  },
-  {
-    id: '4',
-    name: 'Vikram Singh',
-    age: 34,
-    specialty: 'Orthopedic Surgeon',
-    hospital: 'Max Healthcare',
-    city: 'Chennai',
-    state: 'Tamil Nadu',
-    country: 'India',
-    imageUrl: 'https://randomuser.me/api/portraits/men/79.jpg',
-    matchPercentage: 82,
-    interests: ['Cricket', 'Mountain Biking', 'Movies'],
-    isOnline: false,
-    gender: 'Male',
-    sexualOrientation: 'Gay'
-  },
-  {
-    id: '5',
-    name: 'Shreya Gupta',
-    age: 31,
-    specialty: 'Dermatologist',
-    hospital: 'Medanta',
-    city: 'Hyderabad',
-    state: 'Telangana',
-    country: 'India',
-    imageUrl: 'https://randomuser.me/api/portraits/women/90.jpg',
-    matchPercentage: 79,
-    interests: ['Painting', 'Literature', 'Swimming'],
-    isOnline: true,
-    gender: 'Female',
-    sexualOrientation: 'Straight'
-  },
-  {
-    id: '6',
-    name: 'Arjun Kapoor',
-    age: 36,
-    specialty: 'Psychiatrist',
-    hospital: 'Columbia Asia',
-    city: 'Pune',
-    state: 'Maharashtra',
-    country: 'India',
-    imageUrl: 'https://randomuser.me/api/portraits/men/32.jpg',
-    matchPercentage: 76,
-    interests: ['Psychology', 'Chess', 'Running'],
-    isOnline: false,
-    gender: 'Male',
-    sexualOrientation: 'Straight'
-  },
-  {
-    id: '7',
-    name: 'Sarah Johnson',
-    age: 33,
-    specialty: 'Oncologist',
-    hospital: 'Mayo Clinic',
-    city: 'New York',
-    state: 'New York',
-    country: 'United States',
-    imageUrl: 'https://randomuser.me/api/portraits/women/22.jpg',
-    matchPercentage: 73,
-    interests: ['Running', 'Cycling', 'Podcasts'],
-    isOnline: true,
-    gender: 'Female',
-    sexualOrientation: 'Lesbian'
-  },
-  {
-    id: '8',
-    name: 'David Chen',
-    age: 37,
-    specialty: 'General Practitioner',
-    hospital: 'St. Mary\'s Hospital',
-    city: 'Toronto',
-    state: 'Ontario',
-    country: 'Canada',
-    imageUrl: 'https://randomuser.me/api/portraits/men/53.jpg',
-    matchPercentage: 70,
-    interests: ['Hiking', 'Cooking', 'Photography'],
-    isOnline: true,
-    gender: 'Male',
-    sexualOrientation: 'Straight'
-  }
+  // Sample data for doctor profiles
 ];
 
-// Sample data for countries
 const countries = [
   { value: 'india', label: 'India' },
   { value: 'united_states', label: 'United States' },
@@ -194,7 +65,6 @@ const countries = [
   { value: 'united_kingdom', label: 'United Kingdom' },
 ];
 
-// Sample data for states by country
 const statesByCountry = {
   india: [
     { value: 'maharashtra', label: 'Maharashtra' },
@@ -226,7 +96,6 @@ const statesByCountry = {
   ],
 };
 
-// Sample data for cities by state
 const citiesByState = {
   maharashtra: [
     { value: 'mumbai', label: 'Mumbai' },
@@ -339,7 +208,6 @@ const Matches = () => {
   const [usernameSearch, setUsernameSearch] = useState('');
   const [keywordSearch, setKeywordSearch] = useState('');
   
-  // Location filtering
   const [selectedCountry, setSelectedCountry] = useState<string | null>(null);
   const [selectedState, setSelectedState] = useState<string | null>(null);
   const [selectedCity, setSelectedCity] = useState<string | null>(null);
@@ -350,7 +218,6 @@ const Matches = () => {
   const [availableStates, setAvailableStates] = useState<{value: string, label: string}[]>([]);
   const [availableCities, setAvailableCities] = useState<{value: string, label: string}[]>([]);
 
-  // Update available states when country changes
   useEffect(() => {
     if (selectedCountry) {
       setAvailableStates(statesByCountry[selectedCountry as keyof typeof statesByCountry] || []);
@@ -363,7 +230,6 @@ const Matches = () => {
     }
   }, [selectedCountry]);
 
-  // Update available cities when state changes
   useEffect(() => {
     if (selectedState) {
       setAvailableCities(citiesByState[selectedState as keyof typeof citiesByState] || []);
@@ -374,7 +240,6 @@ const Matches = () => {
     }
   }, [selectedState]);
 
-  // Update pagination when filtered doctors change
   useEffect(() => {
     const totalPages = Math.ceil(filteredDoctors.length / ITEMS_PER_PAGE);
     setTotalPages(totalPages || 1);
@@ -383,7 +248,6 @@ const Matches = () => {
     }
   }, [filteredDoctors, currentPage]);
 
-  // Reset search term and filters when switching between basic and advanced search
   useEffect(() => {
     if (searchTab === 'basic') {
       setIsFilterVisible(false);
@@ -394,37 +258,29 @@ const Matches = () => {
     e.preventDefault();
     
     const filtered = doctorProfiles.filter(doctor => {
-      // Filter by search term (name, specialty, city)
       const matchesSearch = doctor.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
                             doctor.specialty.toLowerCase().includes(searchTerm.toLowerCase()) ||
                             doctor.city.toLowerCase().includes(searchTerm.toLowerCase()) ||
                             doctor.hospital.toLowerCase().includes(searchTerm.toLowerCase());
       
-      // Username search (exact or partial match)
       const matchesUsername = !usernameSearch || 
                             doctor.name.toLowerCase().includes(usernameSearch.toLowerCase());
       
-      // Keyword search (in interests, specialty, hospital)
       const matchesKeyword = !keywordSearch || 
                             doctor.interests.some(interest => interest.toLowerCase().includes(keywordSearch.toLowerCase())) ||
                             doctor.specialty.toLowerCase().includes(keywordSearch.toLowerCase()) ||
                             doctor.hospital.toLowerCase().includes(keywordSearch.toLowerCase());
       
-      // Filter by age range
       const matchesAge = doctor.age >= minAge[0] && doctor.age <= maxAge[0];
       
-      // Filter by specialties
       const matchesSpecialty = specialties.length === 0 || specialties.includes(doctor.specialty);
       
-      // Filter by online status
       const matchesOnlineStatus = !onlineOnly || doctor.isOnline;
       
-      // Filter by location
       const matchesCountry = !selectedCountry || doctor.country.toLowerCase() === countries.find(c => c.value === selectedCountry)?.label.toLowerCase();
       const matchesState = !selectedState || doctor.state.toLowerCase() === statesByCountry[selectedCountry as keyof typeof statesByCountry]?.find(s => s.value === selectedState)?.label.toLowerCase();
       const matchesCity = !selectedCity || doctor.city.toLowerCase() === citiesByState[selectedState as keyof typeof citiesByState]?.find(c => c.value === selectedCity)?.label.toLowerCase();
       
-      // Filter by sexual orientation
       const matchesOrientation = selectedOrientation.length === 0 || selectedOrientation.includes(doctor.sexualOrientation);
       
       return matchesSearch && matchesUsername && matchesKeyword && matchesAge && matchesSpecialty && 
@@ -537,7 +393,6 @@ const Matches = () => {
     setSearchTerm(search.searchKeywords);
     setSelectedSavedSearch(searchId);
 
-    // Apply this search immediately
     const event = { preventDefault: () => {} } as React.FormEvent;
     handleSearch(event);
 
@@ -618,7 +473,6 @@ const Matches = () => {
       {activeView === 'matches' && (
         <SidebarProvider defaultOpen={true}>
           <div className="flex flex-1 w-full">
-            {/* Sidebar */}
             <Sidebar variant="sidebar" collapsible="icon">
               <SidebarHeader className="flex justify-between items-center p-4 border-b">
                 <h2 className="text-lg font-semibold flex items-center">
@@ -782,14 +636,14 @@ const Matches = () => {
                     <SidebarGroupLabel>Skin Tone</SidebarGroupLabel>
                     <SidebarGroupContent className="p-4">
                       <Select 
-                        value={selectedColor} 
+                        value={selectedColor || "any_color"} 
                         onValueChange={setSelectedColor}
                       >
                         <SelectTrigger id="color">
                           <SelectValue placeholder="Select skin tone" />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="">Any</SelectItem>
+                          <SelectItem value="any_color">Any</SelectItem>
                           {colorList.map((color) => (
                             <SelectItem key={color} value={color}>
                               {color}
@@ -821,7 +675,6 @@ const Matches = () => {
               </SidebarContent>
             </Sidebar>
 
-            {/* Main content */}
             <main className="flex-grow p-4 md:p-8">
               <div className="max-w-7xl mx-auto">
                 <div className="flex flex-col md:flex-row justify-between items-center mb-8">
@@ -842,7 +695,6 @@ const Matches = () => {
                   </div>
                 </div>
                 
-                {/* Saved searches section */}
                 {showSavedSearches && (
                   <div className="mb-6 p-4 bg-white rounded-xl shadow-sm animate-fade-in">
                     <div className="flex justify-between items-center mb-4">
@@ -938,7 +790,6 @@ const Matches = () => {
                   </div>
                 )}
                 
-                {/* Results display */}
                 <div className="mb-4">
                   <div className="flex justify-between items-center">
                     <p className="text-gray-600">
@@ -958,7 +809,6 @@ const Matches = () => {
                   </div>
                 </div>
                 
-                {/* Results */}
                 {getPaginatedDoctors().length > 0 ? (
                   <>
                     <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
@@ -982,7 +832,6 @@ const Matches = () => {
                       ))}
                     </div>
                     
-                    {/* Pagination */}
                     {totalPages > 1 && (
                       <Pagination className="mb-8">
                         <PaginationContent>
@@ -999,7 +848,6 @@ const Matches = () => {
                           )}
                           
                           {Array.from({ length: totalPages }, (_, i) => i + 1).map((page) => {
-                            // Show first page, last page, and pages around current page
                             if (
                               page === 1 || 
                               page === totalPages || 
@@ -1021,7 +869,6 @@ const Matches = () => {
                               );
                             }
                             
-                            // Show ellipsis for gaps
                             if (page === 2 && currentPage > 3) {
                               return (
                                 <PaginationItem key="ellipsis-start">
