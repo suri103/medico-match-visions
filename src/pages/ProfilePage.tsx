@@ -262,7 +262,7 @@ const ProfilePage = () => {
                           id="name" 
                           defaultValue="Dr. Maya Reddy" 
                           disabled={!isEditing}
-                          className={!isEditing ? "bg-gray-50" : ""}
+                          className={!isEditing ? "bg-gray-50 text-gray-800" : ""}
                         />
                       </div>
                       
@@ -283,7 +283,7 @@ const ProfilePage = () => {
                             </SelectContent>
                           </Select>
                         ) : (
-                          <Input value="Cardiology" disabled className="bg-gray-50" />
+                          <Input value="Cardiology" disabled className="bg-gray-50 text-gray-800" />
                         )}
                       </div>
                       
@@ -293,7 +293,7 @@ const ProfilePage = () => {
                           id="hospital" 
                           defaultValue="Apollo Hospital" 
                           disabled={!isEditing}
-                          className={!isEditing ? "bg-gray-50" : ""}
+                          className={!isEditing ? "bg-gray-50 text-gray-800" : ""}
                         />
                       </div>
                       
@@ -303,7 +303,7 @@ const ProfilePage = () => {
                           id="location" 
                           defaultValue="Mumbai, Maharashtra" 
                           disabled={!isEditing}
-                          className={!isEditing ? "bg-gray-50" : ""}
+                          className={!isEditing ? "bg-gray-50 text-gray-800" : ""}
                         />
                       </div>
                       
@@ -314,7 +314,7 @@ const ProfilePage = () => {
                           type="number" 
                           defaultValue="8" 
                           disabled={!isEditing}
-                          className={!isEditing ? "bg-gray-50" : ""}
+                          className={!isEditing ? "bg-gray-50 text-gray-800" : ""}
                         />
                       </div>
                     </div>
@@ -329,7 +329,7 @@ const ProfilePage = () => {
                           rows={5}
                           defaultValue="I am a dedicated cardiologist with 8 years of experience. I'm passionate about preventive cardiology and enjoy working with patients to develop healthy lifestyle habits. Outside of work, I love yoga, reading, and exploring new cultures through travel." 
                           disabled={!isEditing}
-                          className={!isEditing ? "bg-gray-50" : ""}
+                          className={!isEditing ? "bg-gray-50 text-gray-800" : ""}
                         />
                       </div>
                       
@@ -377,7 +377,7 @@ const ProfilePage = () => {
                           rows={3}
                           defaultValue="I'm looking for someone who is intellectually curious, values work-life balance, and enjoys both deep conversations and lighthearted fun. Ideally, someone who understands the demands of medical profession." 
                           disabled={!isEditing}
-                          className={!isEditing ? "bg-gray-50" : ""}
+                          className={!isEditing ? "bg-gray-50 text-gray-800" : ""}
                         />
                       </div>
                     </div>
