@@ -28,10 +28,10 @@ const Index = () => {
                 Find Matches
               </Button>
               <Button 
-                variant="outline"
-                className="border-white text-white hover:bg-mediblue-700 text-lg px-8 py-6"
+                className="bg-white text-mediblue-700 hover:bg-blue-50 text-lg px-8 py-6"
                 onClick={() => navigate('/profile')}
               >
+                <User className="mr-2 h-5 w-5" />
                 Create Profile
               </Button>
             </div>
