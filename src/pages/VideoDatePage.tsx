@@ -24,9 +24,9 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import { VideoDateInvites } from '@/components/VideoDateInvites';
-import { VideoDateHistory } from '@/components/VideoDateHistory';
-import { VideoDateNotification } from '@/components/VideoDateNotification';
+import VideoDateInvites from '@/components/VideoDateInvites';
+import VideoDateHistory from '@/components/VideoDateHistory';
+import VideoDateNotification from '@/components/VideoDateNotification';
 import { Separator } from '@/components/ui/separator';
 
 // TypeScript interfaces for VideoDateInvite and VideoDateHistoryItem
@@ -313,27 +313,59 @@ const VideoDatePage: React.FC = () => {
                 </TabsContent>
                 
                 <TabsContent value="invites">
-                  <VideoDateInvites invites={pendingInvites} />
+                  <VideoDateInvites 
+                    invites={pendingInvites}
+                    onAccept={(id) => console.log('Accepted invite:', id)}
+                    onDecline={(id) => console.log('Declined invite:', id)}
+                    onReschedule={(id) => console.log('Reschedule invite:', id)}
+                  />
                 </TabsContent>
                 
                 <TabsContent value="history">
-                  <VideoDateHistory historyItems={dateHistory} />
+                  <VideoDateHistory 
+                    history={dateHistory} 
+                    onRebook={(doctorId) => console.log('Rebook with doctor:', doctorId)}
+                    onViewRecording={(sessionId) => console.log('View recording:', sessionId)}
+                  />
                 </TabsContent>
                 
                 <TabsContent value="notifications">
                   <h2 className="text-xl font-semibold mb-4">Notifications</h2>
                   <div className="space-y-3">
                     {notifications.map(notification => (
-                      <VideoDateNotification
-                        key={notification.id}
-                        id={notification.id}
-                        type={notification.type}
-                        title={notification.title}
-                        message={notification.message}
-                        timestamp={notification.timestamp}
-                        isRead={notification.isRead}
-                        onMarkAsRead={() => {}}
-                      />
+                      <Card key={notification.id} className="overflow-hidden">
+                        <CardContent className="p-4">
+                          <div className="flex items-start justify-between">
+                            <div className="flex items-start space-x-3">
+                              <div className={`p-2 rounded-full ${
+                                notification.type === 'reminder' ? 'bg-blue-100 text-blue-600' :
+                                notification.type === 'invite' ? 'bg-green-100 text-green-600' :
+                                'bg-amber-100 text-amber-600'
+                              }`}>
+                                {notification.type === 'reminder' ? 
+                                  <Clock className="h-5 w-5" /> : 
+                                  notification.type === 'invite' ? 
+                                  <MessageSquare className="h-5 w-5" /> :
+                                  <Calendar className="h-5 w-5" />}
+                              </div>
+                              <div>
+                                <p className={`font-medium ${!notification.isRead ? 'text-gray-900' : 'text-gray-600'}`}>
+                                  {notification.title}
+                                </p>
+                                <p className={`text-sm ${!notification.isRead ? 'text-gray-700' : 'text-gray-500'}`}>
+                                  {notification.message}
+                                </p>
+                                <p className="text-xs text-gray-400 mt-1">
+                                  {format(notification.timestamp, 'PPp')}
+                                </p>
+                              </div>
+                            </div>
+                            {!notification.isRead && (
+                              <Badge className="bg-blue-500">New</Badge>
+                            )}
+                          </div>
+                        </CardContent>
+                      </Card>
                     ))}
                   </div>
                 </TabsContent>
