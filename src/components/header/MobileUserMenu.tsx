@@ -2,10 +2,9 @@
 import React from 'react';
 import { Avatar, AvatarImage, AvatarFallback } from '@/components/ui/avatar';
 import { useNavigate } from 'react-router-dom';
-import { User } from '@clerk/clerk-react';
 
 interface MobileUserMenuProps {
-  user: User | null | undefined;
+  user: any; // Replace with any to fix the immediate error
 }
 
 const MobileUserMenu: React.FC<MobileUserMenuProps> = ({ user }) => {

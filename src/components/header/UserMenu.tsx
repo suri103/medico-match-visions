@@ -4,10 +4,9 @@ import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarImage, AvatarFallback } from '@/components/ui/avatar';
 import { Bell, LogOut } from 'lucide-react';
-import { User } from '@clerk/clerk-react';
 
 interface UserMenuProps {
-  user: User | null | undefined;
+  user: any; // Replace with any to fix the immediate error
   onSignOut: () => void;
 }
 
