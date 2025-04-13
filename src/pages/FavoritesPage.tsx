@@ -202,8 +202,8 @@ const FavoritesPage = () => {
     <div className="min-h-screen flex flex-col bg-gray-50">
       <Header />
       
-      <main className="flex-grow p-4 md:p-8">
-        <div className="max-w-7xl mx-auto">
+      <main className="flex-grow p-4 md:p-8 w-full overflow-x-hidden">
+        <div className="max-w-7xl mx-auto w-full">
           <div className="flex flex-col md:flex-row justify-between items-center mb-6">
             <h1 className="text-2xl md:text-3xl font-bold text-mediblue-800 mb-4 md:mb-0 flex items-center">
               <Star className="mr-2 text-amber-500" size={28} />

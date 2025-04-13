@@ -472,7 +472,7 @@ const Matches = () => {
       
       {activeView === 'matches' && (
         <SidebarProvider defaultOpen={true}>
-          <div className="flex flex-1 w-full">
+          <div className="flex flex-1 w-full overflow-x-hidden">
             <Sidebar variant="sidebar" collapsible="icon">
               <SidebarHeader className="flex justify-between items-center p-4 border-b">
                 <h2 className="text-lg font-semibold flex items-center">
@@ -675,8 +675,8 @@ const Matches = () => {
               </SidebarContent>
             </Sidebar>
 
-            <main className="flex-grow p-4 md:p-8">
-              <div className="max-w-7xl mx-auto">
+            <main className="flex-grow p-4 md:p-8 overflow-x-hidden w-full">
+              <div className="max-w-7xl mx-auto w-full">
                 <div className="flex flex-col md:flex-row justify-between items-center mb-8">
                   <h1 className="text-2xl md:text-3xl font-bold text-mediblue-800 mb-4 md:mb-0">
                     Your Matches
@@ -760,7 +760,7 @@ const Matches = () => {
                                   </Button>
                                   <Button 
                                     variant="ghost" 
-                                    size="icon"
+                                    size="icon" 
                                     onClick={() => editSavedSearch(search.id)}
                                     className="h-8 w-8"
                                   >
@@ -918,7 +918,7 @@ const Matches = () => {
       )}
       
       {activeView === 'video' && selectedDoctorData && (
-        <div className="flex-grow">
+        <div className="flex-grow overflow-x-hidden w-full">
           <VideoCall 
             doctorId={selectedDoctorData.id}
             doctorName={selectedDoctorData.name}
@@ -929,7 +929,7 @@ const Matches = () => {
       )}
       
       {activeView === 'chat' && selectedDoctorData && (
-        <div className="flex-grow p-4">
+        <div className="flex-grow p-4 overflow-x-hidden w-full">
           <div className="max-w-4xl mx-auto h-[80vh]">
             <Chat 
               doctorId={selectedDoctorData.id}
