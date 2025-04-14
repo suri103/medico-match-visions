@@ -9,12 +9,12 @@ const NotificationsList: React.FC = () => {
   const { notifications, getNotificationCount } = useNotifications();
 
   return (
-    <div className="p-4">
+    <div className="p-4 flex flex-col h-full overflow-hidden">
       <h3 className="text-lg font-semibold text-gray-700 mb-4">Notifications</h3>
       
       <NotificationStats getNotificationCount={getNotificationCount} />
       
-      <div className="space-y-4">
+      <div className="space-y-4 overflow-y-auto flex-grow pr-1 mt-4">
         {notifications && notifications.length > 0 ? (
           notifications.map((notification: Notification) => (
             <NotificationCard

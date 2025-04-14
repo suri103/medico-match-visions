@@ -2,9 +2,16 @@
 import React from 'react';
 import NavItem from './NavItem';
 import { 
-  Heart, User, Star, Video, MessageSquare, Trophy, Calendar, HelpCircle, CreditCard, LogOut
+  Heart, User, Star, Video, MessageSquare, Trophy, Calendar, HelpCircle, CreditCard, LogOut, MoreHorizontal
 } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger
+} from "@/components/ui/dropdown-menu";
+import { Button } from '@/components/ui/button';
 
 interface MobileNavProps {
   isOpen: boolean;
@@ -78,49 +85,56 @@ const MobileNav: React.FC<MobileNavProps> = ({ isOpen, onItemClick, onSignOut })
           className="flex items-center justify-start space-x-2 text-sm"
           iconSize={16}
         />
-        <NavItem 
-          path="/plan" 
-          icon={Calendar} 
-          label="Plan" 
-          isActive={isActive('/plan')} 
-          onClick={onItemClick}
-          className="flex items-center justify-start space-x-2 text-sm"
-          iconSize={16}
-        />
-        <NavItem 
-          path="/help" 
-          icon={HelpCircle} 
-          label="Help" 
-          isActive={isActive('/help')} 
-          onClick={onItemClick}
-          className="flex items-center justify-start space-x-2 text-sm"
-          iconSize={16}
-        />
-        <NavItem 
-          path="/astrologer" 
-          icon={CreditCard} 
-          label="Astrologer" 
-          isActive={isActive('/astrologer')} 
-          onClick={onItemClick}
-          className="flex items-center justify-start space-x-2 text-sm"
-          iconSize={16}
-        />
-        <NavItem 
-          path="/profile" 
-          icon={User} 
-          label="Profile" 
-          isActive={isActive('/profile')} 
-          onClick={onItemClick}
-          className="flex items-center justify-start space-x-2 text-sm"
-          iconSize={16}
-        />
+        
+        <div className="col-span-2 mt-2">
+          <h3 className="text-sm font-medium text-gray-500 px-2 py-1">More</h3>
+          <div className="grid grid-cols-2 gap-2 mt-1">
+            <NavItem 
+              path="/plan" 
+              icon={Calendar} 
+              label="Club Plan" 
+              isActive={isActive('/plan')} 
+              onClick={onItemClick}
+              className="flex items-center justify-start space-x-2 text-sm"
+              iconSize={16}
+            />
+            <NavItem 
+              path="/help" 
+              icon={HelpCircle} 
+              label="Help" 
+              isActive={isActive('/help')} 
+              onClick={onItemClick}
+              className="flex items-center justify-start space-x-2 text-sm"
+              iconSize={16}
+            />
+            <NavItem 
+              path="/astrologer" 
+              icon={CreditCard} 
+              label="Astrologer" 
+              isActive={isActive('/astrologer')} 
+              onClick={onItemClick}
+              className="flex items-center justify-start space-x-2 text-sm"
+              iconSize={16}
+            />
+            <NavItem 
+              path="/profile" 
+              icon={User} 
+              label="Profile" 
+              isActive={isActive('/profile')} 
+              onClick={onItemClick}
+              className="flex items-center justify-start space-x-2 text-sm"
+              iconSize={16}
+            />
+          </div>
+        </div>
+        
         <NavItem 
           path="#" 
           icon={LogOut} 
           label="Sign Out" 
           isActive={false} 
           onClick={onSignOut}
-          className="flex items-center justify-start space-x-2 text-red-500 hover:text-red-700 text-sm"
+          className="flex items-center justify-start space-x-2 text-red-500 hover:text-red-700 text-sm col-span-2 mt-2"
           iconSize={16}
         />
       </div>
