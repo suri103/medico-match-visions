@@ -12,6 +12,15 @@ interface SavedSearchesListProps {
   onSelect: (search: SavedSearch) => void;
   onDelete: (id: string) => void;
   onCreateNew: () => void;
+  // Added missing props that were causing type errors
+  selectedSavedSearch?: string;
+  showSavedSearches?: boolean;
+  countries?: any[];
+  statesByCountry?: Record<string, any[]>;
+  onHideSavedSearches?: () => void;
+  onLoadSavedSearch?: (search: SavedSearch) => void;
+  onEditSavedSearch?: (search: SavedSearch) => void;
+  onDeleteSavedSearch?: (id: string) => void;
 }
 
 const SavedSearchesList: React.FC<SavedSearchesListProps> = ({
@@ -35,7 +44,7 @@ const SavedSearchesList: React.FC<SavedSearchesListProps> = ({
             {savedSearches.map((search) => (
               <SavedSearchItem 
                 key={search.id} 
-                search={search} 
+                savedSearch={search} // Updated prop name to match component expectations
                 onSelect={() => onSelect(search)} 
                 onDelete={() => onDelete(search.id)} 
               />
@@ -43,9 +52,9 @@ const SavedSearchesList: React.FC<SavedSearchesListProps> = ({
           </div>
         ) : (
           <EmptyState 
-            title="No saved searches" 
+            message="No saved searches" 
             description="Save your search criteria for quick access later" 
-            icon="search"
+            iconName="search"
           />
         )}
       </CardContent>

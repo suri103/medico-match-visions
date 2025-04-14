@@ -113,17 +113,20 @@ const Matches = () => {
                   onSortChange={handleSortChange}
                 />
                 
-                <SavedSearchesList
-                  savedSearches={savedSearches}
-                  selectedSavedSearch={selectedSavedSearch}
-                  showSavedSearches={showSavedSearches}
-                  countries={countries}
-                  statesByCountry={statesByCountry}
-                  onHideSavedSearches={() => setShowSavedSearches(false)}
-                  onLoadSavedSearch={loadSavedSearch}
-                  onEditSavedSearch={editSavedSearch}
-                  onDeleteSavedSearch={deleteSavedSearch}
-                />
+                {showSavedSearches && (
+                  <SavedSearchesList
+                    savedSearches={savedSearches}
+                    onSelect={loadSavedSearch}
+                    onDelete={deleteSavedSearch}
+                    onCreateNew={() => {/* Add functionality for creating new saved search */}}
+                    selectedSavedSearch={selectedSavedSearch}
+                    showSavedSearches={showSavedSearches}
+                    onHideSavedSearches={() => setShowSavedSearches(false)}
+                    onLoadSavedSearch={loadSavedSearch}
+                    onEditSavedSearch={editSavedSearch}
+                    onDeleteSavedSearch={deleteSavedSearch}
+                  />
+                )}
                 
                 <DoctorsGrid
                   doctors={getPaginatedDoctors()}
