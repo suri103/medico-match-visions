@@ -34,17 +34,17 @@ const MessageItem: React.FC<MessageItemProps> = ({
       className={`p-3 border-b last:border-0 cursor-pointer transition-colors duration-150 
         ${isActive ? 'bg-mediblue-50 border-l-4 border-mediblue-500' : 'hover:bg-gray-50'}`}
     >
-      <div className="flex items-center">
+      <div className="flex items-center space-x-3">
         <Checkbox 
           checked={isSelected}
           onCheckedChange={() => onSelect(chat.id)}
-          className="mr-2"
+          className="shrink-0"
         />
         <div 
-          className="flex flex-1 items-center"
+          className="flex flex-1 items-center space-x-3 min-w-0"
           onClick={() => onSelectMessage(chat.id)}
         >
-          <div className="relative mr-3">
+          <div className="relative">
             <Avatar className="h-12 w-12">
               <img src={chat.imageUrl} alt={chat.name} className="object-cover" />
             </Avatar>
@@ -55,12 +55,12 @@ const MessageItem: React.FC<MessageItemProps> = ({
           
           <div className="flex-grow min-w-0">
             <div className="flex justify-between items-baseline">
-              <h3 className="font-medium text-gray-900 truncate">Dr. {chat.name}</h3>
+              <h3 className="font-medium text-gray-900 truncate max-w-[150px]">Dr. {chat.name}</h3>
               <span className="text-xs text-gray-500 whitespace-nowrap ml-2">
                 {formatMessageTime(chat.timestamp)}
               </span>
             </div>
-            <p className="text-sm text-gray-500 truncate">{chat.lastMessage}</p>
+            <p className="text-sm text-gray-500 truncate max-w-[250px]">{chat.lastMessage}</p>
           </div>
           
           {chat.unread > 0 && (
@@ -72,7 +72,7 @@ const MessageItem: React.FC<MessageItemProps> = ({
         
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="sm" className="ml-2 h-8 w-8 p-0">
+            <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
               <MoreVertical className="h-4 w-4" />
             </Button>
           </DropdownMenuTrigger>
