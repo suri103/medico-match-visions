@@ -20,6 +20,11 @@ import PlanPage from "./pages/PlanPage";
 import HelpPage from "./pages/HelpPage";
 import SignIn from "./components/auth/SignIn";
 import SignUp from "./components/auth/SignUp";
+import OnlinePage from "./pages/OnlinePage";
+import AccountPage from "./pages/AccountPage";
+import EventsPage from "./pages/EventsPage";
+import MyInterestsPage from "./pages/MyInterestsPage";
+import InterestedInYouPage from "./pages/InterestedInYouPage";
 
 const queryClient = new QueryClient();
 
@@ -57,13 +62,18 @@ const App = () => (
             
             {/* Protected routes */}
             <Route path="/" element={<ProtectedRoute><Index /></ProtectedRoute>} />
+            <Route path="/online" element={<ProtectedRoute><OnlinePage /></ProtectedRoute>} />
             <Route path="/matches" element={<ProtectedRoute><Matches /></ProtectedRoute>} />
             <Route path="/search" element={<ProtectedRoute><Search /></ProtectedRoute>} />
             <Route path="/favorites" element={<ProtectedRoute><FavoritesPage /></ProtectedRoute>} />
+            <Route path="/my-interests" element={<ProtectedRoute><MyInterestsPage /></ProtectedRoute>} />
+            <Route path="/interested-in-you" element={<ProtectedRoute><InterestedInYouPage /></ProtectedRoute>} />
             <Route path="/video-dates" element={<ProtectedRoute><VideoDatePage /></ProtectedRoute>} />
             <Route path="/video-match" element={<ProtectedRoute><VideoMatchPage /></ProtectedRoute>} />
             <Route path="/messages" element={<ProtectedRoute><MessagesPage /></ProtectedRoute>} />
             <Route path="/profile" element={<ProtectedRoute><ProfilePage /></ProtectedRoute>} />
+            <Route path="/account" element={<ProtectedRoute><AccountPage /></ProtectedRoute>} />
+            <Route path="/events" element={<ProtectedRoute><EventsPage /></ProtectedRoute>} />
             <Route path="/astrologer" element={<ProtectedRoute><AstrologerPage /></ProtectedRoute>} />
             <Route path="/success-stories" element={<ProtectedRoute><SuccessStoriesPage /></ProtectedRoute>} />
             <Route path="/plan" element={<ProtectedRoute><PlanPage /></ProtectedRoute>} />
