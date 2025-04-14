@@ -1,4 +1,3 @@
-
 import React from 'react';
 import Header from '@/components/Header';
 import VideoCall from '@/components/VideoCall';
@@ -12,6 +11,7 @@ import SearchSidebar from '@/features/matches/components/SearchSidebar';
 import SavedSearchesList from '@/features/matches/components/SavedSearchesList';
 import MatchesHeader from '@/features/matches/components/MatchesHeader';
 import DoctorsGrid from '@/features/matches/components/DoctorsGrid';
+import { SavedSearch } from '@/features/matches/types';
 
 const Matches = () => {
   const {
@@ -62,6 +62,18 @@ const Matches = () => {
     totalPages,
     filteredDoctors
   } = useMatches();
+
+  const handleLoadSavedSearch = (search: SavedSearch) => {
+    loadSavedSearch(search.id);
+  };
+  
+  const handleEditSavedSearch = (search: SavedSearch) => {
+    editSavedSearch(search.id);
+  };
+  
+  const handleDeleteSavedSearch = (id: string) => {
+    deleteSavedSearch(id);
+  };
 
   return (
     <div className="min-h-screen flex flex-col bg-gray-50">
@@ -116,15 +128,17 @@ const Matches = () => {
                 {showSavedSearches && (
                   <SavedSearchesList
                     savedSearches={savedSearches}
-                    onSelect={loadSavedSearch}
-                    onDelete={deleteSavedSearch}
+                    onSelect={handleLoadSavedSearch}
+                    onDelete={handleDeleteSavedSearch}
                     onCreateNew={() => {/* Add functionality for creating new saved search */}}
                     selectedSavedSearch={selectedSavedSearch}
                     showSavedSearches={showSavedSearches}
+                    countries={countries}
+                    statesByCountry={statesByCountry}
                     onHideSavedSearches={() => setShowSavedSearches(false)}
-                    onLoadSavedSearch={loadSavedSearch}
-                    onEditSavedSearch={editSavedSearch}
-                    onDeleteSavedSearch={deleteSavedSearch}
+                    onLoadSavedSearch={handleLoadSavedSearch}
+                    onEditSavedSearch={handleEditSavedSearch}
+                    onDeleteSavedSearch={handleDeleteSavedSearch}
                   />
                 )}
                 

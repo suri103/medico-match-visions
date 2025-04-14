@@ -27,7 +27,10 @@ const SavedSearchesList: React.FC<SavedSearchesListProps> = ({
   savedSearches,
   onSelect,
   onDelete,
-  onCreateNew
+  onCreateNew,
+  selectedSavedSearch,
+  countries,
+  statesByCountry
 }) => {
   return (
     <Card className="mt-4">
@@ -44,17 +47,20 @@ const SavedSearchesList: React.FC<SavedSearchesListProps> = ({
             {savedSearches.map((search) => (
               <SavedSearchItem 
                 key={search.id} 
-                savedSearch={search} // Updated prop name to match component expectations
+                savedSearch={search}
                 onSelect={() => onSelect(search)} 
-                onDelete={() => onDelete(search.id)} 
+                onDelete={() => onDelete(search.id)}
+                selectedSearchId={selectedSavedSearch}
+                countries={countries}
+                statesByCountry={statesByCountry}
               />
             ))}
           </div>
         ) : (
           <EmptyState 
-            message="No saved searches" 
+            title="No saved searches" 
             description="Save your search criteria for quick access later" 
-            iconName="search"
+            icon="search"
           />
         )}
       </CardContent>

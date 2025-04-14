@@ -6,47 +6,47 @@ import { Search, Edit, Delete, MapPin } from 'lucide-react';
 import { SavedSearch } from '../types';
 
 interface SavedSearchItemProps {
-  search: SavedSearch;
-  selectedSearchId: string | null;
-  countries: Array<{ value: string; label: string }>;
-  statesByCountry: Record<string, Array<{ value: string; label: string }>>;
-  onLoad: (id: string) => void;
-  onEdit: (id: string) => void;
-  onDelete: (id: string) => void;
+  savedSearch: SavedSearch; // Changed from 'search' to 'savedSearch'
+  onSelect: () => void;
+  onDelete: () => void;
+  selectedSearchId?: string | null;
+  countries?: Array<{ value: string; label: string }>;
+  statesByCountry?: Record<string, Array<{ value: string; label: string }>>;
+  onLoad?: () => void;
+  onEdit?: () => void;
 }
 
 const SavedSearchItem: React.FC<SavedSearchItemProps> = ({
-  search,
+  savedSearch, // Updated prop name
+  onSelect,
+  onDelete,
   selectedSearchId,
   countries,
   statesByCountry,
-  onLoad,
-  onEdit,
-  onDelete
 }) => {
   return (
-    <TableRow className={selectedSearchId === search.id ? "bg-blue-50" : ""}>
-      <TableCell className="font-medium">{search.name}</TableCell>
+    <TableRow className={selectedSearchId === savedSearch.id ? "bg-blue-50" : ""}>
+      <TableCell className="font-medium">{savedSearch.name}</TableCell>
       <TableCell>
         <div className="text-sm text-gray-600">
-          {search.specialties.length > 0 && 
+          {savedSearch.specialties.length > 0 && 
             <span className="mr-3">
-              {search.specialties.join(", ")}
+              {savedSearch.specialties.join(", ")}
             </span>
           }
-          {(search.minAge[0] !== 25 || search.maxAge[0] !== 45) && 
+          {(savedSearch.minAge[0] !== 25 || savedSearch.maxAge[0] !== 45) && 
             <span className="mr-3">
-              {search.minAge[0]}-{search.maxAge[0]} y/o
+              {savedSearch.minAge[0]}-{savedSearch.maxAge[0]} y/o
             </span>
           }
-          {search.country && 
+          {savedSearch.country && 
             <span className="mr-3 flex items-center">
               <MapPin size={12} className="mr-1" />
-              {countries.find(c => c.value === search.country)?.label}
-              {search.state && `, ${statesByCountry[search.country as keyof typeof statesByCountry]?.find(s => s.value === search.state)?.label}`}
+              {countries?.find(c => c.value === savedSearch.country)?.label || savedSearch.country}
+              {savedSearch.state && `, ${statesByCountry?.[savedSearch.country as string]?.find(s => s.value === savedSearch.state)?.label || savedSearch.state}`}
             </span>
           }
-          {search.onlineOnly && 
+          {savedSearch.onlineOnly && 
             <span className="text-green-600 font-medium">Online only</span>
           }
         </div>
@@ -55,7 +55,7 @@ const SavedSearchItem: React.FC<SavedSearchItemProps> = ({
         <Button 
           variant="ghost" 
           size="icon" 
-          onClick={() => onLoad(search.id)}
+          onClick={onSelect}
           className="h-8 w-8"
         >
           <Search size={14} />
@@ -63,7 +63,7 @@ const SavedSearchItem: React.FC<SavedSearchItemProps> = ({
         <Button 
           variant="ghost" 
           size="icon" 
-          onClick={() => onEdit(search.id)}
+          onClick={onSelect}
           className="h-8 w-8"
         >
           <Edit size={14} />
@@ -71,7 +71,7 @@ const SavedSearchItem: React.FC<SavedSearchItemProps> = ({
         <Button 
           variant="ghost" 
           size="icon" 
-          onClick={() => onDelete(search.id)}
+          onClick={onDelete}
           className="h-8 w-8 text-red-500 hover:text-red-600"
         >
           <Delete size={14} />
