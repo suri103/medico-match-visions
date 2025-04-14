@@ -10,6 +10,7 @@ import NotFound from "./pages/NotFound";
 import Matches from "./pages/Matches";
 import Search from "./pages/Search";
 import VideoDatePage from "./pages/VideoDatePage";
+import VideoMatchPage from "./pages/VideoMatchPage";
 import MessagesPage from "./pages/MessagesPage";
 import ProfilePage from "./pages/ProfilePage";
 import AstrologerPage from "./pages/AstrologerPage";
@@ -60,6 +61,7 @@ const App = () => (
             <Route path="/search" element={<ProtectedRoute><Search /></ProtectedRoute>} />
             <Route path="/favorites" element={<ProtectedRoute><FavoritesPage /></ProtectedRoute>} />
             <Route path="/video-dates" element={<ProtectedRoute><VideoDatePage /></ProtectedRoute>} />
+            <Route path="/video-match" element={<ProtectedRoute><VideoMatchPage /></ProtectedRoute>} />
             <Route path="/messages" element={<ProtectedRoute><MessagesPage /></ProtectedRoute>} />
             <Route path="/profile" element={<ProtectedRoute><ProfilePage /></ProtectedRoute>} />
             <Route path="/astrologer" element={<ProtectedRoute><AstrologerPage /></ProtectedRoute>} />
