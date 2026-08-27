@@ -862,6 +862,38 @@ export async function getActiveMembershipSku(userId) {
   return res.rows[0]?.sku ?? null;
 }
 
+// ---------------------------------------------------------------------------
+// Favorites (M-9): persisted to the favorites table so wired accounts keep
+// their shortlist of favorite profiles across devices. Best-effort mirrors on
+// the client keep demo mode working unchanged.
+// ---------------------------------------------------------------------------
+
+export async function listFavorites(userId) {
+  const res = await query(
+    `SELECT p.id FROM favorites f JOIN profiles p ON p.id = f.profile_id
+     WHERE f.user_id = $1 ORDER BY f.created_at DESC LIMIT 200`,
+    [userId]
+  );
+  return res.rows.map((r) => r.id);
+}
+
+export async function addFavorite(userId, profileId) {
+  await query(
+    `INSERT INTO favorites (user_id, profile_id) VALUES ($1,$2)
+     ON CONFLICT DO NOTHING`,
+    [userId, profileId]
+  );
+  return { added: true };
+}
+
+export async function removeFavorite(userId, profileId) {
+  const res = await query(
+    `DELETE FROM favorites WHERE user_id = $1 AND profile_id = $2 RETURNING profile_id`,
+    [userId, profileId]
+  );
+  return { removed: res.rowCount > 0 };
+}
+
 export async function cancelBilling(userId) {
   const res = await query(
     `UPDATE subscriptions SET status = 'canceling', cancel_at_period_end = TRUE

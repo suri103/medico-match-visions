@@ -211,6 +211,25 @@ export async function withdrawInterest(interestId: string): Promise<boolean> {
 // Blocks / reports
 // ---------------------------------------------------------------------------
 
+export async function listFavoriteIds(): Promise<string[] | null> {
+  const out = await call<{ favorites: string[] }>("/api/favorites");
+  return out?.favorites ?? null;
+}
+
+export async function addFavoriteRemote(profileId: string): Promise<boolean> {
+  const out = await callOrError("/api/favorites", {
+    method: "POST",
+    body: JSON.stringify({ profileId }),
+  });
+  return out.error === null;
+}
+
+export async function removeFavoriteRemote(profileId: string): Promise<boolean> {
+  const out = await callOrError(`/api/favorites/${encodeURIComponent(profileId)}`, {
+    method: "DELETE",
+  });
+  return out.error === null;
+}
 export async function listBlockedUsers(): Promise<{ id: string; name: string; imageUrl?: string | null }[] | null> {
   const out = await call<{ blocked: { id: string; name: string; imageUrl?: string | null }[] }>("/api/blocks");
   return out?.blocked ?? null;

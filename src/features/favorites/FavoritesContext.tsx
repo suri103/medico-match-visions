@@ -13,6 +13,7 @@ import {
   sendInterest as serverSendInterest, withdrawInterest as serverWithdrawInterest,
   respondInterest as serverRespondInterest,
   blockUser as serverBlockUser, unblockUser as serverUnblockUser,
+  listFavoriteIds, addFavoriteRemote, removeFavoriteRemote,
 } from "@/services/api";
 
 export type ConnectionStatus = 'pending' | 'matched' | 'passed' | 'blocked';
@@ -166,9 +167,26 @@ export const FavoritesProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
   }, [sessionKey]);
 
+  // M-9: hydrate favorites from the durable store once per session, then
+  // mirror mutations. Local state remains the immediate UI source.
   useEffect(() => {
     if (!hasServerSession()) return;
     let cancelled = false;
+    listFavoriteIds().then((ids) => {
+      if (!ids || cancelled || ids.length === 0) return;
+      setFavorites((prev) => {
+        const have = new Set(prev.map((x) => x.id));
+        const merged = prev.map((d) => ({ ...d }));
+        for (const id of ids) {
+          if (have.has(id)) continue;
+          // Details resolve lazily: sample pool first, otherwise an id-only
+          // stub that renders with fallbacks until the profile is browsed.
+          const doc = doctorProfiles.find((x) => x.id === id);
+          merged.push((doc ? { ...doc } : { id, name: `Profile ${id}`, age: 0, specialty: "", degree: "", hospital: "", city: "", state: "", country: "India", imageUrl: localAvatar(`Profile ${id}`), matchPercentage: 0, interests: [], isOnline: false, sexualOrientation: "Straight" }) as Doctor);
+        }
+        return merged;
+      });
+    }).catch(() => {});
     (async () => {
       const data = await serverListInterests();
       if (!data || cancelled) return;
@@ -272,12 +290,21 @@ export const FavoritesProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   const toggleFavorite = useCallback(
     (doctor: Doctor) => {
+      let nowAdded = false;
       setFavorites((prev) => {
         if (prev.some((d) => d.id === doctor.id)) {
+          nowAdded = false;
           return prev.filter((d) => d.id !== doctor.id);
         }
+        nowAdded = true;
         return [...prev, { ...doctor, isFavorite: true }];
       });
+      // Durable mirror on the wired backend (best-effort; audit M-9).
+      if (hasServerSession()) {
+        queueMicrotask(() => {
+          void (nowAdded ? addFavoriteRemote(doctor.id) : removeFavoriteRemote(doctor.id)).catch(() => {});
+        });
+      }
     },
     [setFavorites]
   );

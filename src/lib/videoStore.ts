@@ -115,6 +115,10 @@ export function ensureRecording(opts: {
 }): VideoRecording {
   const existing = loadRecordings().find((r) => r.id === opts.id);
   if (existing) return existing;
+  // Audit M-3: production has no footage for a call that was never stored -
+  // persisting an empty-URL row rendered an empty player instead of an honest
+  // "no recording" state and polluted storage. Only demo builds fabricate the
+  // sample clip; prod returns a transient in-memory answer with no URL.
   const created: VideoRecording = {
     id: opts.id,
     doctorName: opts.doctorName,
@@ -123,6 +127,6 @@ export function ensureRecording(opts: {
     recordedAt: new Date().toISOString(),
     duration: opts.duration,
   };
-  saveRecording(created);
+  if (demoModeEnabled) saveRecording(created);
   return created;
 }

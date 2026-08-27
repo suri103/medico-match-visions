@@ -74,10 +74,11 @@ if (process.env.NODE_ENV === "production") {
   if (!process.env.RESEND_API_KEY) {
     bootErrors.push("RESEND_API_KEY is required in production — email transport must never fall back to logging tokens.");
   }
+  // Audit M-5: webhooks carry refunds and the server-side activation backstop.
+  // A deployment without the secret would run "half-billing" (verify-only)
+  // while every other misconfiguration hard-fails here - so fail closed too.
   if (!process.env.RAZORPAY_WEBHOOK_SECRET) {
-    console.warn(
-      "[boot] RAZORPAY_WEBHOOK_SECRET is not set — payment webhooks will be rejected until it is configured."
-    );
+    bootErrors.push("RAZORPAY_WEBHOOK_SECRET is required in production - webhook-based activation and refund handling cannot work without it.");
   }
   if (bootErrors.length > 0) {
     console.error("Refusing to start:\n  - " + bootErrors.join("\n  - "));
@@ -1353,6 +1354,20 @@ app.post("/api/interests/:id/respond", rateLimitMiddleware, requireDbUser, wrap(
 
 app.delete("/api/interests/:id", rateLimitMiddleware, requireDbUser, wrap(async (req, res) => {
   res.json(await domain.withdrawInterest(req.user.id, req.params.id));
+}));
+
+app.get("/api/favorites", requireDbUser, wrap(async (req, res) => {
+  res.json({ favorites: await domain.listFavorites(req.user.id) });
+}));
+
+app.post("/api/favorites", rateLimitMiddleware, requireDbUser, wrap(async (req, res) => {
+  const { profileId } = req.body || {};
+  if (typeof profileId !== "string" || !profileId) return res.status(400).json({ error: "profileId is required." });
+  res.json(await domain.addFavorite(req.user.id, profileId));
+}));
+
+app.delete("/api/favorites/:profileId", rateLimitMiddleware, requireDbUser, wrap(async (req, res) => {
+  res.json(await domain.removeFavorite(req.user.id, req.params.profileId));
 }));
 
 app.get("/api/channels", requireDbUser, wrap(async (req, res) => {
