@@ -151,11 +151,11 @@ export async function upsertMyProfile(userId, baseUser, input) {
   const displayName = `${baseUser.firstName} ${baseUser.lastName}`.trim() || baseUser.email;
   await withTx(async (c) => {
     await c.query(
-      `INSERT INTO app_users (id, email, first_name, last_name, specialty, degree)
-       VALUES ($1,$2,$3,$4,$5,$6)
+      `INSERT INTO app_users (id, email, first_name, last_name, specialty, degree, verified)
+       VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7, FALSE))
        ON CONFLICT (id) DO UPDATE SET
          first_name = EXCLUDED.first_name, last_name = EXCLUDED.last_name`,
-      [userId, baseUser.email, baseUser.firstName, baseUser.lastName, baseUser.specialty, baseUser.degree]
+      [userId, baseUser.email, baseUser.firstName, baseUser.lastName, baseUser.specialty, baseUser.degree, baseUser.verified ?? null]
     );
     const keys = Object.keys(values);
     if (keys.length === 0) {
@@ -849,6 +849,19 @@ export async function recordCapturedPayment({ paymentId, orderId, userId, sku, a
 // basic. Refunds (money returned) revoke immediately via recordRefund.
 // ---------------------------------------------------------------------------
 
+/** Top-ranked ACTIVE unexpired membership sku for a user, or null (basic).
+ * Used by redeem to mirror display-side entitlement from billing truth (H-5). */
+export async function getActiveMembershipSku(userId) {
+  const res = await query(
+    `SELECT p.sku FROM subscriptions s JOIN plans p ON p.sku = s.sku
+     WHERE s.user_id = $1 AND s.status = 'active' AND s.current_period_end > NOW()
+       AND p.kind = 'membership'
+     ORDER BY p.rank DESC LIMIT 1`,
+    [userId]
+  );
+  return res.rows[0]?.sku ?? null;
+}
+
 export async function cancelBilling(userId) {
   const res = await query(
     `UPDATE subscriptions SET status = 'canceling', cancel_at_period_end = TRUE
@@ -946,10 +959,15 @@ export async function listAdminUsers(q, limit = 50) {
             s.sku AS plan,
             p.full_name AS profile_name
      FROM app_users u
-     LEFT JOIN subscriptions s ON s.user_id = u.id
+     LEFT JOIN LATERAL (
+       SELECT s2.sku FROM subscriptions s2 JOIN plans p2 ON p2.sku = s2.sku
+       WHERE s2.user_id = u.id
+       ORDER BY p2.rank DESC, s2.current_period_end DESC NULLS LAST
+       LIMIT 1
+     ) s ON TRUE
      LEFT JOIN profiles p ON p.user_id = u.id
      WHERE ${where}
-     ORDER BY u.created_at DESC LIMIT $${params.length}`,
+     ORDER BY u.created_at DESC LIMIT ${params.length}`,
     params
   );
   return res.rows.map((r) => ({

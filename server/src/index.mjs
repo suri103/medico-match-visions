@@ -204,6 +204,40 @@ const verifySessionToken = (token) => {
 // Extracts and verifies the Bearer session, attaching req.user when valid.
 // Suspended accounts authenticate nowhere: the flag lives on the canonical
 // auth store (users.json) so it is enforced in every mode, instantly.
+// Admin flags (audit H-1): users.json is the fast path, but in DB mode the
+// promote/demote endpoints mutate app_users.is_admin / is_root_admin. The two
+// stores previously diverged silently and authorization answered from the
+// stale JSON mirror. Now a JSON row WITHOUT any admin flag defers to a cached
+// DB read (30s TTL), so rosters promoted via SQL or the console are honored,
+// while promotion/demotion through this process invalidates the cache for an
+// instant effect. Suspension stays synchronous on the canonical auth store.
+const ADMIN_FLAG_TTL_MS = 30_000;
+const adminFlagCache = new Map(); // userId -> { v: [isAdmin, isRootAdmin], exp }
+
+async function resolveAdminFlags(user) {
+  if (!dbEnabled) return [Boolean(user.isAdmin), Boolean(user.isRootAdmin)];
+  const hit = adminFlagCache.get(user.id);
+  if (hit && hit.exp > Date.now()) return hit.v;
+  let v;
+  try {
+    const r = await query(`SELECT is_admin, is_root_admin FROM app_users WHERE id = $1`, [user.id]);
+    if (r.rowCount > 0) {
+      v = [Boolean(r.rows[0].is_admin) || Boolean(user.isAdmin), Boolean(r.rows[0].is_root_admin)];
+    } else {
+      // No mirrored row (legacy edge): fall back to the JSON store only.
+      v = [Boolean(user.isAdmin), Boolean(user.isRootAdmin)];
+    }
+  } catch (err) {
+    console.error(JSON.stringify({ level: "error", msg: "admin_flag_lookup_failed", userId: user.id, error: String(err) }));
+    // A transient DB blip must not lock admins out: prefer the mirror.
+    v = [Boolean(user.isAdmin), Boolean(user.isRootAdmin)];
+  }
+  adminFlagCache.set(user.id, { v, exp: Date.now() + ADMIN_FLAG_TTL_MS });
+  return v;
+}
+
+const invalidateAdminFlagCache = (userId) => adminFlagCache.delete(userId);
+
 const sessionMiddleware = (req, res, next) => {
   const header = req.headers.authorization || "";
   const match = /^Bearer (.+)$/.exec(header);
@@ -214,10 +248,16 @@ const sessionMiddleware = (req, res, next) => {
       if (u.suspended) {
         return res.status(403).json({ error: "This account has been suspended. Contact support." });
       }
-      const { id, email, firstName, lastName, specialty, degree } = u;
-      req.user = { id, email, firstName, lastName, specialty, degree };
-      req.isAdmin = Boolean(u.isAdmin) || Boolean(u.isRootAdmin);
-      req.isRootAdmin = Boolean(u.isRootAdmin);
+      resolveAdminFlags(u)
+        .then(([dbAdmin, dbRoot]) => {
+          const { id, email, firstName, lastName, specialty, degree } = u;
+          req.user = { id, email, firstName, lastName, specialty, degree };
+          req.isAdmin = Boolean(u.isAdmin) || Boolean(u.isRootAdmin) || dbAdmin;
+          req.isRootAdmin = Boolean(u.isRootAdmin) || dbRoot;
+          next();
+        })
+        .catch(() => next());
+      return;
     }
   }
   next();
@@ -522,9 +562,15 @@ app.post(
         });
         console.log(JSON.stringify({ level: "info", msg: "webhook_refund_processed", type, refundId: refundEntity.id, result: out.result }));
         if (out.result === "applied" && out.userId) {
-          // Policy mirror: refunded memberships drop to basic immediately.
-          entitlements[out.userId] = { sku: "basic", activatedAt: new Date().toISOString(), paymentId: "" };
-          persistEntitlements();
+          // Unified policy mirror (audit H-3): a refunded MEMBERSHIP downgrades
+          // the mirror to basic only when nothing is set or the current entry
+          // is a membership. Consultation entitlements are never clobbered by
+          // a membership refund, and an existing basic is not refreshed.
+          const current = entitlements[out.userId];
+          if (!current || MEMBERSHIP_SKUS.indexOf(current.sku) !== -1) {
+            entitlements[out.userId] = { sku: "basic", activatedAt: new Date().toISOString(), paymentId: "" };
+            persistEntitlements();
+          }
         }
         return;
       }
@@ -680,7 +726,10 @@ app.post("/api/auth/register", async (req, res) => {
     try {
       await domain.upsertMyProfile(
         user.id,
-        { email: user.email, firstName: user.firstName, lastName: user.lastName, specialty: user.specialty, degree: user.degree },
+        // Mirror the REAL verification state (false at registration); the
+        // verify-email endpoint keeps app_users.verified in sync afterwards,
+        // so the admin console reports true status (audit H-2 slice).
+        { email: user.email, firstName: user.firstName, lastName: user.lastName, specialty: user.specialty, degree: user.degree, verified: false },
         { full_name: `Dr. ${user.firstName} ${user.lastName}`.trim(), specialty: user.specialty || null, degree: user.degree || null }
       );
     } catch (err) {
@@ -741,6 +790,14 @@ app.post("/api/auth/verify-email", (req, res) => {
     user.verified = true;
     user.emailVerifiedAt = new Date().toISOString();
     persistUsers();
+    // Keep the DB mirror's verification status truthful (audit H-2 slice):
+    // the admin console reads app_users.verified, which previously stayed
+    // FALSE forever after email verification.
+    if (dbEnabled) {
+      query(`UPDATE app_users SET verified = TRUE WHERE id = $1`, [userId]).catch((err) => {
+        console.error(JSON.stringify({ level: "error", msg: "verify_mirror_failed", userId, error: String(err) }));
+      });
+    }
   }
   res.json({ token: issueSessionToken(user.id), user: publicUser(user) });
 });
@@ -1119,8 +1176,27 @@ app.post("/api/razorpay/redeem", async (req, res) => {
   // themselves; consultations are a separate product and never overwrite a
   // membership, and a membership always wins over a prior consultation (H3).
   const isMembership = membershipRank(parsed.sku) !== -1;
-  const current = entitlements[req.user.id];
-  const currentIsMembership = current ? membershipRank(current.sku) !== -1 : false;
+  // H-5: in DB mode the SOURCE OF TRUTH for "current plan" is the
+  // subscriptions table (window-extension semantics live there via
+  // recordCapturedPayment). Ranking the display mirror against itself could
+  // disagree with billing reality (e.g. equal-rank repurchase extended in the
+  // DB but "downgraded-looking" here). DB truth wins whenever available.
+  let current = entitlements[req.user.id];
+  let currentIsMembership = current ? membershipRank(current.sku) !== -1 : false;
+  if (dbEnabled) {
+    try {
+      const truthSku = await domain.getActiveMembershipSku(req.user.id);
+      if (truthSku) {
+        current = { sku: truthSku };
+        currentIsMembership = true;
+      } else {
+        current = undefined;
+        currentIsMembership = false;
+      }
+    } catch (err) {
+      console.error(JSON.stringify({ level: "error", msg: "redeem_truth_lookup_failed", error: String(err) }));
+    }
+  }
   if (isMembership) {
     const currentRank = currentIsMembership ? membershipRank(current.sku) : -1;
     if (!current || !currentIsMembership || membershipRank(parsed.sku) >= currentRank) {
@@ -1512,6 +1588,7 @@ app.post("/api/admin/users/:id/promote-admin", requireAdmin, wrap(async (req, re
   if (target.isRootAdmin) return res.status(400).json({ error: "Root admins are managed via ADMIN_EMAILS." });
   target.isAdmin = true;
   persistUsers();
+  invalidateAdminFlagCache(target.id);
   if (dbEnabled) {
     await query(`UPDATE app_users SET is_admin = TRUE WHERE id = $1`, [target.id]).catch(() => {});
   }
@@ -1526,6 +1603,7 @@ app.post("/api/admin/users/:id/demote-admin", requireAdmin, wrap(async (req, res
   if (target.isRootAdmin) return res.status(400).json({ error: "Root admins are managed via ADMIN_EMAILS." });
   target.isAdmin = false;
   persistUsers();
+  invalidateAdminFlagCache(target.id);
   if (dbEnabled) {
     await query(`UPDATE app_users SET is_admin = FALSE WHERE id = $1`, [target.id]).catch(() => {});
   }
@@ -1639,9 +1717,9 @@ app.post("/api/admin/refunds", rateLimitMiddleware, requireAdmin, wrap(async (re
   });
   await domain.writeAudit(req.user.id, "refund.initiate", paymentId, `refund=${data.id} amount=${data.amount}`);
   if (out.result === "applied" && out.userId) {
-    const rank = (s) => MEMBERSHIP_SKUS.indexOf(s);
+    // Same unified policy mirror as the webhook path (audit H-3).
     const current = entitlements[out.userId];
-    if (!current || rank(current.sku) > rank("basic")) {
+    if (!current || MEMBERSHIP_SKUS.indexOf(current.sku) !== -1) {
       entitlements[out.userId] = { sku: "basic", activatedAt: new Date().toISOString(), paymentId: "" };
       persistEntitlements();
     }
