@@ -4,6 +4,13 @@ import Header from '@/components/Header';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useToast } from '@/hooks/use-toast';
+import { useNavigate } from 'react-router-dom';
+
+// Support address is deploy-configurable so a staging/prod build never points
+// users at an inbox nobody reads (audit L7).
+const SUPPORT_EMAIL =
+  (import.meta.env.VITE_SUPPORT_EMAIL as string | undefined) || 'support@medicomatch.in';
+
 import { 
   HelpCircle, Search, ChevronDown, ChevronUp, Mail, MessageSquare, 
   PhoneCall, FileText, ClipboardCheck, BookOpen, User, Shield 
@@ -90,6 +97,7 @@ const faqs: FaqItem[] = [
 
 const HelpPage = () => {
   const { toast } = useToast();
+  const navigate = useNavigate();
   const [searchTerm, setSearchTerm] = useState('');
   const [expandedFaqs, setExpandedFaqs] = useState<string[]>([]);
   const [activeTab, setActiveTab] = useState('faqs');
@@ -115,16 +123,15 @@ const HelpPage = () => {
   
   const handleContactSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    toast({
-      title: "Message sent",
-      description: "We've received your message and will respond shortly.",
-    });
-    setContactForm({
-      name: '',
-      email: '',
-      subject: '',
-      message: ''
-    });
+    if (!contactForm.name.trim() || !contactForm.email.trim() || !contactForm.message.trim()) {
+      toast({ title: "Missing information", description: "Please fill in name, email and message.", variant: "destructive" });
+      return;
+    }
+    const prev = JSON.parse(localStorage.getItem('mm:supportMessages') || '[]');
+    prev.push({ ...contactForm, at: new Date().toISOString() });
+    localStorage.setItem('mm:supportMessages', JSON.stringify(prev.slice(-50)));
+    toast({ title: "Message recorded", description: "Your message has been saved on this device. Our support team will reach out once live support launches." });
+    setContactForm({ name: '', email: '', subject: '', message: '' });
   };
   
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
@@ -191,6 +198,14 @@ const HelpPage = () => {
                   <BookOpen className="mr-2" size={16} />
                   FAQs
                 </TabsTrigger>
+                <TabsTrigger value="terms" className="flex items-center">
+                  <FileText className="mr-2" size={16} />
+                  Terms
+                </TabsTrigger>
+                <TabsTrigger value="privacy" className="flex items-center">
+                  <Shield className="mr-2" size={16} />
+                  Privacy
+                </TabsTrigger>
                 <TabsTrigger value="contact" className="flex items-center">
                   <Mail className="mr-2" size={16} />
                   Contact Us
@@ -202,17 +217,18 @@ const HelpPage = () => {
               <div className="grid md:grid-cols-4 gap-6">
                 <div className="md:col-span-1">
                   <Card>
-                    <CardHeader>
-                      <CardTitle className="text-lg">Topics</CardTitle>
+                    <CardHeader className="p-3 sm:p-6 pb-2 sm:pb-3">
+                      <CardTitle className="text-base sm:text-lg">Topics</CardTitle>
                     </CardHeader>
-                    <CardContent className="p-0">
+                    <CardContent className="p-2 sm:p-0">
                       <nav>
-                        <ul className="space-y-1">
+                        <ul className="flex md:flex-col gap-1 overflow-x-auto pb-2 md:pb-0">
                           {categories.map(category => (
-                            <li key={category.id}>
+                            <li key={category.id} className="shrink-0 md:shrink">
                               <Button
                                 variant="ghost"
-                                className={`w-full justify-start ${selectedCategory === category.id ? 'bg-mediblue-50 text-mediblue-700' : ''}`}
+                                size="sm"
+                                className={`w-full justify-start text-xs sm:text-sm whitespace-nowrap ${selectedCategory === category.id ? 'bg-mediblue-50 text-mediblue-700 font-semibold' : ''}`}
                                 onClick={() => setSelectedCategory(category.id)}
                               >
                                 {category.icon}
@@ -298,6 +314,80 @@ const HelpPage = () => {
               </div>
             </TabsContent>
             
+            <TabsContent value="terms">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Terms of Service</CardTitle>
+                  <CardDescription>Last updated: {new Date().toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })}. Template — have counsel review before commercial launch.</CardDescription>
+                </CardHeader>
+                <CardContent className="text-sm text-slate-700 space-y-4 prose prose-sm max-w-none">
+                  <div>
+                    <h4 className="font-semibold">1. Eligibility</h4>
+                    <p>MedicoMatch is a matrimonial platform for medical and healthcare professionals. You must be at least 21 years (men) or 18 years (women) of age, unmarried, divorced or legally separated, and legally competent to contract under the Indian Contract Act, 1872.</p>
+                  </div>
+                  <div>
+                    <h4 className="font-semibold">2. Your account</h4>
+                    <p>You are responsible for the accuracy of your biodata and for keeping your credentials confidential. Profiles must represent you truthfully; impersonation of another person or of a registered medical practitioner is prohibited and will result in permanent removal.</p>
+                  </div>
+                  <div>
+                    <h4 className="font-semibold">3. Verification</h4>
+                    <p>&ldquo;Verified&rdquo; status reflects a review of the documents you submit. It is a good-faith check, not a guarantee of any qualification, employment or marital status. You remain responsible for independently verifying any member before proceeding.</p>
+                  </div>
+                  <div>
+                    <h4 className="font-semibold">4. Conduct & safety</h4>
+                    <p>Harassment, obscene content, financial solicitation, commercial use, and sharing of other members&apos; contact details without consent are strictly prohibited. Report abuse via the in-app report action; we may suspend accounts pending review.</p>
+                  </div>
+                  <div>
+                    <h4 className="font-semibold">5. Membership & payments</h4>
+                    <p>Paid plans are billed in INR through Razorpay. Access begins on successful payment and continues for the purchased window. Cancelling stops future charges at period end. Refunds are issued at our discretion and immediately revoke paid access when processed.</p>
+                  </div>
+                  <div>
+                    <h4 className="font-semibold">6. Liability</h4>
+                    <p>The service is provided &ldquo;as is&rdquo;. We facilitate introductions but do not guarantee matches, and we are not party to any relationship or agreement between members. To the maximum extent permitted by law, our liability is limited to the fees you paid in the preceding three months.</p>
+                  </div>
+                  <div>
+                    <h4 className="font-semibold">7. Governing law</h4>
+                    <p>These terms are governed by Indian law; courts at Mumbai, Maharashtra have exclusive jurisdiction.</p>
+                  </div>
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            <TabsContent value="privacy">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Privacy Policy</CardTitle>
+                  <CardDescription>Last updated: {new Date().toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })}. Template — align with your DPDP Act obligations before launch.</CardDescription>
+                </CardHeader>
+                <CardContent className="text-sm text-slate-700 space-y-4">
+                  <div>
+                    <h4 className="font-semibold">What we collect</h4>
+                    <p>Account details (name, email), your matrimonial biodata (education, profession, location, community, astrological details you choose to share), photos you upload, verification documents you submit, and messages/interests exchanged with other members.</p>
+                  </div>
+                  <div>
+                    <h4 className="font-semibold">What stays private</h4>
+                    <p>Your phone number and email are never shown to other members by default. They are revealed only when you choose to share them with a specific member, and each such reveal is metered and logged.</p>
+                  </div>
+                  <div>
+                    <h4 className="font-semibold">How we use it</h4>
+                    <p>To operate matching and chat, verify professional credentials, process payments via Razorpay, send transactional emails (verification, password resets), keep the platform safe (abuse reports, suspension), and comply with legal requests.</p>
+                  </div>
+                  <div>
+                    <h4 className="font-semibold">Storage & security</h4>
+                    <p>Data is stored in an encrypted Postgres database hosted in India. Passwords are stored only as salted hashes. Administrative actions on your data are audit-logged.</p>
+                  </div>
+                  <div>
+                    <h4 className="font-semibold">Your rights</h4>
+                    <p>Under the Digital Personal Data Protection Act, 2023 you may request access, correction, or erasure of your data, and withdraw consent by deleting your account. Write to <span className="font-medium">{SUPPORT_EMAIL}</span>; we respond within 30 days.</p>
+                  </div>
+                  <div>
+                    <h4 className="font-semibold">Contact</h4>
+                    <p>Grievance officer matters go to <span className="font-medium">{SUPPORT_EMAIL}</span>.</p>
+                  </div>
+                </CardContent>
+              </Card>
+            </TabsContent>
+
             <TabsContent value="contact">
               <div className="grid md:grid-cols-3 gap-6">
                 <div className="md:col-span-1 space-y-6">
@@ -312,15 +402,15 @@ const HelpPage = () => {
                       <p className="text-gray-600 text-sm mb-4">
                         Send us an email and we'll respond within 24 hours on business days.
                       </p>
-                      <a 
-                        href="mailto:support@medicomatch.com" 
+                      <a
+                        href={`mailto:${SUPPORT_EMAIL}`}
                         className="text-mediblue-600 hover:text-mediblue-800 font-medium"
                       >
-                        support@medicomatch.com
+                        {SUPPORT_EMAIL}
                       </a>
                     </CardContent>
                   </Card>
-                  
+
                   <Card>
                     <CardHeader>
                       <CardTitle className="flex items-center">
@@ -330,14 +420,11 @@ const HelpPage = () => {
                     </CardHeader>
                     <CardContent>
                       <p className="text-gray-600 text-sm mb-4">
-                        Available Monday-Friday, 9am-5pm EST for premium members.
+                        Phone support launches with premium memberships — the number will be published here.
                       </p>
-                      <a 
-                        href="tel:+18005551234" 
-                        className="text-mediblue-600 hover:text-mediblue-800 font-medium"
-                      >
-                        1-800-555-1234
-                      </a>
+                      <span className="text-slate-500 font-medium text-sm">
+                        Coming soon
+                      </span>
                     </CardContent>
                   </Card>
                   
@@ -352,7 +439,7 @@ const HelpPage = () => {
                       <p className="text-gray-600 text-sm mb-4">
                         Chat with our support team for immediate assistance.
                       </p>
-                      <Button>Start Live Chat</Button>
+                      <Button onClick={() => { toast({ title: "Opening live chat", description: "Start a conversation with your matches to resolve questions together." }); navigate('/messages'); }}>Start Live Chat</Button>
                     </CardContent>
                   </Card>
                 </div>

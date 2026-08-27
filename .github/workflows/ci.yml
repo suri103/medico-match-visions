@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-lint-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        # Pinned to a commit SHA (supply-chain hardening, not a mutable tag).
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Setup Node 20
+        uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      # Dependency vulnerability audit (audit L9). --audit-level prevents the
+      # job passing when a high/critical advisory is open.
+      - name: Dependency audit
+        run: npm audit --audit-level=high
+
+      # Real typecheck - bare `tsc --noEmit` on the solution-style root
+      # tsconfig checks zero files and always passes.
+      - name: Typecheck
+        run: |
+          npx tsc -p tsconfig.app.json --noEmit
+          npx tsc -p tsconfig.node.json --noEmit
+
+      - name: Unit tests
+        run: npx vitest run
+
+      - name: Build
+        run: npm run build
+
+  server:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_DB: medicomatch_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Setup Node 20
+        uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Server lint: syntax-check every module + suite, not just index.mjs.
+      - name: Syntax check (all server modules + tests)
+        run: |
+          set -e
+          for f in src/*.mjs tests/*.mjs; do node --check "$f"; done
+
+      # Server dependency vulnerability audit (audit L9).
+      - name: Dependency audit
+        run: npm audit --audit-level=high
+
+      - name: Smoke test (auth + payments + entitlements, simulation mode)
+        run: node tests/smoke.mjs
+
+      - name: Wired-backend e2e (Postgres service)
+        env:
+          TEST_DATABASE_URL: postgres://postgres:testpass@localhost:5432/medicomatch_test
+        run: node tests/smoke-db.mjs

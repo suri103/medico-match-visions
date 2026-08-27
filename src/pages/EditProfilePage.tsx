@@ -1,0 +1,709 @@
+import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import Header from '@/components/Header';
+import { usePersistedState } from '@/hooks/usePersistedState';
+import { hasServerSession, saveMyServerProfile, uploadMyPhoto } from '@/services/api';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Badge } from '@/components/ui/badge';
+import { useToast } from '@/hooks/use-toast';
+import { 
+  Upload, Trash2, PlusCircle, Check,
+  ShieldCheck
+} from 'lucide-react';
+import { EMPTY_PROFILE, hasCreatedProfile } from '@/lib/profile';
+import { localAvatar } from '@/lib/avatar';
+import { useCurrentUser } from '@/hooks/useCurrentUser';
+import { religionList, casteList, subcasteSuggestions, gotraList, motherTongueList, rashiList, nakshatraList, manglikList, degreesList, specialtiesList, medicalCouncilsList } from '@/features/matches/data/constants';
+
+const EditProfilePage = () => {
+  const { toast } = useToast();
+  const navigate = useNavigate();
+  useCurrentUser();
+  const [interests, setInterests] = usePersistedState<string[]>(
+    'mm:profileInterests',
+    ['Yoga', 'Reading', 'Traveling', 'Music', 'Cooking']
+  );
+  const [newInterest, setNewInterest] = useState('');
+  const [profilePhotos, setProfilePhotos] = usePersistedState(
+    'mm:profilePhotos',
+    // Audit L11: self-hosted placeholder avatars (data URIs) — no third-party
+    // CDN hit for the user's own default gallery.
+    [
+      { id: 1, url: localAvatar('You'), isPrimary: true },
+      { id: 2, url: localAvatar('Dr Portfolio 1'), isPrimary: false },
+      { id: 3, url: localAvatar('Dr Portfolio 2'), isPrimary: false },
+      { id: 4, url: localAvatar('Dr Portfolio 3'), isPrimary: false },
+    ]
+  );
+  const photoFileRef = React.useRef<HTMLInputElement>(null);
+  const certFileRef = React.useRef<HTMLInputElement>(null);
+
+  const handleCertificateFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    // Certificates are stored as data URLs in localStorage (~5MB budget).
+    // Reject oversized files up front instead of silently dropping them
+    // (audit H5 — the previous handler served a false "under review" toast).
+    if (file.size > 2 * 1024 * 1024) {
+      toast({
+        title: "File too large",
+        description: "Certificates are limited to 2 MB in this build. Please upload a smaller file.",
+        variant: "destructive",
+      });
+      if (certFileRef.current) certFileRef.current.value = '';
+      return;
+    }
+    const fileName = file.name;
+    const reader = new FileReader();
+    reader.onload = () => {
+      setProfile(prev => ({
+        ...prev,
+        verificationDocumentName: fileName,
+        verificationDocumentUrl: String(reader.result),
+        verificationStatus: 'pending',
+      }));
+      // Verify the write actually landed — localStorage can silently refuse
+      // writes when full; a lost certificate must never toast "under review".
+      window.setTimeout(() => {
+        try {
+          const raw = localStorage.getItem('mm:profileData');
+          const saved = raw ? JSON.parse(raw) : null;
+          if (saved?.verificationDocumentName !== fileName || !saved?.verificationDocumentUrl) {
+            throw new Error('not persisted');
+          }
+          toast({
+            title: "Certificate Submitted",
+            description: `${fileName} uploaded. Your profile is now under review for Medical Council verification.`,
+          });
+        } catch {
+          toast({
+            title: "Storage full",
+            description: "The certificate could not be stored on this device. Free up browser storage or try a smaller file.",
+            variant: "destructive",
+          });
+        }
+      }, 50);
+    };
+    reader.readAsDataURL(file);
+    if (certFileRef.current) certFileRef.current.value = '';
+  };
+
+  // Persisted profile data
+  const [profile, setProfile] = usePersistedState('mm:profileData', EMPTY_PROFILE);
+
+  const [, setProfileCreated] = usePersistedState(
+    'mm:profileCreated',
+    () => hasCreatedProfile()
+  );
+
+  const updateProfile = (field: keyof typeof profile, value: string) => {
+    setProfile((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const handlePhotoFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 1.5 * 1024 * 1024) {
+      toast({ title: "Photo too large", description: "Please choose an image under 1.5 MB.", variant: "destructive" });
+      if (photoFileRef.current) photoFileRef.current.value = '';
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = String(reader.result);
+      const nextId = Math.max(0, ...profilePhotos.map(p => p.id)) + 1;
+      setProfilePhotos(prev => [
+        ...prev,
+        { id: nextId, url: dataUrl, isPrimary: prev.length === 0 },
+      ]);
+      // Durable upload on the wired backend (Supabase Storage when configured,
+      // bounded data URL in Postgres otherwise). Local gallery stays as cache.
+      if (hasServerSession()) {
+        void uploadMyPhoto(dataUrl).then((r) => {
+          if (!r.ok && r.error) {
+            toast({ title: "Not synced", description: r.error, variant: "destructive" });
+          }
+        }).catch(() => {});
+      }
+      toast({
+        title: "Photo uploaded",
+        description: "Your photo has been added to your profile.",
+      });
+    };
+    reader.readAsDataURL(file);
+    if (photoFileRef.current) photoFileRef.current.value = '';
+  };
+
+  const handleCreateProfile = async () => {
+    if (!profile.name.trim() || !profile.specialty.trim()) {
+      toast({
+        title: "Missing information",
+        description: "Please add your full name and medical specialty to continue.",
+        variant: "destructive",
+      });
+      return;
+    }
+    setProfileCreated(true);
+    // Durable mirror on the wired backend (whitelisted fields only). Audit H5:
+    // a failed server save is surfaced truthfully — never hidden behind a
+    // success toast. The user keeps their local copy either way.
+    let syncFailed = false;
+    if (hasServerSession()) {
+      try {
+        const saved = await saveMyServerProfile({
+          full_name: `Dr. ${profile.name}`.replace(/^Dr\.\s*Dr\./i, 'Dr.').trim(),
+          gender: (profile as { gender?: string }).gender || null,
+          degree: profile.degree || null,
+          specialty: profile.specialty || null,
+          hospital: profile.hospital || null,
+          city: (profile.location || '').split(',')[0]?.trim() || null,
+          state: (profile.location || '').split(',')[1]?.trim() || null,
+          about_me: profile.about || null,
+          looking_for: profile.lookingFor || null,
+          interests: interests ?? [],
+          height_cm: profile.heightCm ? Number(profile.heightCm) : null,
+          marital_status: profile.maritalStatus || null,
+          mother_tongue: profile.motherTongue || null,
+          religion: profile.religion || null,
+          caste: profile.caste || null,
+          subcaste: profile.subcaste || null,
+          gotra: profile.gotra || null,
+          rashi: profile.rashi || null,
+          nakshatra: profile.nakshatra || null,
+          manglik: profile.manglik || null,
+          phone: profile.phone || null,
+          email: profile.email || null,
+        });
+        if (!saved) throw new Error('offline-or-rejected');
+      } catch {
+        syncFailed = true;
+      }
+    }
+    if (syncFailed) {
+      toast({
+        title: "Saved on this device only",
+        description: "Your profile is saved locally, but it could not be synced to the server. You can retry from Settings.",
+        variant: "destructive",
+      });
+    } else {
+      toast({
+        title: "Profile saved! 🎉",
+        description: "Your doctor profile and biodata have been updated successfully."
+      });
+    }
+    navigate('/profile');
+  };
+  
+  const handleAddInterest = () => {
+    const trimmed = newInterest.trim();
+    if (!trimmed) return;
+
+    if (interests.length >= 5) {
+      toast({
+        title: "Interest limit reached",
+        description: "You can add up to 5 interests.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (!interests.includes(trimmed)) {
+      setInterests([...interests, trimmed]);
+      setNewInterest('');
+    }
+  };
+  
+  const handleRemoveInterest = (interest: string) => {
+    setInterests(interests.filter(i => i !== interest));
+  };
+
+  const handleSetPrimaryPhoto = (id: number) => {
+    setProfilePhotos(profilePhotos.map(photo => ({
+      ...photo,
+      isPrimary: photo.id === id
+    })));
+    
+    toast({
+      title: "Profile photo updated",
+      description: "Your primary profile photo has been changed."
+    });
+  };
+  
+  const handleRemovePhoto = (id: number) => {
+    if (profilePhotos.find(p => p.id === id)?.isPrimary) {
+      toast({
+        title: "Cannot remove primary photo",
+        description: "Please set another photo as primary first.",
+        variant: "destructive"
+      });
+      return;
+    }
+    
+    setProfilePhotos(profilePhotos.filter(photo => photo.id !== id));
+    
+    toast({
+      title: "Photo removed",
+      description: "The photo has been removed from your profile."
+    });
+  };
+
+  return (
+    <div className="min-h-screen flex flex-col bg-gray-50">
+      <Header />
+      <main className="flex-grow p-3 sm:p-4 md:p-8">
+        <div className="max-w-4xl mx-auto">
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-200/80 p-5 sm:p-8">
+            <div className="flex items-center justify-between gap-4 mb-6 pb-4 border-b border-slate-100 flex-wrap">
+              <div>
+                <h1 className="text-2xl sm:text-3xl font-bold text-slate-900">Edit Your Profile</h1>
+                <p className="text-slate-500 text-xs sm:text-sm mt-1">
+                  Update your doctor biodata and preferences for prospective matrimonial matches.
+                </p>
+              </div>
+              <Button
+                className="bg-mediblue-600 hover:bg-mediblue-700 text-white text-xs sm:text-sm"
+                onClick={handleCreateProfile}
+              >
+                <Check size={16} className="mr-1.5" /> Save Biodata
+              </Button>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 sm:gap-8">
+              {/* Column 1: Medical & Personal Details */}
+              <div className="space-y-4">
+                <h2 className="text-sm font-bold text-slate-800 uppercase tracking-wider">Professional & Personal Info</h2>
+                <div>
+                  <Label htmlFor="create-name">Full Name *</Label>
+                  <Input
+                    id="create-name"
+                    placeholder="Dr. Jane Smith"
+                    value={profile.name}
+                    onChange={(e) => updateProfile('name', e.target.value)}
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="create-degree">Medical Degree / Qualification *</Label>
+                  <Select value={profile.degree || 'MBBS'} onValueChange={(v) => updateProfile('degree', v)}>
+                    <SelectTrigger id="create-degree">
+                      <SelectValue placeholder="Select degree" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {degreesList.map((deg) => (
+                        <SelectItem key={deg} value={deg}>{deg}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label htmlFor="create-specialty">Medical Specialty *</Label>
+                  <Select value={profile.specialty} onValueChange={(v) => updateProfile('specialty', v)}>
+                    <SelectTrigger id="create-specialty">
+                      <SelectValue placeholder="Select specialty" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {specialtiesList.map((specialty) => (
+                        <SelectItem key={specialty} value={specialty}>{specialty}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label htmlFor="create-hospital">Hospital / Clinic Practice</Label>
+                  <Input
+                    id="create-hospital"
+                    placeholder="e.g. Apollo Hospital"
+                    value={profile.hospital}
+                    onChange={(e) => updateProfile('hospital', e.target.value)}
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="create-location">Practice Location (City, State)</Label>
+                  <Input
+                    id="create-location"
+                    placeholder="e.g. Mumbai, Maharashtra"
+                    value={profile.location}
+                    onChange={(e) => updateProfile('location', e.target.value)}
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="create-experience">Experience (Years)</Label>
+                  <Input
+                    id="create-experience"
+                    type="number"
+                    placeholder="e.g. 8"
+                    value={profile.experience}
+                    onChange={(e) => updateProfile('experience', e.target.value)}
+                  />
+                </div>
+
+                {/* State Medical Council Credentials */}
+                <div className="pt-2 pb-1 border-t border-slate-200">
+                  <h3 className="text-sm font-semibold text-slate-800 flex items-center gap-1.5 mb-2">
+                    <ShieldCheck className="text-emerald-600 h-4 w-4" />
+                    Medical Council Registration & Verification
+                  </h3>
+                  <div className="space-y-3">
+                    <div>
+                      <Label htmlFor="create-council">Medical Registration Council *</Label>
+                      <Select value={profile.councilName || medicalCouncilsList[0]} onValueChange={(v) => updateProfile('councilName', v)}>
+                        <SelectTrigger id="create-council"><SelectValue placeholder="Select council" /></SelectTrigger>
+                        <SelectContent>
+                          {medicalCouncilsList.map(c => (
+                            <SelectItem key={c} value={c}>{c}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <Label htmlFor="create-reg-no">Registration No. *</Label>
+                        <Input
+                          id="create-reg-no"
+                          placeholder="e.g. MMC-2018-87492"
+                          value={profile.registrationNumber}
+                          onChange={(e) => updateProfile('registrationNumber', e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <Label htmlFor="create-reg-year">Registration Year</Label>
+                        <Input
+                          id="create-reg-year"
+                          type="number"
+                          placeholder="e.g. 2018"
+                          value={profile.registrationYear}
+                          onChange={(e) => updateProfile('registrationYear', e.target.value)}
+                        />
+                      </div>
+                    </div>
+                    <div>
+                      <Label>Upload Council Certificate / Degree</Label>
+                      <div className="flex items-center gap-2 mt-1 flex-wrap">
+                        <input
+                          ref={certFileRef}
+                          type="file"
+                          accept=".pdf,image/*"
+                          className="hidden"
+                          onChange={handleCertificateFile}
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="text-xs"
+                          onClick={() => certFileRef.current?.click()}
+                        >
+                          <Upload size={14} className="mr-1" /> Choose File
+                        </Button>
+                        {profile.verificationDocumentName ? (
+                          <span className="text-xs text-slate-600 font-medium truncate max-w-[200px]">
+                            📄 {profile.verificationDocumentName}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-slate-400">PDF or Image</span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <Label htmlFor="create-dob">Date of Birth</Label>
+                    <Input id="create-dob" type="date" value={profile.dob} onChange={(e) => updateProfile('dob', e.target.value)} />
+                  </div>
+                  <div>
+                    <Label>Gender</Label>
+                    <Select value={profile.gender || 'Other'} onValueChange={(v) => updateProfile('gender', v)}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="Male">Male</SelectItem>
+                        <SelectItem value="Female">Female</SelectItem>
+                        <SelectItem value="Other">Other</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <Label htmlFor="create-height">Height (cm)</Label>
+                    <Input id="create-height" type="number" placeholder="e.g. 172" value={profile.heightCm} onChange={(e) => updateProfile('heightCm', e.target.value)} />
+                  </div>
+                  <div>
+                    <Label>Marital Status</Label>
+                    <Select value={profile.maritalStatus || 'Never Married'} onValueChange={(v) => updateProfile('maritalStatus', v)}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="Never Married">Never Married</SelectItem>
+                        <SelectItem value="Divorced">Divorced</SelectItem>
+                        <SelectItem value="Widowed">Widowed</SelectItem>
+                        <SelectItem value="Awaiting Divorce">Awaiting Divorce</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+
+                <div>
+                  <Label htmlFor="create-mother">Mother Tongue</Label>
+                  <Select value={profile.motherTongue || 'Hindi'} onValueChange={(v) => updateProfile('motherTongue', v)}>
+                    <SelectTrigger id="create-mother"><SelectValue placeholder="Select mother tongue" /></SelectTrigger>
+                    <SelectContent>
+                      {motherTongueList.map(m => (
+                        <SelectItem key={m} value={m}>{m}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <Label>Religion</Label>
+                    <Select value={profile.religion || 'No preference'} onValueChange={(v) => updateProfile('religion', v === 'No preference' ? '' : v)}>
+                      <SelectTrigger><SelectValue placeholder="Select religion" /></SelectTrigger>
+                      <SelectContent>
+                        {religionList.map(r => (
+                          <SelectItem key={r} value={r}>{r}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label>Caste</Label>
+                    <Select value={profile.caste || 'No preference'} onValueChange={(v) => updateProfile('caste', v === 'No preference' ? '' : v)}>
+                      <SelectTrigger><SelectValue placeholder="Select caste" /></SelectTrigger>
+                      <SelectContent>
+                        {casteList.map(c => (
+                          <SelectItem key={c} value={c}>{c}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+
+                <div>
+                  <Label>Subcaste</Label>
+                  <div className="space-y-1.5">
+                    <Select value={profile.subcaste || 'No preference'} onValueChange={(v) => updateProfile('subcaste', v === 'No preference' ? '' : v)}>
+                      <SelectTrigger><SelectValue placeholder="Select popular subcaste" /></SelectTrigger>
+                      <SelectContent>
+                        {subcasteSuggestions.map(s => (
+                          <SelectItem key={s} value={s}>{s}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Input 
+                      placeholder="Or enter subcaste..." 
+                      value={profile.subcaste} 
+                      onChange={(e) => updateProfile('subcaste', e.target.value)} 
+                      className="text-xs h-8"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <Label>Gotra / Lineage</Label>
+                  <Select value={profile.gotra || 'No preference'} onValueChange={(v) => updateProfile('gotra', v === 'No preference' ? '' : v)}>
+                    <SelectTrigger><SelectValue placeholder="Select gotra" /></SelectTrigger>
+                    <SelectContent>
+                      {gotraList.map(g => (
+                        <SelectItem key={g} value={g}>{g}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <Label>Rashi</Label>
+                    <Select value={profile.rashi || 'No preference'} onValueChange={(v) => updateProfile('rashi', v === 'No preference' ? '' : v)}>
+                      <SelectTrigger><SelectValue placeholder="Select rashi" /></SelectTrigger>
+                      <SelectContent>
+                        {rashiList.map(r => (
+                          <SelectItem key={r} value={r}>{r}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label>Nakshatra</Label>
+                    <Select value={profile.nakshatra || 'No preference'} onValueChange={(v) => updateProfile('nakshatra', v === 'No preference' ? '' : v)}>
+                      <SelectTrigger><SelectValue placeholder="Select nakshatra" /></SelectTrigger>
+                      <SelectContent>
+                        {nakshatraList.map(n => (
+                          <SelectItem key={n} value={n}>{n}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label>Manglik</Label>
+                    <Select value={profile.manglik || 'Non-Manglik'} onValueChange={(v) => updateProfile('manglik', v)}>
+                      <SelectTrigger><SelectValue placeholder="Select status" /></SelectTrigger>
+                      <SelectContent>
+                        {manglikList.map(m => (
+                          <SelectItem key={m} value={m}>{m}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              </div>
+
+              {/* Column 2: Photos, Bio, Interests & Contact */}
+              <div className="space-y-6">
+                {/* Photos Section */}
+                <div>
+                  <h2 className="text-sm font-bold text-slate-800 uppercase tracking-wider mb-3">Profile Photos</h2>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    {profilePhotos.map((photo) => (
+                      <div key={photo.id} className="relative group aspect-[3/4] rounded-xl overflow-hidden border border-slate-200 bg-slate-100">
+                        <img src={photo.url} alt="Profile" className="w-full h-full object-cover" />
+                        {photo.isPrimary && (
+                          <Badge className="absolute top-1.5 left-1.5 bg-mediblue-600 text-[10px] px-1.5 py-0">Primary</Badge>
+                        )}
+                        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-1.5 p-1">
+                          {!photo.isPrimary && (
+                            <Button size="sm" variant="secondary" className="h-7 text-[10px] px-2 bg-white/90" onClick={() => handleSetPrimaryPhoto(photo.id)}>
+                              Primary
+                            </Button>
+                          )}
+                          <Button size="sm" variant="destructive" className="h-7 w-7 p-0" onClick={() => handleRemovePhoto(photo.id)}>
+                            <Trash2 size={12} />
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-3">
+                    <input ref={photoFileRef} type="file" accept="image/*" className="hidden" onChange={handlePhotoFile} />
+                    <Button type="button" variant="outline" size="sm" className="text-xs" onClick={() => photoFileRef.current?.click()}>
+                      <Upload size={14} className="mr-1.5" /> Upload New Photo
+                    </Button>
+                  </div>
+                </div>
+
+                {/* Interests Section */}
+                <div>
+                  <h2 className="text-sm font-bold text-slate-800 uppercase tracking-wider mb-2">Interests & Hobbies</h2>
+                  <div className="flex flex-wrap gap-1.5 mb-3">
+                    {interests.map((interest) => (
+                      <Badge key={interest} variant="secondary" className="bg-slate-100 text-slate-700 px-2.5 py-1 text-xs flex items-center gap-1">
+                        {interest}
+                        <button type="button" onClick={() => handleRemoveInterest(interest)} className="hover:text-red-500">
+                          ×
+                        </button>
+                      </Badge>
+                    ))}
+                  </div>
+                  <div className="flex gap-2">
+                    <Input
+                      placeholder="Add interest (e.g. Hiking)..."
+                      value={newInterest}
+                      onChange={(e) => setNewInterest(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddInterest(); } }}
+                      className="text-xs h-9"
+                    />
+                    <Button type="button" size="sm" variant="outline" className="h-9 px-3 shrink-0" onClick={handleAddInterest}>
+                      <PlusCircle size={14} className="mr-1" /> Add
+                    </Button>
+                  </div>
+                </div>
+
+                {/* About & Looking For */}
+                <div className="space-y-4">
+                  <div>
+                    <Label htmlFor="create-about">About Me & Medical Life</Label>
+                    <Textarea
+                      id="create-about"
+                      rows={4}
+                      placeholder="Share a little about yourself, clinical background, and interests..."
+                      value={profile.about}
+                      onChange={(e) => updateProfile('about', e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="create-looking-for">What I'm Looking For in a Partner</Label>
+                    <Textarea
+                      id="create-looking-for"
+                      rows={3}
+                      placeholder="Desired values, medical specialty preferences, lifestyle..."
+                      value={profile.lookingFor}
+                      onChange={(e) => updateProfile('lookingFor', e.target.value)}
+                    />
+                  </div>
+
+                  {/* Partner Preferences Grid */}
+                  <div>
+                    <Label className="text-xs font-semibold text-slate-700 mb-1.5 block">Partner Age & Location Preferences</Label>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div>
+                        <Label htmlFor="create-pref-min" className="text-[11px] text-slate-500">Min Age</Label>
+                        <Input id="create-pref-min" type="number" placeholder="24" value={profile.prefAgeMin} onChange={(e) => updateProfile('prefAgeMin', e.target.value)} />
+                      </div>
+                      <div>
+                        <Label htmlFor="create-pref-max" className="text-[11px] text-slate-500">Max Age</Label>
+                        <Input id="create-pref-max" type="number" placeholder="36" value={profile.prefAgeMax} onChange={(e) => updateProfile('prefAgeMax', e.target.value)} />
+                      </div>
+                      <div>
+                        <Label htmlFor="create-pref-loc" className="text-[11px] text-slate-500">Location</Label>
+                        <Input id="create-pref-loc" placeholder="e.g. Mumbai / Anywhere" value={profile.prefLocation} onChange={(e) => updateProfile('prefLocation', e.target.value)} />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Contact Info */}
+                  <div className="space-y-3 pt-2 border-t border-slate-200">
+                    <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider">Matrimonial Contact Information</h3>
+                    <div>
+                      <Label htmlFor="create-email">Email Address</Label>
+                      <Input
+                        id="create-email"
+                        type="email"
+                        placeholder="you@example.com"
+                        value={profile.email}
+                        onChange={(e) => updateProfile('email', e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <Label htmlFor="create-phone">Phone Number (with country code)</Label>
+                      <Input
+                        id="create-phone"
+                        type="tel"
+                        placeholder="+91 98765 43210"
+                        value={profile.phone}
+                        onChange={(e) => updateProfile('phone', e.target.value)}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Bottom Actions Bar */}
+            <div className="mt-8 pt-4 border-t border-slate-200 flex flex-col sm:flex-row sm:justify-end sm:space-x-3 space-y-3 sm:space-y-0">
+              <Button
+                variant="outline"
+                onClick={() => navigate('/profile')}
+              >
+                Cancel
+              </Button>
+              <Button
+                className="bg-mediblue-600 hover:bg-mediblue-700 text-white"
+                onClick={handleCreateProfile}
+              >
+                <Check size={16} className="mr-2" />
+                Save & Update Profile
+              </Button>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+  );
+};
+
+export default EditProfilePage;

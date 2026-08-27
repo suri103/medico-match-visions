@@ -28,13 +28,17 @@ const MessageTabs: React.FC<MessageTabsProps> = ({ activeTab, setActiveTab }) =>
     toggleMessageSelection, 
     toggleSelectAll, 
     handleBulkDelete, 
-    handlePageChange 
+    markChatRead,
+    toggleChatReadState,
+    deleteChat, 
+    handlePageChange,
+    chats,
   } = useMessages();
   
   const { notifications } = useNotifications();
   
-  const getUnreadMessageCount = (messages: Message[]): number => {
-    return messages.reduce((acc, chat) => acc + chat.unread, 0);
+  const getUnreadMessageCount = (): number => {
+    return chats.reduce((acc: number, chat: Message) => acc + chat.unread, 0);
   };
 
   return (
@@ -48,8 +52,8 @@ const MessageTabs: React.FC<MessageTabsProps> = ({ activeTab, setActiveTab }) =>
         <TabsList className="w-full">
           <TabsTrigger value="messages" className="flex-1">
             Messages
-            {getUnreadMessageCount(currentMessages) > 0 && (
-              <Badge className="ml-2 bg-mediblue-500">{getUnreadMessageCount(currentMessages)}</Badge>
+            {getUnreadMessageCount() > 0 && (
+              <Badge className="ml-2 bg-mediblue-500">{getUnreadMessageCount()}</Badge>
             )}
           </TabsTrigger>
           <TabsTrigger value="whats-new" className="flex-1">
@@ -77,6 +81,9 @@ const MessageTabs: React.FC<MessageTabsProps> = ({ activeTab, setActiveTab }) =>
           setSearchTerm={setSearchTerm}
           setShowAdvancedSearch={setShowAdvancedSearch}
           handlePageChange={handlePageChange}
+          markChatRead={markChatRead}
+          toggleChatReadState={toggleChatReadState}
+          deleteChat={deleteChat}
         />
       </TabsContent>
 

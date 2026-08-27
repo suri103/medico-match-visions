@@ -1,12 +1,11 @@
 
 import type { Config } from "tailwindcss";
+import tailwindcssAnimate from "tailwindcss-animate";
 
 export default {
 	darkMode: ["class"],
 	content: [
-		"./pages/**/*.{ts,tsx}",
-		"./components/**/*.{ts,tsx}",
-		"./app/**/*.{ts,tsx}",
+		"./index.html",
 		"./src/**/*.{ts,tsx}",
 	],
 	prefix: "",
@@ -89,9 +88,9 @@ export default {
 					900: '#134a5a',
 				},
 				accent: {
-					light: '#fff3e0', // Light orange/peach
-					DEFAULT: '#ff9d5c', // Warm orange
-					dark: '#e87928', // Deep orange
+					light: '#fff3e0',
+					DEFAULT: '#ff9d5c',
+					dark: '#e87928',
 				}
 			},
 			borderRadius: {
@@ -143,5 +142,5 @@ export default {
 			}
 		}
 	},
-	plugins: [require("tailwindcss-animate")],
+	plugins: [tailwindcssAnimate],
 } satisfies Config;

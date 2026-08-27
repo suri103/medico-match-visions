@@ -1,5 +1,6 @@
 
 import React from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardTitle, CardDescription } from '@/components/ui/card';
 import { LucideIcon, Star, Heart, Search } from 'lucide-react';
@@ -21,13 +22,16 @@ const EmptyState: React.FC<EmptyStateProps> = ({
   description, 
   icon 
 }) => {
+  const navigate = useNavigate();
+
   const getIcon = (iconName?: string): LucideIcon => {
     const iconMap = {
       'favorites': Star,
       'likes': Heart,
       'search': Search
     };
-    return iconMap[type as keyof typeof iconMap] || Search;
+    // Prefer the explicit icon prop, fall back to the tab type, then Search.
+    return iconMap[iconName as keyof typeof iconMap] || iconMap[type as keyof typeof iconMap] || Search;
   };
 
   const Icon = getIcon(icon);
@@ -39,9 +43,9 @@ const EmptyState: React.FC<EmptyStateProps> = ({
     : 'No results found';
 
   const defaultDescription = type === 'favorites' 
-    ? 'You haven\'t added any doctors to your favorites list yet. Browse matches and click the heart icon to save your favorites.'
+    ? 'You haven\'t added any doctors to your favorites list yet. Browse matches and click the star icon to save your favorites.'
     : type === 'likes'
-    ? 'No doctors have liked your profile yet. Make sure your profile is complete to attract more potential matches.'
+    ? 'No doctors have sent interest yet. Make sure your profile is complete to attract more potential matches.'
     : 'Modify your search criteria to find matches';
 
   return (
@@ -57,7 +61,7 @@ const EmptyState: React.FC<EmptyStateProps> = ({
         {navigateTo && (
           <Button 
             className="mt-6" 
-            onClick={() => window.location.href = navigateTo}
+            onClick={() => navigate(navigateTo)}
           >
             {buttonText}
           </Button>

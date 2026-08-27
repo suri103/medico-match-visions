@@ -12,6 +12,7 @@ interface NavItemProps {
   onClick?: () => void;
   className?: string;
   iconSize?: number;
+  state?: Record<string, unknown>;
 }
 
 const NavItem: React.FC<NavItemProps> = ({
@@ -21,12 +22,17 @@ const NavItem: React.FC<NavItemProps> = ({
   isActive,
   onClick,
   className = '',
-  iconSize = 18
+  iconSize = 18,
+  state
 }) => {
   const navigate = useNavigate();
   
   const handleClick = () => {
-    navigate(path);
+    // Paths like "#" are used for non-navigation actions (e.g. Sign Out)
+    // and would otherwise resolve to a 404 route.
+    if (path && !path.startsWith('#')) {
+      navigate(path, { state });
+    }
     if (onClick) onClick();
   };
   

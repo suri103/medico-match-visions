@@ -1,9 +1,10 @@
 
 import React from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import DoctorCard from '@/components/DoctorCard';
 import { Trash2, Star } from 'lucide-react';
-import { Doctor } from '../data/sampleData';
+import { Doctor } from '@/features/matches/types';
 
 interface DoctorsGridProps {
   doctors: Doctor[];
@@ -24,6 +25,8 @@ const DoctorsGrid: React.FC<DoctorsGridProps> = ({
   onMessage,
   gridType
 }) => {
+  const navigate = useNavigate();
+
   return (
     <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
       {doctors.map((doctor) => (
@@ -64,6 +67,7 @@ const DoctorsGrid: React.FC<DoctorsGridProps> = ({
             onLike={onLike}
             onVideo={onVideo}
             onMessage={onMessage}
+            onViewProfile={(id) => navigate(`/doctor/${id}`, { state: { returnTo: '/favorites', fromPage: 'Favorites' } })}
           />
         </div>
       ))}

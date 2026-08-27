@@ -2,18 +2,10 @@
 import React from 'react';
 import NavItem from './NavItem';
 import { 
-  Heart, User, Star, Video, MessageSquare, MoreHorizontal, LogOut,
-  CreditCard, HelpCircle, Calendar, Users, Settings, UserHeart
+  Heart, User, Star, Video, MessageSquare, LogOut,
+  CreditCard, HelpCircle, Calendar, Users, Settings, UsersRound, Bookmark
 } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-  DropdownMenuSeparator
-} from "@/components/ui/dropdown-menu";
-import { Button } from '@/components/ui/button';
 
 interface MobileNavProps {
   isOpen: boolean;
@@ -31,15 +23,15 @@ const MobileNav: React.FC<MobileNavProps> = ({ isOpen, onItemClick, onSignOut })
   if (!isOpen) return null;
 
   return (
-    <div className="fixed top-16 left-0 right-0 bottom-0 z-50 md:hidden bg-white pt-2 pb-4 px-4 shadow-lg overflow-y-auto">
-      <div className="grid grid-cols-2 gap-2">
+    <div className="fixed top-16 left-0 right-0 bottom-0 z-50 md:hidden bg-white/95 backdrop-blur-md pt-3 pb-8 px-4 shadow-xl overflow-y-auto border-t border-slate-200 animate-fade-in">
+      <div className="grid grid-cols-2 gap-2 max-w-lg mx-auto">
         <NavItem 
           path="/online" 
           icon={Users} 
           label="Online" 
           isActive={isActive('/online')} 
           onClick={onItemClick}
-          className="flex items-center justify-start space-x-2 text-sm"
+          className="flex items-center justify-start space-x-2 text-xs sm:text-sm h-10 px-3 rounded-xl"
           iconSize={16}
         />
         <NavItem 
@@ -48,7 +40,7 @@ const MobileNav: React.FC<MobileNavProps> = ({ isOpen, onItemClick, onSignOut })
           label="Search" 
           isActive={isActive('/search')} 
           onClick={onItemClick}
-          className="flex items-center justify-start space-x-2 text-sm"
+          className="flex items-center justify-start space-x-2 text-xs sm:text-sm h-10 px-3 rounded-xl"
           iconSize={16}
         />
         <NavItem 
@@ -57,8 +49,9 @@ const MobileNav: React.FC<MobileNavProps> = ({ isOpen, onItemClick, onSignOut })
           label="Messages" 
           isActive={isActive('/messages')} 
           onClick={onItemClick}
-          className="flex items-center justify-start space-x-2 text-sm"
+          className="flex items-center justify-start space-x-2 text-xs sm:text-sm h-10 px-3 rounded-xl"
           iconSize={16}
+          state={{ activeTab: 'messages' }}
         />
         <NavItem 
           path="/video-dates" 
@@ -66,7 +59,7 @@ const MobileNav: React.FC<MobileNavProps> = ({ isOpen, onItemClick, onSignOut })
           label="V-Dates" 
           isActive={isActive('/video-dates')} 
           onClick={onItemClick}
-          className="flex items-center justify-start space-x-2 text-sm"
+          className="flex items-center justify-start space-x-2 text-xs sm:text-sm h-10 px-3 rounded-xl"
           iconSize={16}
         />
         <NavItem 
@@ -75,22 +68,13 @@ const MobileNav: React.FC<MobileNavProps> = ({ isOpen, onItemClick, onSignOut })
           label="Matches" 
           isActive={isActive('/matches')} 
           onClick={onItemClick}
-          className="flex items-center justify-start space-x-2 text-sm"
-          iconSize={16}
-        />
-        <NavItem 
-          path="/astrologer" 
-          icon={Star} 
-          label="Astrology" 
-          isActive={isActive('/astrologer')} 
-          onClick={onItemClick}
-          className="flex items-center justify-start space-x-2 text-sm"
+          className="flex items-center justify-start space-x-2 text-xs sm:text-sm h-10 px-3 rounded-xl"
           iconSize={16}
         />
         
         {/* Connections Section */}
-        <div className="col-span-2 mt-2">
-          <h3 className="text-sm font-medium text-gray-500 px-2 py-1">Connections</h3>
+        <div className="col-span-2 mt-3 pt-2 border-t border-slate-100">
+          <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400 px-2 py-1">Connections</h3>
           <div className="grid grid-cols-2 gap-2 mt-1">
             <NavItem 
               path="/favorites" 
@@ -98,7 +82,16 @@ const MobileNav: React.FC<MobileNavProps> = ({ isOpen, onItemClick, onSignOut })
               label="My Favorites" 
               isActive={isActive('/favorites')} 
               onClick={onItemClick}
-              className="flex items-center justify-start space-x-2 text-sm"
+              className="flex items-center justify-start space-x-2 text-xs sm:text-sm h-10 px-3 rounded-xl"
+              iconSize={16}
+            />
+            <NavItem 
+              path="/saved-matches" 
+              icon={Bookmark} 
+              label="Saved Matches" 
+              isActive={isActive('/saved-matches')} 
+              onClick={onItemClick}
+              className="flex items-center justify-start space-x-2 text-xs sm:text-sm h-10 px-3 rounded-xl"
               iconSize={16}
             />
             <NavItem 
@@ -107,24 +100,24 @@ const MobileNav: React.FC<MobileNavProps> = ({ isOpen, onItemClick, onSignOut })
               label="My Interests" 
               isActive={isActive('/my-interests')} 
               onClick={onItemClick}
-              className="flex items-center justify-start space-x-2 text-sm"
+              className="flex items-center justify-start space-x-2 text-xs sm:text-sm h-10 px-3 rounded-xl"
               iconSize={16}
             />
             <NavItem 
               path="/interested-in-you" 
-              icon={UserHeart} 
+              icon={UsersRound} 
               label="Interested in You" 
               isActive={isActive('/interested-in-you')} 
               onClick={onItemClick}
-              className="flex items-center justify-start space-x-2 text-sm w-full"
+              className="flex items-center justify-start space-x-2 text-xs sm:text-sm h-10 px-3 rounded-xl w-full"
               iconSize={16}
             />
           </div>
         </div>
         
         {/* More Section */}
-        <div className="col-span-2 mt-2">
-          <h3 className="text-sm font-medium text-gray-500 px-2 py-1">More</h3>
+        <div className="col-span-2 mt-3 pt-2 border-t border-slate-100">
+          <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400 px-2 py-1">More & Account</h3>
           <div className="grid grid-cols-2 gap-2 mt-1">
             <NavItem 
               path="/profile" 
@@ -132,7 +125,7 @@ const MobileNav: React.FC<MobileNavProps> = ({ isOpen, onItemClick, onSignOut })
               label="My Profile" 
               isActive={isActive('/profile')} 
               onClick={onItemClick}
-              className="flex items-center justify-start space-x-2 text-sm"
+              className="flex items-center justify-start space-x-2 text-xs sm:text-sm h-10 px-3 rounded-xl"
               iconSize={16}
             />
             <NavItem 
@@ -141,16 +134,16 @@ const MobileNav: React.FC<MobileNavProps> = ({ isOpen, onItemClick, onSignOut })
               label="My Account" 
               isActive={isActive('/account')} 
               onClick={onItemClick}
-              className="flex items-center justify-start space-x-2 text-sm"
+              className="flex items-center justify-start space-x-2 text-xs sm:text-sm h-10 px-3 rounded-xl"
               iconSize={16}
             />
             <NavItem 
               path="/help" 
               icon={HelpCircle} 
-              label="Help" 
+              label="Help & FAQs" 
               isActive={isActive('/help')} 
               onClick={onItemClick}
-              className="flex items-center justify-start space-x-2 text-sm"
+              className="flex items-center justify-start space-x-2 text-xs sm:text-sm h-10 px-3 rounded-xl"
               iconSize={16}
             />
             <NavItem 
@@ -159,16 +152,16 @@ const MobileNav: React.FC<MobileNavProps> = ({ isOpen, onItemClick, onSignOut })
               label="Meets & Events" 
               isActive={isActive('/events')} 
               onClick={onItemClick}
-              className="flex items-center justify-start space-x-2 text-sm"
+              className="flex items-center justify-start space-x-2 text-xs sm:text-sm h-10 px-3 rounded-xl"
               iconSize={16}
             />
             <NavItem 
               path="/plan" 
               icon={CreditCard} 
-              label="Club Plan" 
+              label="Membership Plan" 
               isActive={isActive('/plan')} 
               onClick={onItemClick}
-              className="flex items-center justify-start space-x-2 text-sm"
+              className="flex items-center justify-start space-x-2 text-xs sm:text-sm h-10 px-3 rounded-xl col-span-2"
               iconSize={16}
             />
           </div>
@@ -180,7 +173,7 @@ const MobileNav: React.FC<MobileNavProps> = ({ isOpen, onItemClick, onSignOut })
           label="Sign Out" 
           isActive={false} 
           onClick={onSignOut}
-          className="flex items-center justify-start space-x-2 text-red-500 hover:text-red-700 text-sm col-span-2 mt-2"
+          className="flex items-center justify-start space-x-2 text-red-500 hover:text-red-700 text-xs sm:text-sm col-span-2 mt-3 h-10 px-3 rounded-xl"
           iconSize={16}
         />
       </div>

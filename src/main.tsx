@@ -1,53 +1,65 @@
-
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { ClerkProvider } from '@clerk/clerk-react';
 import App from './App';
 import './index.css';
 
-// Use the provided publishable key
-const PUBLISHABLE_KEY = "pk_test_ZnVsbC1rcmlsbC03MS5jbGVyay5hY2NvdW50cy5kZXYk";
+// This file bootstraps the app; the ErrorBoundary below cannot be extracted
+// without wrapping the root, so keep it local (no fast-refresh rules apply).
 
-// Check if we have a valid key - we need to fix the type error by removing the literal comparison
-const hasValidClerkKey = PUBLISHABLE_KEY && 
-  typeof PUBLISHABLE_KEY === 'string' && 
-  PUBLISHABLE_KEY.length > 0 && 
-  !PUBLISHABLE_KEY.includes('placeholder');
+// Create a simple error boundary component
+class ErrorBoundary extends React.Component<{children: React.ReactNode}, {hasError: boolean, error: Error | null}> {
+  constructor(props: {children: React.ReactNode}) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
 
-// Create a DemoApp component that shows instructions when no valid Clerk key is found
-const DemoApp = () => {
-  return (
-    <div className="flex min-h-screen flex-col items-center justify-center bg-gray-50 px-4 py-8">
-      <h1 className="mb-8 text-2xl font-bold text-mediblue-600">MedicoMatch</h1>
-      <div className="w-full max-w-md p-6 bg-white rounded-lg shadow-md">
-        <h2 className="text-xl font-semibold mb-4">Authentication Setup Required</h2>
-        <p className="mb-4">To enable authentication features, you need to set up your Clerk API key:</p>
-        <ol className="list-decimal pl-5 mb-6 space-y-2">
-          <li>Create a free account at <a href="https://clerk.com" className="text-blue-600 hover:underline" target="_blank" rel="noreferrer">Clerk.com</a></li>
-          <li>Get your publishable key from the Clerk dashboard</li>
-          <li>Set it as the environment variable <code className="bg-gray-100 p-1 rounded">VITE_CLERK_PUBLISHABLE_KEY</code></li>
-        </ol>
-        <p className="text-sm text-gray-500">For demo purposes, you can still use the app without authentication, but sign-in functionality will be disabled.</p>
-        <button 
-          className="mt-4 px-4 py-2 bg-mediblue-600 text-white rounded hover:bg-mediblue-700"
-          onClick={() => window.location.reload()}
-        >
-          Try Again
-        </button>
-      </div>
-    </div>
-  );
-};
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
 
-// Render the appropriate app version based on key availability
-ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
-  <React.StrictMode>
-    {hasValidClerkKey ? (
-      <ClerkProvider publishableKey={PUBLISHABLE_KEY}>
-        <App />
-      </ClerkProvider>
-    ) : (
-      <DemoApp />
-    )}
-  </React.StrictMode>,
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: '20px', fontFamily: 'Arial, sans-serif', maxWidth: '800px', margin: '0 auto' }}>
+          <h1 style={{ color: 'red' }}>Something went wrong</h1>
+          <p>There was an error rendering the application:</p>
+          <pre style={{
+            backgroundColor: '#f5f5f5',
+            padding: '10px',
+            borderRadius: '5px',
+            overflow: 'auto',
+            maxHeight: '300px'
+          }}>
+            {this.state.error?.message || 'Unknown error'}
+          </pre>
+          <button
+            style={{
+              marginTop: '20px',
+              padding: '10px 20px',
+              backgroundColor: '#3b82f6',
+              color: 'white',
+              border: 'none',
+              borderRadius: '5px',
+              cursor: 'pointer'
+            }}
+            onClick={() => window.location.reload()}
+          >
+            Reload Page
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+// Render the application
+const root = ReactDOM.createRoot(document.getElementById('root') as HTMLElement);
+
+root.render(
+  <ErrorBoundary>
+    <React.StrictMode>
+      <App />
+    </React.StrictMode>
+  </ErrorBoundary>
 );

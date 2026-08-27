@@ -1,10 +1,16 @@
-import React from 'react';
+import React, { useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import Header from '@/components/Header';
 import VideoCall from '@/components/VideoCall';
 import Chat from '@/components/Chat';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { SidebarProvider } from '@/components/ui/sidebar';
-import { useMatches } from '@/features/matches/hooks/useMatches';
-import { countries, statesByCountry, specialtiesList, orientationsList, ethnicityList, castList, colorList } from '@/features/matches/data/constants';
+import { useMatches, MatchSearchCriteria } from '@/features/matches/hooks/useMatches';
+import { countries, statesByCountry, specialtiesList, degreesList, orientationsList, ethnicityList, religionList, casteList, subcasteSuggestions, gotraList, colorList } from '@/features/matches/data/constants';
+import { parseQueryToSearchCriteria } from '@/utils/queryValidation';
 
 // Components
 import SearchSidebar from '@/features/matches/components/SearchSidebar';
@@ -14,6 +20,12 @@ import DoctorsGrid from '@/features/matches/components/DoctorsGrid';
 import { SavedSearch } from '@/features/matches/types';
 
 const Matches = () => {
+  const location = useLocation();
+  const stateSearch = (location.state as { search?: MatchSearchCriteria } | null)?.search;
+  const qs = new URLSearchParams(location.search);
+  const querySearch = parseQueryToSearchCriteria(qs);
+  const searchState = stateSearch || querySearch;
+  const [showSavePanel, setShowSavePanel] = useState(false);
   const {
     searchTerm,
     setSearchTerm,
@@ -23,9 +35,10 @@ const Matches = () => {
     setMaxAge,
     specialties,
     setSpecialties,
+    selectedDegrees,
+    handleDegreeChange,
     onlineOnly,
     setOnlineOnly,
-    selectedDoctor,
     activeView,
     setActiveView,
     savedSearches,
@@ -40,10 +53,26 @@ const Matches = () => {
     setSelectedCity,
     selectedOrientation,
     selectedEthnicity,
+    selectedReligion,
+    setSelectedReligion,
+    selectedCaste,
+    setSelectedCaste,
     selectedCast,
     setSelectedCast,
+    selectedSubcaste,
+    setSelectedSubcaste,
+    selectedGotra,
+    setSelectedGotra,
+    selectedMotherTongue,
+    handleMotherTongueChange,
+    excludeSameGotra,
+    setExcludeSameGotra,
+    minGunas,
+    setMinGunas,
     selectedColor,
     setSelectedColor,
+    availableStates,
+    availableCities,
     handleSearch,
     handleReset,
     handleVideoCall,
@@ -60,8 +89,43 @@ const Matches = () => {
     currentPage,
     setCurrentPage,
     totalPages,
-    filteredDoctors
-  } = useMatches();
+    filteredDoctors,
+    searchName,
+    setSearchName,
+    saveCurrentSearch
+  } = useMatches(searchState);
+
+  const handleCustomSearch = (e: React.FormEvent) => {
+    handleSearch(e);
+    const params = new URLSearchParams();
+    if (searchTerm) params.set('q', searchTerm);
+    if (minAge?.[0]) params.set('min', String(minAge[0]));
+    if (maxAge?.[0]) params.set('max', String(maxAge[0]));
+    if (specialties?.length) params.set('spec', specialties.join(','));
+    if (selectedDegrees?.length) params.set('deg', selectedDegrees.join(','));
+    if (onlineOnly) params.set('online', '1');
+    if (selectedCountry) params.set('country', selectedCountry);
+    if (selectedState) params.set('state', selectedState);
+    if (selectedCity) params.set('city', selectedCity);
+    if (selectedOrientation?.length) params.set('ori', selectedOrientation.join(','));
+    if (selectedEthnicity?.length) params.set('eth', selectedEthnicity.join(','));
+    if (selectedReligion && selectedReligion !== 'No preference') params.set('rel', selectedReligion);
+    const effectiveCaste = selectedCaste || selectedCast;
+    if (effectiveCaste && effectiveCaste !== 'No preference') params.set('caste', effectiveCaste);
+    if (selectedSubcaste) params.set('subcaste', selectedSubcaste);
+    if (selectedGotra && selectedGotra !== 'No preference') params.set('gotra', selectedGotra);
+    if (selectedMotherTongue?.length) params.set('mt', selectedMotherTongue.join(','));
+    if (excludeSameGotra) params.set('nosamegotra', '1');
+    if (minGunas) params.set('gunas', String(minGunas));
+    if (selectedColor) params.set('color', selectedColor);
+    const queryStr = params.toString();
+    window.history.replaceState({}, '', queryStr ? `?${queryStr}` : window.location.pathname);
+  };
+
+  const handleCustomReset = () => {
+    handleReset();
+    window.history.replaceState({}, '', window.location.pathname);
+  };
 
   const handleLoadSavedSearch = (search: SavedSearch) => {
     loadSavedSearch(search.id);
@@ -69,6 +133,7 @@ const Matches = () => {
   
   const handleEditSavedSearch = (search: SavedSearch) => {
     editSavedSearch(search.id);
+    setShowSavePanel(true);
   };
   
   const handleDeleteSavedSearch = (id: string) => {
@@ -91,6 +156,8 @@ const Matches = () => {
               setMaxAge={setMaxAge}
               specialties={specialties}
               setSpecialties={setSpecialties}
+              selectedDegrees={selectedDegrees}
+              handleDegreeChange={handleDegreeChange}
               onlineOnly={onlineOnly}
               setOnlineOnly={setOnlineOnly}
               selectedCountry={selectedCountry}
@@ -103,17 +170,37 @@ const Matches = () => {
               handleOrientationChange={handleOrientationChange}
               selectedEthnicity={selectedEthnicity}
               handleEthnicityChange={handleEthnicityChange}
+              selectedReligion={selectedReligion}
+              setSelectedReligion={setSelectedReligion}
+              selectedCaste={selectedCaste}
+              setSelectedCaste={setSelectedCaste}
               selectedCast={selectedCast}
               setSelectedCast={setSelectedCast}
+              selectedSubcaste={selectedSubcaste}
+              setSelectedSubcaste={setSelectedSubcaste}
+              selectedGotra={selectedGotra}
+              setSelectedGotra={setSelectedGotra}
+              selectedMotherTongue={selectedMotherTongue}
+              handleMotherTongueChange={handleMotherTongueChange}
+              excludeSameGotra={excludeSameGotra}
+              setExcludeSameGotra={setExcludeSameGotra}
+              minGunas={minGunas}
+              setMinGunas={setMinGunas}
               selectedColor={selectedColor}
               setSelectedColor={setSelectedColor}
-              handleSearch={handleSearch}
-              handleReset={handleReset}
+              handleSearch={handleCustomSearch}
+              handleReset={handleCustomReset}
               specialtiesList={specialtiesList}
+              degreesList={degreesList}
               orientationsList={orientationsList}
               ethnicityList={ethnicityList}
-              castList={castList}
+              religionList={religionList}
+              casteList={casteList}
+              subcasteSuggestions={subcasteSuggestions}
+              gotraList={gotraList}
               colorList={colorList}
+              availableStates={availableStates}
+              availableCities={availableCities}
             />
 
             <main className="flex-grow p-4 md:p-8 overflow-x-hidden w-full">
@@ -130,8 +217,8 @@ const Matches = () => {
                     savedSearches={savedSearches}
                     onSelect={handleLoadSavedSearch}
                     onDelete={handleDeleteSavedSearch}
-                    onCreateNew={() => {/* Add functionality for creating new saved search */}}
-                    selectedSavedSearch={selectedSavedSearch}
+                    onCreateNew={() => setShowSavePanel(true)}
+                    selectedSavedSearch={selectedSavedSearch ?? undefined}
                     showSavedSearches={showSavedSearches}
                     countries={countries}
                     statesByCountry={statesByCountry}
@@ -142,6 +229,44 @@ const Matches = () => {
                   />
                 )}
                 
+                {showSavePanel && (
+                  <Card className="mt-4 bg-white">
+                    <CardHeader>
+                      <CardTitle className="text-lg">
+                        {selectedSavedSearch && savedSearches.some(s => s.id === selectedSavedSearch)
+                          ? 'Update Saved Search'
+                          : 'Save Current Search'}
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="flex flex-col sm:flex-row gap-3">
+                        <div className="flex-grow">
+                          <Label htmlFor="matches-search-name" className="block mb-1">
+                            Search name
+                          </Label>
+                          <Input
+                            id="matches-search-name"
+                            placeholder="e.g. Cardiologists in Mumbai"
+                            value={searchName}
+                            onChange={(e) => setSearchName(e.target.value)}
+                          />
+                        </div>
+                        <div className="flex items-end gap-2">
+                          <Button type="button" onClick={() => {
+                            saveCurrentSearch();
+                            setShowSavePanel(false);
+                          }}>
+                            Save
+                          </Button>
+                          <Button type="button" variant="outline" onClick={() => setShowSavePanel(false)}>
+                            Cancel
+                          </Button>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+                
                 <DoctorsGrid
                   doctors={getPaginatedDoctors()}
                   currentPage={currentPage}
@@ -150,7 +275,7 @@ const Matches = () => {
                   onLike={handleLike}
                   onVideo={handleVideoCall}
                   onMessage={handleChat}
-                  onReset={handleReset}
+                  onReset={handleCustomReset}
                 />
               </div>
             </main>

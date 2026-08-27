@@ -3,10 +3,11 @@ import React, { useState } from 'react';
 import Header from '@/components/Header';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { usePersistedState } from '@/hooks/usePersistedState';
 import { 
-  Trophy, Search, Heart, MessageSquare, Share2, Filter 
+  Trophy, Search, Heart, MessageSquare, Share2 
 } from 'lucide-react';
-import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   Card,
   CardContent,
@@ -128,38 +129,74 @@ const SuccessStoriesPage = () => {
   const [sortBy, setSortBy] = useState("latest");
   const [filterTag, setFilterTag] = useState("all");
   
+  const [stories, setStories] = usePersistedState<typeof successStories>('mm:stories', successStories);
+  const [likedIds, setLikedIds] = usePersistedState<string[]>('mm:storiesLiked', []);
+  const [commentingStoryId, setCommentingStoryId] = useState<string | null>(null);
+  const [commentText, setCommentText] = useState("");
+
   const handleLike = (id: string) => {
+    setLikedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
     toast({
-      title: "Story liked",
-      description: "You've liked this success story.",
+      title: likedIds.includes(id) ? "Like removed" : "Story liked",
+      description: likedIds.includes(id) ? "You removed your like." : "You've liked this success story.",
     });
   };
-  
+
   const handleComment = (id: string) => {
-    toast({
-      title: "Add a comment",
-      description: "Comment feature will be available soon!",
-    });
+    setCommentingStoryId(prev => (prev === id ? null : id));
   };
-  
-  const handleShare = (id: string) => {
-    toast({
-      title: "Share success story",
-      description: "Sharing options will be available soon!",
-    });
+
+  const handleShare = async (id: string) => {
+    const url = `${window.location.origin}${window.location.pathname}#${id}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      toast({ title: "Link copied", description: "Link copied to clipboard." });
+    } catch {
+      try { await navigator.clipboard.writeText(window.location.href); toast({ title: "Link copied", description: "Link copied to clipboard." }); } catch { toast({ title: "Share", description: "Copy failed. URL: " + url }); }
+    }
   };
-  
+
+  const handleAddComment = (id: string) => {
+    if (!commentText.trim()) return;
+    setStories(prev => prev.map(s => (s.id === id ? { ...s, comments: s.comments + 1 } : s)));
+    setCommentingStoryId(null);
+    setCommentText("");
+    toast({ title: "Comment added", description: "Your comment has been posted." });
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    toast({
-      title: "Success story submitted",
-      description: "Your story has been submitted for review.",
-    });
+    const titleEl = document.getElementById("storyTitle") as HTMLInputElement | null;
+    const contentEl = document.getElementById("storyContent") as HTMLTextAreaElement | null;
+    const title = titleEl?.value?.trim();
+    const content = contentEl?.value?.trim();
+
+    if (!title || !content) {
+      toast({ title: "Missing details", description: "Please provide both a title and your story.", variant: "destructive" });
+      return;
+    }
+
+    const newStory = {
+      id: `story-${Date.now()}`,
+      title,
+      content,
+      date: new Date().toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" }),
+      author: { name: "You", image: "https://randomuser.me/api/portraits/men/1.jpg", specialty: "Doctor", location: "" },
+      partner: { name: "Your Match", image: "https://randomuser.me/api/portraits/women/1.jpg", specialty: "Doctor", location: "" },
+      likes: 0,
+      comments: 0,
+      featured: false,
+      tags: ["New"],
+    };
+    setStories(prev => [newStory, ...prev]);
+    if (titleEl) titleEl.value = "";
+    if (contentEl) contentEl.value = "";
+    toast({ title: "Success story submitted", description: "Your story has been published." });
   };
   
   const allTags = Array.from(new Set(successStories.flatMap(story => story.tags)));
   
-  const filteredStories = successStories.filter(story => {
+  const filteredStories = stories.filter(story => {
     const matchesSearch = 
       story.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
       story.content.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -307,19 +344,31 @@ const SuccessStoriesPage = () => {
                     <p className="text-gray-700 mt-4">{story.content}</p>
                   </CardContent>
                   
-                  <CardFooter className="flex justify-between pt-2">
-                    <Button variant="ghost" size="sm" onClick={() => handleLike(story.id)}>
-                      <Heart size={18} className="mr-1" />
-                      Like
-                    </Button>
-                    <Button variant="ghost" size="sm" onClick={() => handleComment(story.id)}>
-                      <MessageSquare size={18} className="mr-1" />
-                      Comment ({story.comments})
-                    </Button>
-                    <Button variant="ghost" size="sm" onClick={() => handleShare(story.id)}>
-                      <Share2 size={18} className="mr-1" />
-                      Share
-                    </Button>
+                  <CardFooter className="flex flex-col pt-2">
+                    <div className="flex justify-between w-full">
+                      <Button variant="ghost" size="sm" onClick={() => handleLike(story.id)}>
+                        <Heart size={18} className={`mr-1 ${likedIds.includes(story.id) ? 'fill-red-500 text-red-500' : ''}`} />
+                        {likedIds.includes(story.id) ? `Liked (${story.likes + 1})` : `Like (${story.likes})`}
+                      </Button>
+                      <Button variant="ghost" size="sm" onClick={() => handleComment(story.id)}>
+                        <MessageSquare size={18} className="mr-1" />
+                        Comment ({story.comments})
+                      </Button>
+                      <Button variant="ghost" size="sm" onClick={() => handleShare(story.id)}>
+                        <Share2 size={18} className="mr-1" />
+                        Share
+                      </Button>
+                    </div>
+                    {commentingStoryId === story.id && (
+                      <div className="flex gap-2 w-full mt-2">
+                        <Input
+                          placeholder="Write a comment..."
+                          value={commentText}
+                          onChange={(e) => setCommentText(e.target.value)}
+                        />
+                        <Button size="sm" onClick={() => handleAddComment(story.id)}>Post</Button>
+                      </div>
+                    )}
                   </CardFooter>
                 </Card>
               ))}

@@ -12,7 +12,6 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu';
-import { toast } from '@/hooks/use-toast';
 
 interface MessageItemProps {
   chat: Message;
@@ -20,6 +19,8 @@ interface MessageItemProps {
   isActive: boolean;
   onSelect: (id: string) => void;
   onSelectMessage: (id: string) => void;
+  onToggleRead?: (id: string) => void;
+  onDelete?: (id: string) => void;
 }
 
 const MessageItem: React.FC<MessageItemProps> = ({
@@ -27,7 +28,9 @@ const MessageItem: React.FC<MessageItemProps> = ({
   isSelected,
   isActive,
   onSelect,
-  onSelectMessage
+  onSelectMessage,
+  onToggleRead,
+  onDelete
 }) => {
   return (
     <div 
@@ -80,17 +83,12 @@ const MessageItem: React.FC<MessageItemProps> = ({
             <DropdownMenuItem onClick={() => onSelect(chat.id)}>
               {isSelected ? 'Deselect' : 'Select'}
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => console.log('Mark as read')}>
+            <DropdownMenuItem onClick={() => onToggleRead?.(chat.id)}>
               Mark as {chat.unread > 0 ? 'read' : 'unread'}
             </DropdownMenuItem>
             <DropdownMenuItem 
               className="text-red-500 focus:text-red-500" 
-              onClick={() => {
-                toast({
-                  title: "Message Deleted",
-                  description: "The message has been deleted.",
-                });
-              }}
+              onClick={() => onDelete?.(chat.id)}
             >
               Delete
             </DropdownMenuItem>

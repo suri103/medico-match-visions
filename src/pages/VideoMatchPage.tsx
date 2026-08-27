@@ -1,18 +1,23 @@
 
 import React, { useState } from 'react';
+import { usePersistedState } from '@/hooks/usePersistedState';
 import Header from '@/components/Header';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Calendar, Clock, Video, Users, Calendar as CalendarIcon, X, Check, MessageSquare } from 'lucide-react';
+import DoctorCard from '@/components/DoctorCard';
 import { format } from 'date-fns';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { useToast } from '@/components/ui/use-toast';
+import { useToast } from '@/hooks/use-toast';
+import { usePlan } from '@/hooks/usePlan';
 import { Doctor } from '@/features/matches/types';
 import { Separator } from '@/components/ui/separator';
 import VideoCall from '@/components/VideoCall';
+import { loadScheduled, saveScheduled } from '@/lib/videoStore';
+import { useFavoritesContext } from '@/features/favorites/FavoritesContext';
+import { useNavigate } from 'react-router-dom';
 
 interface VideoMatchRequest {
   id: string;
@@ -27,6 +32,9 @@ interface VideoMatchRequest {
 
 const VideoMatchPage: React.FC = () => {
   const { toast } = useToast();
+  const navigate = useNavigate();
+  const { blockedIds, connections } = useFavoritesContext();
+  const { planName, consumeVideoDate } = usePlan();
   const [activeTab, setActiveTab] = useState('explore');
   const [pendingRequests, setPendingRequests] = useState<VideoMatchRequest[]>([
     {
@@ -51,7 +59,8 @@ const VideoMatchPage: React.FC = () => {
     }
   ]);
   
-  const [matchSuggestions, setMatchSuggestions] = useState<Doctor[]>([
+  const allMatchSuggestions: Doctor[] = [
+
     {
       id: '201',
       name: 'Dr. Ravi Patel',
@@ -97,24 +106,50 @@ const VideoMatchPage: React.FC = () => {
       isOnline: true,
       sexualOrientation: 'Straight'
     }
-  ]);
+  ];
   
+  const dismissed = new Set([...blockedIds, ...connections.filter(c => c.status === 'passed').map(c => c.doctorId)]);
+  const matchSuggestions = allMatchSuggestions.filter(d => !dismissed.has(d.id) && d.profileVisibility !== 'hidden' && d.profileVisibility !== 'private');
+
   const [inCallWith, setInCallWith] = useState<{id: string, name: string, image: string} | null>(null);
+  const [sentIds, setSentIds] = usePersistedState<string[]>('mm:videoMatchSent', []);
   
   const handleSendRequest = (doctorId: string) => {
+    if (sentIds.includes(doctorId)) {
+      toast({ title: "Request Already Sent", description: "A request has already been sent for this doctor." });
+      return;
+    }
+    setSentIds((prev) => [...prev, doctorId]);
+    const doc = matchSuggestions.find((d) => d.id === doctorId);
     toast({
       title: "Request Sent",
-      description: "Your video match request has been sent successfully."
+      description: doc
+        ? `Your video match request has been sent to ${doc.name}.`
+        : "Your video match request has been sent successfully."
     });
   };
   
   const handleAcceptRequest = (requestId: string) => {
+    // Accepting books a video date — same quota gate as scheduling one (audit H3).
+    if (!consumeVideoDate()) {
+      toast({
+        title: "Video date limit reached",
+        description: `Your ${planName} plan's monthly video date limit is reached. Upgrade for more.`,
+        variant: "destructive"
+      });
+      return;
+    }
+    const req = pendingRequests.find(r => r.id === requestId);
     setPendingRequests(
-      pendingRequests.map(req => 
-        req.id === requestId ? {...req, status: 'accepted'} : req
+      pendingRequests.map(r => 
+        r.id === requestId ? {...r, status: 'accepted'} : r
       )
     );
-    
+    if (req) {
+      const scheduled = loadScheduled();
+      scheduled.push({ id: req.id, doctorId: req.doctorId, doctorName: req.doctorName, doctorImage: req.doctorImage, doctorSpecialty: req.doctorSpecialty, date: req.proposedDate.toISOString(), duration: 30, status: 'scheduled' });
+      saveScheduled(scheduled);
+    }
     toast({
       title: "Request Accepted",
       description: "You have accepted the video match request."
@@ -180,28 +215,28 @@ const VideoMatchPage: React.FC = () => {
               Video Match
             </h1>
             
-            <Button className="flex items-center">
+            <Button className="flex items-center" onClick={() => setActiveTab('explore')}>
               <Video className="mr-2 h-4 w-4" />
               Schedule Video Date
             </Button>
           </div>
           
           <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-            <TabsList className="grid grid-cols-3 mb-8">
-              <TabsTrigger value="explore" className="data-[state=active]:bg-mediblue-50 data-[state=active]:text-mediblue-600">
+            <TabsList className="grid grid-cols-1 sm:grid-cols-3 mb-8 h-auto p-1.5 gap-1.5 bg-white border border-slate-200 shadow-sm rounded-xl">
+              <TabsTrigger value="explore" className="text-xs sm:text-sm py-2 data-[state=active]:bg-mediblue-50 data-[state=active]:text-mediblue-600">
                 <Users className="h-4 w-4 mr-2" />
-                Explore Video Matches
+                Explore Matches
               </TabsTrigger>
-              <TabsTrigger value="requests" className="data-[state=active]:bg-mediblue-50 data-[state=active]:text-mediblue-600">
+              <TabsTrigger value="requests" className="text-xs sm:text-sm py-2 data-[state=active]:bg-mediblue-50 data-[state=active]:text-mediblue-600">
                 <MessageSquare className="h-4 w-4 mr-2" />
                 Pending Requests
                 {pendingRequests.filter(r => r.status === 'pending').length > 0 && (
-                  <Badge className="ml-2 bg-mediblue-500">
+                  <Badge className="ml-1.5 px-1.5 py-0 text-[10px] bg-mediblue-500">
                     {pendingRequests.filter(r => r.status === 'pending').length}
                   </Badge>
                 )}
               </TabsTrigger>
-              <TabsTrigger value="scheduled" className="data-[state=active]:bg-mediblue-50 data-[state=active]:text-mediblue-600">
+              <TabsTrigger value="scheduled" className="text-xs sm:text-sm py-2 data-[state=active]:bg-mediblue-50 data-[state=active]:text-mediblue-600">
                 <Calendar className="h-4 w-4 mr-2" />
                 Scheduled Dates
               </TabsTrigger>
@@ -216,47 +251,29 @@ const VideoMatchPage: React.FC = () => {
                 <CardContent className="p-6">
                   <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
                     {matchSuggestions.map(doctor => (
-                      <Card key={doctor.id} className="overflow-hidden hover:shadow-md transition-all">
-                        <div className="aspect-square relative">
-                          <img 
-                            src={doctor.imageUrl} 
-                            alt={doctor.name}
-                            className="w-full h-full object-cover"
-                          />
-                          <div className="absolute top-2 right-2">
-                            <Badge className="bg-mediblue-500">
-                              {doctor.matchPercentage}% Match
-                            </Badge>
-                          </div>
-                          {doctor.isOnline && (
-                            <div className="absolute bottom-2 left-2 flex items-center bg-black/60 text-white px-2 py-1 rounded-full text-xs">
-                              <div className="h-2 w-2 rounded-full bg-green-500 mr-1"></div>
-                              Online
-                            </div>
-                          )}
-                        </div>
-                        <CardContent className="p-4">
-                          <h3 className="font-semibold text-lg">{doctor.name}</h3>
-                          <p className="text-sm text-gray-600">{doctor.specialty}</p>
-                          <p className="text-sm text-gray-500">{doctor.age} • {doctor.city}, {doctor.state}</p>
-                          <div className="mt-2 flex flex-wrap gap-1">
-                            {doctor.interests.slice(0, 3).map((interest, idx) => (
-                              <Badge key={idx} variant="outline" className="bg-gray-100 text-gray-700">
-                                {interest}
-                              </Badge>
-                            ))}
-                          </div>
-                        </CardContent>
-                        <CardFooter className="p-4 pt-0 border-t flex justify-between">
-                          <Button variant="outline" className="w-[48%]">View Profile</Button>
-                          <Button 
-                            className="w-[48%]"
-                            onClick={() => handleSendRequest(doctor.id)}
-                          >
-                            Video Match
-                          </Button>
-                        </CardFooter>
-                      </Card>
+                      <div key={doctor.id} className="relative">
+                        {sentIds.includes(doctor.id) && (
+                          <span className="absolute top-2 right-2 z-10 bg-green-600 text-white text-xs font-medium px-2 py-1 rounded-full shadow">
+                            &#10003; Request Sent
+                          </span>
+                        )}
+                        <DoctorCard
+                          id={doctor.id}
+                          name={doctor.name.replace(/^Dr\.?\s*/i, '')}
+                          age={doctor.age}
+                          specialty={doctor.specialty}
+                          hospital={doctor.hospital}
+                          city={doctor.city}
+                          imageUrl={doctor.imageUrl}
+                          matchPercentage={doctor.matchPercentage}
+                          interests={doctor.interests}
+                          isOnline={doctor.isOnline}
+                          variant="discover"
+                          onLike={() => handleSendRequest(doctor.id)}
+                          onVideo={() => handleSendRequest(doctor.id)}
+                          onMessage={() => handleSendRequest(doctor.id)}
+                        />
+                      </div>
                     ))}
                   </div>
                 </CardContent>
@@ -319,7 +336,7 @@ const VideoMatchPage: React.FC = () => {
                                       <Check className="h-4 w-4 mr-1" />
                                       Accept & Join Now
                                     </Button>
-                                    <Button variant="outline" className="sm:w-auto">
+                                    <Button variant="outline" className="sm:w-auto" onClick={() => { toast({ title: "Reschedule", description: "Pick a new time on the Video Dates page." }); navigate('/video-dates'); }}>
                                       Schedule for Later
                                     </Button>
                                     <Button 

@@ -1,21 +1,19 @@
 
-import React, { useState } from 'react';
+import React from 'react';
 import Header from '@/components/Header';
 import FavoritesHeader from '@/features/favorites/components/FavoritesHeader';
-import FavoritesTabs from '@/features/favorites/components/FavoritesTabs';
+import DoctorsGrid from '@/features/favorites/components/DoctorsGrid';
+import EmptyState from '@/features/favorites/components/EmptyState';
 import { useFavorites } from '@/features/favorites/hooks/useFavorites';
 
 const FavoritesPage: React.FC = () => {
-  const [activeTab, setActiveTab] = useState("favorites");
   const {
     searchTerm,
     setSearchTerm,
     sortBy,
     setSortBy,
     sortedFavorites,
-    sortedLikedBy,
     handleRemoveFavorite,
-    handleAddFavorite,
     handleLike,
     handleVideoCall,
     handleChat
@@ -34,17 +32,22 @@ const FavoritesPage: React.FC = () => {
             setSortBy={setSortBy}
           />
           
-          <FavoritesTabs 
-            activeTab={activeTab}
-            setActiveTab={setActiveTab}
-            favorites={sortedFavorites}
-            likedBy={sortedLikedBy}
-            onRemoveFavorite={handleRemoveFavorite}
-            onAddFavorite={handleAddFavorite}
-            onLike={handleLike}
-            onVideo={handleVideoCall}
-            onMessage={handleChat}
-          />
+          {sortedFavorites.length > 0 ? (
+            <DoctorsGrid
+              doctors={sortedFavorites}
+              onRemoveFavorite={handleRemoveFavorite}
+              onLike={handleLike}
+              onVideo={handleVideoCall}
+              onMessage={handleChat}
+              gridType="favorites"
+            />
+          ) : (
+            <EmptyState 
+              type="favorites"
+              navigateTo="/matches"
+              buttonText="Browse & Star Matches"
+            />
+          )}
         </div>
       </main>
     </div>

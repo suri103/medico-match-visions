@@ -30,6 +30,9 @@ interface MessageListProps {
   setSearchTerm: (term: string) => void;
   setShowAdvancedSearch: (show: boolean) => void;
   handlePageChange: (page: number) => void;
+  markChatRead: (id: string) => void;
+  toggleChatReadState: (id: string) => void;
+  deleteChat: (id: string) => void;
 }
 
 const MessageList: React.FC<MessageListProps> = ({
@@ -46,7 +49,10 @@ const MessageList: React.FC<MessageListProps> = ({
   setSelectedChat,
   setSearchTerm,
   setShowAdvancedSearch,
-  handlePageChange
+  handlePageChange,
+  markChatRead,
+  toggleChatReadState,
+  deleteChat
 }) => {
   return (
     <div className="flex-grow flex flex-col">
@@ -105,7 +111,12 @@ const MessageList: React.FC<MessageListProps> = ({
               isSelected={selectedMessages.includes(chat.id)}
               isActive={selectedChat === chat.id}
               onSelect={toggleMessageSelection}
-              onSelectMessage={setSelectedChat}
+              onSelectMessage={(id) => {
+                setSelectedChat(id);
+                markChatRead(id);
+              }}
+              onToggleRead={() => toggleChatReadState(chat.id)}
+              onDelete={() => deleteChat(chat.id)}
             />
           ))
         ) : (

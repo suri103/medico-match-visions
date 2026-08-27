@@ -4,9 +4,13 @@ export interface Doctor {
   name: string;
   age: number;
   specialty: string;
+  degree?: string;
   hospital: string;
   city: string;
   state: string;
+  // Contact details are only present when the doctor chose to share them.
+  phone?: string;
+  email?: string;
   country: string;
   imageUrl: string;
   matchPercentage: number;
@@ -14,11 +18,43 @@ export interface Doctor {
   isOnline: boolean;
   sexualOrientation: string;
   isVerified?: boolean;
+  councilName?: string;
+  registrationNumber?: string;
+  registrationYear?: number;
+  verificationStatus?: 'unverified' | 'pending' | 'verified' | 'rejected';
+  verificationDocumentName?: string;
+  verificationDocumentUrl?: string;
+  verifiedAt?: string;
   profileVisibility?: 'visible' | 'hidden' | 'private';
-  lastActive?: Date;
+  lastActive?: Date | string;
   educationDetails?: string;
   aboutMe?: string;
   lookingFor?: string;
+  ethnicity?: string;
+  religion?: string;
+  caste?: string;
+  cast?: string;
+  subcaste?: string;
+  gotra?: string;
+  skinTone?: string;
+  gender?: string;
+  heightCm?: number;
+  maritalStatus?: string;
+  motherTongue?: string;
+  rashi?: string;
+  nakshatra?: string;
+  manglik?: string;
+  kundaliGunas?: number;
+  prefAgeMin?: number;
+  prefAgeMax?: number;
+  prefLocation?: string;
+  prefReligion?: string;
+  prefCaste?: string;
+  prefSubcaste?: string;
+  prefGotra?: string;
+  prefMotherTongue?: string[];
+  prefDegree?: string[];
+  excludeSameGotra?: boolean;
 }
 
 export interface SavedSearch {
@@ -27,12 +63,25 @@ export interface SavedSearch {
   minAge: number[];
   maxAge: number[];
   specialties: string[];
+  degrees?: string[];
   country: string | null;
   state: string | null;
   city: string | null;
   sexualOrientation: string[];
   onlineOnly: boolean;
   searchKeywords: string;
+  ethnicity: string[];
+  religion?: string;
+  caste?: string;
+  cast?: string;
+  subcaste?: string;
+  gotra?: string;
+  motherTongue?: string[];
+  excludeSameGotra?: boolean;
+  minGunas?: number;
+  color: string;
+  usernameSearch: string;
+  keywordSearch: string;
 }
 
 export interface LocationOption {

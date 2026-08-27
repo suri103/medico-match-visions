@@ -6,6 +6,7 @@ import { Plus } from 'lucide-react';
 import { SavedSearch } from '../types';
 import SavedSearchItem from './SavedSearchItem';
 import EmptyState from "@/features/favorites/components/EmptyState";
+import { Table, TableBody, TableHead, TableHeader } from '@/components/ui/table';
 
 interface SavedSearchesListProps {
   savedSearches: SavedSearch[];
@@ -15,8 +16,8 @@ interface SavedSearchesListProps {
   // Added missing props that were causing type errors
   selectedSavedSearch?: string;
   showSavedSearches?: boolean;
-  countries?: any[];
-  statesByCountry?: Record<string, any[]>;
+  countries?: Array<{ value: string; label: string }>;
+  statesByCountry?: Record<string, Array<{ value: string; label: string }>>;
   onHideSavedSearches?: () => void;
   onLoadSavedSearch?: (search: SavedSearch) => void;
   onEditSavedSearch?: (search: SavedSearch) => void;
@@ -30,7 +31,9 @@ const SavedSearchesList: React.FC<SavedSearchesListProps> = ({
   onCreateNew,
   selectedSavedSearch,
   countries,
-  statesByCountry
+  statesByCountry,
+  onLoadSavedSearch,
+  onEditSavedSearch,
 }) => {
   return (
     <Card className="mt-4">
@@ -43,19 +46,28 @@ const SavedSearchesList: React.FC<SavedSearchesListProps> = ({
         </div>
         
         {savedSearches.length > 0 ? (
-          <div className="space-y-3">
-            {savedSearches.map((search) => (
-              <SavedSearchItem 
-                key={search.id} 
-                savedSearch={search}
-                onSelect={() => onSelect(search)} 
-                onDelete={() => onDelete(search.id)}
-                selectedSearchId={selectedSavedSearch}
-                countries={countries}
-                statesByCountry={statesByCountry}
-              />
-            ))}
-          </div>
+          <Table>
+            <TableHeader>
+              <TableHead>Name</TableHead>
+              <TableHead>Criteria</TableHead>
+              <TableHead className="text-right">Actions</TableHead>
+            </TableHeader>
+            <TableBody>
+              {savedSearches.map((search) => (
+                <SavedSearchItem 
+                  key={search.id} 
+                  savedSearch={search}
+                  onSelect={() => onSelect(search)} 
+                  onLoad={() => onLoadSavedSearch ? onLoadSavedSearch(search) : onSelect(search)}
+                  onEdit={() => onEditSavedSearch ? onEditSavedSearch(search) : undefined}
+                  onDelete={() => onDelete(search.id)}
+                  selectedSearchId={selectedSavedSearch}
+                  countries={countries}
+                  statesByCountry={statesByCountry}
+                />
+              ))}
+            </TableBody>
+          </Table>
         ) : (
           <EmptyState 
             title="No saved searches" 

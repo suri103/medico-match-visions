@@ -12,6 +12,12 @@ dist
 dist-ssr
 *.local
 
+# Environment files — never commit real/dev credentials.
+# .env.example is committed on purpose as the documentation file.
+.env
+.env.*
+!.env.example
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
@@ -22,3 +28,13 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Server runtime stores (accounts + entitlements) — never commit user data.
+server/data/
+
+# Local tool state (not product source; per-developer)
+.commandcode/
+.kiro/
+
+# Windows shell accident artifact
+$null

@@ -1,5 +1,5 @@
-
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
+import { usePersistedState } from '@/hooks/usePersistedState';
 import Header from '@/components/Header';
 import { Button } from '@/components/ui/button';
 import { Slider } from '@/components/ui/slider';
@@ -7,7 +7,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
 import { useToast } from '@/hooks/use-toast';
-import { Search as SearchIcon, Filter, Users, X, Save, Delete, Edit, MapPin } from 'lucide-react';
+import { Search as SearchIcon, Users, X, Save, Delete, Edit, MapPin } from 'lucide-react';
 import {
   Select,
   SelectContent,
@@ -25,54 +25,21 @@ import {
 } from '@/components/ui/card';
 import { useNavigate } from 'react-router-dom';
 
-const specialtiesList = ['Cardiologist', 'Neurologist', 'Pediatrician', 'Orthopedic Surgeon', 'Dermatologist', 'Psychiatrist', 'Oncologist', 'General Practitioner'];
-const orientationsList = ['Straight', 'Gay', 'Lesbian', 'Bisexual'];
-const ethnicityList = ['Asian', 'Black', 'Hispanic', 'White', 'Middle Eastern', 'Native American', 'Pacific Islander', 'Other'];
-const castList = ['No preference', 'Brahmin', 'Kshatriya', 'Vaishya', 'Shudra', 'Other'];
-const colorList = ['Fair', 'Light', 'Medium', 'Olive', 'Brown', 'Dark'];
-
-interface SavedSearch {
-  id: string;
-  name: string;
-  minAge: number[];
-  maxAge: number[];
-  specialties: string[];
-  country: string | null;
-  state: string | null;
-  city: string | null;
-  sexualOrientation: string[];
-  onlineOnly: boolean;
-  searchKeywords: string;
-}
-
-const defaultSavedSearches: SavedSearch[] = [
-  {
-    id: '1',
-    name: 'Cardiologists in Mumbai',
-    minAge: [30],
-    maxAge: [40],
-    specialties: ['Cardiologist'],
-    country: 'india',
-    state: 'maharashtra',
-    city: 'mumbai',
-    sexualOrientation: [],
-    onlineOnly: false,
-    searchKeywords: '',
-  },
-  {
-    id: '2',
-    name: 'Online Doctors',
-    minAge: [25],
-    maxAge: [45],
-    specialties: [],
-    country: null,
-    state: null,
-    city: null,
-    sexualOrientation: [],
-    onlineOnly: true,
-    searchKeywords: '',
-  }
-];
+import type { SavedSearch } from '@/features/matches/types';
+import { defaultSavedSearches as sharedDefault } from '@/features/matches/data/constants';
+import {
+  degreesList,
+  specialtiesList,
+  orientationsList,
+  ethnicityList,
+  religionList,
+  casteList,
+  subcasteSuggestions,
+  gotraList,
+  motherTongueList,
+  colorList,
+} from '@/features/matches/data/constants';
+const defaultSavedSearches: SavedSearch[] = sharedDefault;
 
 const Search = () => {
   const { toast } = useToast();
@@ -81,9 +48,10 @@ const Search = () => {
   const [minAge, setMinAge] = useState<number[]>([25]);
   const [maxAge, setMaxAge] = useState<number[]>([45]);
   const [specialties, setSpecialties] = useState<string[]>([]);
+  const [selectedDegrees, setSelectedDegrees] = useState<string[]>([]);
   const [onlineOnly, setOnlineOnly] = useState(false);
   const [showSavedSearches, setShowSavedSearches] = useState(false);
-  const [savedSearches, setSavedSearches] = useState<SavedSearch[]>(defaultSavedSearches);
+  const [savedSearches, setSavedSearches] = usePersistedState<SavedSearch[]>('mm:savedSearches', defaultSavedSearches);
   const [searchName, setSearchName] = useState('');
   const [editingSavedSearchId, setEditingSavedSearchId] = useState<string | null>(null);
   const [selectedSavedSearch, setSelectedSavedSearch] = useState<string | null>(null);
@@ -95,19 +63,67 @@ const Search = () => {
   const [selectedCity, setSelectedCity] = useState<string | null>(null);
   const [selectedOrientation, setSelectedOrientation] = useState<string[]>([]);
   const [selectedEthnicity, setSelectedEthnicity] = useState<string[]>([]);
-  const [selectedCast, setSelectedCast] = useState<string>('No preference');
+  const [selectedReligion, setSelectedReligion] = useState<string>('No preference');
+  const [selectedCaste, setSelectedCaste] = useState<string>('No preference');
+  const [selectedSubcaste, setSelectedSubcaste] = useState<string>('');
+  const [selectedGotra, setSelectedGotra] = useState<string>('No preference');
+  const [selectedMotherTongue, setSelectedMotherTongue] = useState<string[]>([]);
+  const [excludeSameGotra, setExcludeSameGotra] = useState<boolean>(false);
+  const [minGunas, setMinGunas] = useState<number>(0);
   const [selectedColor, setSelectedColor] = useState<string>('');
+
+  const handleMotherTongueChange = (lang: string) => {
+    setSelectedMotherTongue(prev =>
+      prev.includes(lang) ? prev.filter(l => l !== lang) : [...prev, lang]
+    );
+  };
+
+  const handleDegreeChange = (deg: string) => {
+    setSelectedDegrees(prev =>
+      prev.includes(deg) ? prev.filter(d => d !== deg) : [...prev, deg]
+    );
+  };
   
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
-    
-    toast({
-      title: "Search criteria applied",
-      description: "Navigating to matches with your search criteria",
+    const params = new URLSearchParams();
+    if (searchTerm) params.set('q', searchTerm);
+    if (usernameSearch) params.set('u', usernameSearch);
+    if (keywordSearch) params.set('kw', keywordSearch);
+    params.set('min', String(minAge[0]));
+    params.set('max', String(maxAge[0]));
+    if (specialties.length) params.set('spec', specialties.join(','));
+    if (selectedDegrees.length) params.set('deg', selectedDegrees.join(','));
+    if (onlineOnly) params.set('online', '1');
+    if (selectedCountry) params.set('country', selectedCountry);
+    if (selectedState) params.set('state', selectedState);
+    if (selectedCity) params.set('city', selectedCity);
+    if (selectedOrientation.length) params.set('ori', selectedOrientation.join(','));
+    if (selectedEthnicity.length) params.set('eth', selectedEthnicity.join(','));
+    if (selectedReligion && selectedReligion !== 'No preference') params.set('rel', selectedReligion);
+    if (selectedCaste && selectedCaste !== 'No preference') {
+      params.set('caste', selectedCaste);
+      params.set('cast', selectedCaste);
+    }
+    if (selectedSubcaste) params.set('subcaste', selectedSubcaste);
+    if (selectedGotra && selectedGotra !== 'No preference') params.set('gotra', selectedGotra);
+    if (selectedMotherTongue.length) params.set('mt', selectedMotherTongue.join(','));
+    if (excludeSameGotra) params.set('nosamegotra', '1');
+    if (minGunas) params.set('gunas', String(minGunas));
+    if (selectedColor) params.set('color', selectedColor);
+    toast({ title: "Search criteria applied", description: "Navigating to matches with your search criteria" });
+    navigate(`/matches?${params.toString()}`, {
+      state: {
+        search: {
+          searchTerm, usernameSearch, keywordSearch, minAge, maxAge, specialties, degrees: selectedDegrees, onlineOnly,
+          country: selectedCountry, state: selectedState, city: selectedCity,
+          sexualOrientation: selectedOrientation, ethnicity: selectedEthnicity,
+          religion: selectedReligion, caste: selectedCaste, cast: selectedCaste,
+          subcaste: selectedSubcaste, gotra: selectedGotra, motherTongue: selectedMotherTongue,
+          excludeSameGotra, minGunas, color: selectedColor,
+        },
+      },
     });
-    
-    // Navigate to matches page with search parameters
-    navigate('/matches');
   };
 
   const handleReset = () => {
@@ -115,13 +131,20 @@ const Search = () => {
     setMinAge([25]);
     setMaxAge([45]);
     setSpecialties([]);
+    setSelectedDegrees([]);
     setOnlineOnly(false);
     setSelectedCountry(null);
     setSelectedState(null);
     setSelectedCity(null);
     setSelectedOrientation([]);
     setSelectedEthnicity([]);
-    setSelectedCast('No preference');
+    setSelectedReligion('No preference');
+    setSelectedCaste('No preference');
+    setSelectedSubcaste('');
+    setSelectedGotra('No preference');
+    setSelectedMotherTongue([]);
+    setExcludeSameGotra(false);
+    setMinGunas(0);
     setSelectedColor('');
     setUsernameSearch('');
     setKeywordSearch('');
@@ -133,7 +156,8 @@ const Search = () => {
   };
 
   const saveCurrentSearch = () => {
-    if (!searchName.trim()) {
+    const trimmed = searchName.trim();
+    if (!trimmed) {
       toast({
         title: "Please name your search",
         description: "Enter a name to save your search criteria",
@@ -141,19 +165,40 @@ const Search = () => {
       });
       return;
     }
+    if (savedSearches.some(s => s.name.toLowerCase() === trimmed.toLowerCase() && s.id !== editingSavedSearchId)) {
+      toast({ title: "Name already exists", description: "Choose a different name.", variant: "destructive" });
+      return;
+    }
+    if (!editingSavedSearchId && savedSearches.length >= 20) {
+      toast({ title: "Too many saved searches", description: "Delete one before saving another (max 20).", variant: "destructive" });
+      return;
+    }
 
     const newSearch: SavedSearch = {
       id: editingSavedSearchId || Date.now().toString(),
-      name: searchName,
+      name: trimmed,
       minAge,
       maxAge,
       specialties,
+      degrees: selectedDegrees,
       country: selectedCountry,
       state: selectedState,
       city: selectedCity,
       sexualOrientation: selectedOrientation,
       onlineOnly,
       searchKeywords: searchTerm,
+      ethnicity: selectedEthnicity,
+      religion: selectedReligion,
+      caste: selectedCaste,
+      cast: selectedCaste,
+      subcaste: selectedSubcaste,
+      gotra: selectedGotra,
+      motherTongue: selectedMotherTongue,
+      excludeSameGotra,
+      minGunas,
+      color: selectedColor,
+      usernameSearch,
+      keywordSearch,
     };
 
     if (editingSavedSearchId) {
@@ -180,12 +225,24 @@ const Search = () => {
     setMinAge(search.minAge);
     setMaxAge(search.maxAge);
     setSpecialties(search.specialties);
+    setSelectedDegrees(search.degrees ?? []);
     setSelectedCountry(search.country);
     setSelectedState(search.state);
     setSelectedCity(search.city);
     setSelectedOrientation(search.sexualOrientation);
     setOnlineOnly(search.onlineOnly);
     setSearchTerm(search.searchKeywords);
+    setSelectedEthnicity(search.ethnicity ?? []);
+    setSelectedReligion(search.religion ?? 'No preference');
+    setSelectedCaste(search.caste ?? search.cast ?? 'No preference');
+    setSelectedSubcaste(search.subcaste ?? '');
+    setSelectedGotra(search.gotra ?? 'No preference');
+    setSelectedMotherTongue(search.motherTongue ?? []);
+    setExcludeSameGotra(search.excludeSameGotra ?? false);
+    setMinGunas(search.minGunas ?? 0);
+    setSelectedColor(search.color ?? '');
+    setUsernameSearch(search.usernameSearch ?? '');
+    setKeywordSearch(search.keywordSearch ?? '');
     setSelectedSavedSearch(searchId);
 
     toast({
@@ -203,12 +260,24 @@ const Search = () => {
     setMinAge(search.minAge);
     setMaxAge(search.maxAge);
     setSpecialties(search.specialties);
+    setSelectedDegrees(search.degrees ?? []);
     setSelectedCountry(search.country);
     setSelectedState(search.state);
     setSelectedCity(search.city);
     setSelectedOrientation(search.sexualOrientation);
     setOnlineOnly(search.onlineOnly);
     setSearchTerm(search.searchKeywords);
+    setSelectedEthnicity(search.ethnicity ?? []);
+    setSelectedReligion(search.religion ?? 'No preference');
+    setSelectedCaste(search.caste ?? search.cast ?? 'No preference');
+    setSelectedSubcaste(search.subcaste ?? '');
+    setSelectedGotra(search.gotra ?? 'No preference');
+    setSelectedMotherTongue(search.motherTongue ?? []);
+    setExcludeSameGotra(search.excludeSameGotra ?? false);
+    setMinGunas(search.minGunas ?? 0);
+    setSelectedColor(search.color ?? '');
+    setUsernameSearch(search.usernameSearch ?? '');
+    setKeywordSearch(search.keywordSearch ?? '');
     
     toast({
       title: "Edit saved search",
@@ -251,20 +320,23 @@ const Search = () => {
       
       <main className="flex-grow p-4 md:p-8">
         <div className="max-w-7xl mx-auto">
-          <div className="flex flex-col md:flex-row justify-between items-center mb-8">
-            <h1 className="text-2xl md:text-3xl font-bold text-mediblue-800 mb-4 md:mb-0">
-              Find Your Match
-            </h1>
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4">
+            <div>
+              <h1 className="text-2xl md:text-3xl font-bold text-mediblue-800">
+                Find Your Match
+              </h1>
+              <p className="text-xs sm:text-sm text-slate-500 mt-0.5">Advanced multi-attribute search across verified doctor profiles</p>
+            </div>
             
-            <div className="w-full md:w-auto flex flex-col md:flex-row items-center space-y-4 md:space-y-0 md:space-x-4">
+            <div className="w-full sm:w-auto flex items-center gap-2">
               <Button
                 variant="outline" 
                 size="sm"
-                className={`flex items-center space-x-2 ${showSavedSearches ? 'bg-blue-50' : ''}`}
+                className={`flex items-center space-x-2 h-9 w-full sm:w-auto ${showSavedSearches ? 'bg-blue-50 border-blue-300 text-blue-700' : 'bg-white'}`}
                 onClick={() => setShowSavedSearches(!showSavedSearches)}
               >
                 <Save size={16} />
-                <span>Saved Searches</span>
+                <span>{showSavedSearches ? 'Hide Saved Searches' : 'Saved Searches'}</span>
               </Button>
             </div>
           </div>
@@ -300,24 +372,26 @@ const Search = () => {
                         >
                           <TableCell className="font-medium">{search.name}</TableCell>
                           <TableCell>
-                            <div className="text-sm text-gray-600">
+                            <div className="text-sm text-gray-600 flex flex-wrap gap-2">
                               {search.specialties.length > 0 && 
-                                <span className="mr-3">
-                                  {search.specialties.join(", ")}
-                                </span>
+                                <span>{search.specialties.join(", ")}</span>
                               }
                               {(search.minAge[0] !== 25 || search.maxAge[0] !== 45) && 
-                                <span className="mr-3">
-                                  {search.minAge[0]}-{search.maxAge[0]} y/o
-                                </span>
+                                <span>{search.minAge[0]}-{search.maxAge[0]} y/o</span>
                               }
                               {search.country && 
-                                <span className="mr-3 flex items-center">
+                                <span className="flex items-center">
                                   <MapPin size={12} className="mr-1" />
                                   {search.country}
                                   {search.state && `, ${search.state}`}
                                 </span>
                               }
+                              {search.religion && search.religion !== 'No preference' && (
+                                <span>{search.religion}</span>
+                              )}
+                              {(search.caste || search.cast) && (search.caste || search.cast) !== 'No preference' && (
+                                <span>{search.caste || search.cast}</span>
+                              )}
                               {search.onlineOnly && 
                                 <span className="text-green-600 font-medium">Online only</span>
                               }
@@ -334,7 +408,7 @@ const Search = () => {
                             </Button>
                             <Button 
                               variant="ghost" 
-                              size="icon"
+                              size="icon" 
                               onClick={() => editSavedSearch(search.id)}
                               className="h-8 w-8"
                             >
@@ -394,7 +468,7 @@ const Search = () => {
                             <Slider 
                               defaultValue={[25]} 
                               max={65} 
-                              min={18} 
+                              min={21} 
                               step={1}
                               value={minAge}
                               onValueChange={setMinAge}
@@ -403,7 +477,7 @@ const Search = () => {
                             <Slider 
                               defaultValue={[45]} 
                               max={65} 
-                              min={18} 
+                              min={21} 
                               step={1}
                               value={maxAge}
                               onValueChange={setMaxAge}
@@ -428,7 +502,23 @@ const Search = () => {
                     
                     <div className="grid md:grid-cols-2 gap-6">
                       <div>
-                        <Label className="mb-2 block">Specialty</Label>
+                        <Label className="mb-2 block font-semibold text-slate-800">Medical Degree / Qualification</Label>
+                        <div className="grid grid-cols-2 gap-2 h-40 overflow-y-auto pr-2 border rounded-md p-3 bg-slate-50/50">
+                          {degreesList.map((deg) => (
+                            <div key={deg} className="flex items-center space-x-2">
+                              <Checkbox 
+                                id={`degree-${deg}`} 
+                                checked={selectedDegrees.includes(deg)}
+                                onCheckedChange={() => handleDegreeChange(deg)}
+                              />
+                              <Label htmlFor={`degree-${deg}`} className="cursor-pointer text-sm font-medium">{deg}</Label>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div>
+                        <Label className="mb-2 block font-semibold text-slate-800">Specialty</Label>
                         <div className="grid grid-cols-2 gap-2 h-40 overflow-y-auto pr-2 border rounded-md p-3">
                           {specialtiesList.map((specialty) => (
                             <div key={specialty} className="flex items-center space-x-2">
@@ -448,9 +538,11 @@ const Search = () => {
                           ))}
                         </div>
                       </div>
-                      
+                    </div>
+                    
+                    <div className="grid md:grid-cols-2 gap-6">
                       <div>
-                        <Label className="mb-2 block">Sexual Orientation</Label>
+                        <Label className="mb-2 block font-semibold text-slate-800">Sexual Orientation</Label>
                         <div className="grid grid-cols-2 gap-2 border rounded-md p-3">
                           {orientationsList.map((orientation) => (
                             <div key={orientation} className="flex items-center space-x-2">
@@ -466,23 +558,144 @@ const Search = () => {
                           ))}
                         </div>
                         
-                        <div className="mt-4">
-                          <Label className="mb-2 block">Cast Preference</Label>
+                        <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                          <div>
+                            <Label className="mb-2 block">Religion</Label>
+                            <Select 
+                              value={selectedReligion} 
+                              onValueChange={setSelectedReligion}
+                            >
+                              <SelectTrigger id="religion">
+                                <SelectValue placeholder="Select religion" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {religionList.map((rel) => (
+                                  <SelectItem key={rel} value={rel}>
+                                    {rel}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+
+                          <div>
+                            <Label className="mb-2 block">Caste</Label>
+                            <Select 
+                              value={selectedCaste} 
+                              onValueChange={setSelectedCaste}
+                            >
+                              <SelectTrigger id="caste">
+                                <SelectValue placeholder="Select caste" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {casteList.map((caste) => (
+                                  <SelectItem key={caste} value={caste}>
+                                    {caste}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid md:grid-cols-2 gap-6">
+                      <div>
+                        <Label className="mb-2 block">Subcaste</Label>
+                        <div className="space-y-2">
                           <Select 
-                            value={selectedCast} 
-                            onValueChange={setSelectedCast}
+                            value={selectedSubcaste || 'No preference'} 
+                            onValueChange={(v) => setSelectedSubcaste(v === 'No preference' ? '' : v)}
                           >
-                            <SelectTrigger id="cast">
-                              <SelectValue placeholder="Select cast" />
+                            <SelectTrigger id="search-subcaste">
+                              <SelectValue placeholder="Popular subcastes" />
                             </SelectTrigger>
                             <SelectContent>
-                              {castList.map((cast) => (
-                                <SelectItem key={cast} value={cast}>
-                                  {cast}
+                              {subcasteSuggestions.map((sub) => (
+                                <SelectItem key={sub} value={sub}>
+                                  {sub}
                                 </SelectItem>
                               ))}
                             </SelectContent>
                           </Select>
+                          <Input 
+                            placeholder="Or enter specific subcaste..." 
+                            value={selectedSubcaste}
+                            onChange={(e) => setSelectedSubcaste(e.target.value)}
+                            className="text-xs"
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <Label className="mb-2 block">Gotra / Lineage</Label>
+                        <div className="space-y-2">
+                          <Select 
+                            value={selectedGotra} 
+                            onValueChange={setSelectedGotra}
+                          >
+                            <SelectTrigger id="search-gotra">
+                              <SelectValue placeholder="Select gotra" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {gotraList.map((g) => (
+                                <SelectItem key={g} value={g}>
+                                  {g}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <div className="flex items-center space-x-2 pt-1">
+                            <Checkbox 
+                              id="search-exclude-gotra" 
+                              checked={excludeSameGotra}
+                              onCheckedChange={(checked) => setExcludeSameGotra(!!checked)}
+                            />
+                            <Label htmlFor="search-exclude-gotra" className="text-xs cursor-pointer font-normal">
+                              Exclude Same Gotra (Sagotra Exogamy)
+                            </Label>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid md:grid-cols-2 gap-6">
+                      <div>
+                        <Label className="mb-2 block">Mother Tongue / Regional Language</Label>
+                        <div className="grid grid-cols-2 gap-2 h-40 overflow-y-auto pr-2 border rounded-md p-3">
+                          {motherTongueList.map((lang) => (
+                            <div key={lang} className="flex items-center space-x-2">
+                              <Checkbox 
+                                id={`search-mt-${lang}`} 
+                                checked={selectedMotherTongue.includes(lang)}
+                                onCheckedChange={() => handleMotherTongueChange(lang)}
+                              />
+                              <Label htmlFor={`search-mt-${lang}`} className="cursor-pointer text-xs">{lang}</Label>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div>
+                        <Label className="mb-2 block">Kundali Compatibility (Ashta Koota / 36 Gunas)</Label>
+                        <div className="space-y-3 border rounded-md p-3">
+                          <Select 
+                            value={minGunas.toString()} 
+                            onValueChange={(val) => setMinGunas(parseInt(val, 10))}
+                          >
+                            <SelectTrigger id="search-min-gunas">
+                              <SelectValue placeholder="Minimum Gunas" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="0">Any Compatibility</SelectItem>
+                              <SelectItem value="18">18+ Gunas (Shubh / Recommended)</SelectItem>
+                              <SelectItem value="24">24+ Gunas (Good Alignment)</SelectItem>
+                              <SelectItem value="28">28+ Gunas (Uttam / Excellent)</SelectItem>
+                              <SelectItem value="32">32+ Gunas (Highest Match)</SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <p className="text-xs text-slate-500">Filters prospective doctor matches meeting traditional 36-point Vedic horoscope compatibility.</p>
                         </div>
                       </div>
                     </div>
@@ -544,7 +757,7 @@ const Search = () => {
                             <Label className="mb-2 block">Skin Tone</Label>
                             <Select 
                               value={selectedColor || "any_color"} 
-                              onValueChange={setSelectedColor}
+                              onValueChange={(value) => setSelectedColor(value === "any_color" ? "" : value)}
                             >
                               <SelectTrigger id="color">
                                 <SelectValue placeholder="Select skin tone" />
@@ -628,6 +841,7 @@ const Search = () => {
                 <CardContent className="space-y-4 text-sm">
                   <p>🌟 <span className="font-medium">Be specific</span> with your specialty criteria to find the most relevant matches.</p>
                   <p>🌍 <span className="font-medium">Location filters</span> help you find doctors in your area or preferred location.</p>
+                  <p>🕉️ <span className="font-medium">Religion & Caste</span> preferences assist in discovering culturally aligned partners.</p>
                   <p>💾 <span className="font-medium">Save searches</span> you frequently use to quickly apply them later.</p>
                   <p>🔍 <span className="font-medium">Keyword search</span> can find matches based on interests, hospitals, or education.</p>
                   <p>⭐ <span className="font-medium">Online status</span> filters can help you find doctors currently available to chat.</p>

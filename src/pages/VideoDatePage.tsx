@@ -1,9 +1,11 @@
 
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { usePersistedState } from '@/hooks/usePersistedState';
+import { demoModeEnabled } from '@/lib/devAuth';
+import { astrologyEnabled } from '@/lib/features';
 import {
   Calendar,
   MessageSquare,
-  UserRound,
   History,
   Bell,
   Clock,
@@ -11,7 +13,8 @@ import {
   Phone,
 } from 'lucide-react';
 import { format } from 'date-fns';
-import { useToast } from '@/components/ui/use-toast';
+import { useToast } from '@/hooks/use-toast';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import Header from '@/components/Header';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
@@ -26,8 +29,16 @@ import { Badge } from '@/components/ui/badge';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import VideoDateInvites from '@/components/VideoDateInvites';
 import VideoDateHistory from '@/components/VideoDateHistory';
-import VideoDateNotification from '@/components/VideoDateNotification';
 import { Separator } from '@/components/ui/separator';
+import {
+  hasServerSession, listVideoDates as serverListVideoDates,
+  createVideoDate as serverCreateVideoDate, cancelVideoDate as serverCancelVideoDate,
+  createConsultation as serverCreateConsultation,
+  browseProfiles, type ServerVideoDate,
+} from '@/services/api';
+import { usePlan } from '@/hooks/usePlan';
+import { acceptInviteToScheduled, ensureRecording, loadScheduled, saveScheduled } from '@/lib/videoStore';
+import RecordingPlayer from '@/components/RecordingPlayer';
 
 // TypeScript interfaces for VideoDateInvite and VideoDateHistoryItem
 interface VideoDateInvite {
@@ -55,7 +66,8 @@ interface VideoDateHistoryItem {
 }
 
 // Sample data
-const upcomingDates = [
+// Sample data (audit C3: demo-only — blank in production).
+const upcomingDates = demoModeEnabled ? [
   {
     id: '1',
     doctorName: 'Dr. Priya Sharma',
@@ -72,9 +84,9 @@ const upcomingDates = [
     date: new Date(Date.now() + 1000 * 60 * 60 * 48), // 48 hours from now
     duration: 45,
   },
-];
+] : [];
 
-const pendingInvites: VideoDateInvite[] = [
+const pendingInvites: VideoDateInvite[] = demoModeEnabled ? [
   {
     id: '1',
     senderId: '101',
@@ -105,9 +117,9 @@ const pendingInvites: VideoDateInvite[] = [
     duration: 45,
     status: "pending"
   }
-];
+] : [];
 
-const dateHistory: VideoDateHistoryItem[] = [
+const dateHistory: VideoDateHistoryItem[] = demoModeEnabled ? [
   {
     id: '1',
     doctorId: '201',
@@ -142,7 +154,7 @@ const dateHistory: VideoDateHistoryItem[] = [
     duration: 30,
     status: "missed"
   }
-];
+] : [];
 
 const notifications = [
   {
@@ -174,16 +186,126 @@ const notifications = [
   }
 ];
 
+// Map a doctor display name to the matching "Schedule a New Video Date" select value.
+const doctorSelectValueFor = (name: string): string => {
+  const known: Array<[string, string]> = [
+    ['Dr. Priya Sharma', '1'],
+    ['Dr. Rajiv Mehta', '2'],
+    ['Dr. Ananya Patel', '3'],
+    ['Dr. Vikram Singh', '4'],
+  ];
+  const hit = known.find(([n]) => n === name || n.includes(name) || name.includes(n));
+  return hit ? hit[1] : '';
+};
+
+// Inverse of doctorSelectValueFor: select value -> display name, so stored
+// requests show a name instead of the raw select value ("1").
+const doctorDisplayNameFor = (value: string): string => {
+  const known: Record<string, string> = {
+    '1': 'Dr. Priya Sharma',
+    '2': 'Dr. Rajiv Mehta',
+    '3': 'Dr. Ananya Patel',
+    '4': 'Dr. Vikram Singh',
+  };
+  return known[value] || value;
+};
+
 const VideoDatePage: React.FC = () => {
   const [activeTab, setActiveTab] = useState('upcoming');
   const { toast } = useToast();
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  // ?mode=consultation → book against the purchased astrologer entitlement.
+  // Feature-flagged: unreachable (false) until the astrology feature launches.
+  const isConsultationMode = astrologyEnabled && searchParams.get('mode') === 'consultation';
+  const { planName, quota, usedThisMonth, videoDatesLeft, consumeVideoDate, refundVideoDate } = usePlan();
   const [selectedDoctor, setSelectedDoctor] = useState<string>('');
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
   const [duration, setDuration] = useState<string>('30');
   const [message, setMessage] = useState<string>('');
+  const [invites, setInvites] = usePersistedState<VideoDateInvite[]>('mm:videoInvites', pendingInvites);
+  const [sentRequests, setSentRequests] = usePersistedState<Array<{ id: string; doctorName: string; date: string; duration: string }>>('mm:sentVideoRequests', []);
+  const scheduled = loadScheduled();
+  // Bumped when the raw `scheduled` storage is mutated directly, so the list
+  // re-renders (loadScheduled() alone is a plain per-render read).
+  const [scheduledVersion, setScheduledVersion] = useState(0);
+  void scheduledVersion;
 
+  // ---- Wired backend sync: real video dates + profile-id resolution ----
+  const [serverDates, setServerDates] = useState<ServerVideoDate[]>([]);
+  const profileIdByNameRef = useRef<Record<string, string>>({});
+  useEffect(() => {
+    if (!hasServerSession()) return;
+    let cancelled = false;
+    (async () => {
+      const rows = await serverListVideoDates();
+      if (rows && !cancelled) setServerDates(rows);
+      const profiles = await browseProfiles({ limit: 200 });
+      if (profiles && !cancelled) {
+        const map: Record<string, string> = {};
+        for (const p of profiles) {
+          map[p.name.toLowerCase()] = p.id;
+          map[`dr. ${p.name}`.toLowerCase()] = p.id;
+        }
+        profileIdByNameRef.current = map;
+      }
+    })().catch(() => {
+      /* offline — local/demo behaviour remains */
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const [viewingRecording, setViewingRecording] = React.useState<import('@/lib/videoStore').VideoRecording | null>(null);
+
+  const handleAcceptInvite = (inviteId: string) => {
+    // Accepting an invite books a video date — it must pass the same quota
+    // gate as scheduling one (audit H3).
+    if (!consumeVideoDate()) {
+      toast({
+        title: "Video date limit reached",
+        description: `Your ${planName} plan's monthly video date limit is reached. Upgrade for more.`,
+        variant: "destructive"
+      });
+      return;
+    }
+    const invite = invites.find(i => i.id === inviteId);
+    setInvites(prev => prev.map(iv => (iv.id === inviteId ? { ...iv, status: 'accepted' as const } : iv)));
+    if (invite) {
+      const scheduled = loadScheduled();
+      scheduled.push(acceptInviteToScheduled({ ...invite, proposedDate: (invite.proposedDate as unknown as string) } as unknown as import('@/lib/videoStore').VideoInvite));
+      saveScheduled(scheduled);
+    }
+    toast({ title: "Video Date Accepted", description: "The video date has been added to your calendar." });
+    try {
+      const raw = localStorage.getItem('mm:notifications');
+      const arr = raw ? JSON.parse(raw) : [];
+      arr.unshift({ id: Date.now().toString(), type: 'video_request', from: 'Video Date', content: 'You accepted a video date invitation.', timestamp: new Date().toISOString(), read: false, imageUrl: 'https://randomuser.me/api/portraits/women/44.jpg' });
+      localStorage.setItem('mm:notifications', JSON.stringify(arr.slice(0, 50)));
+      window.dispatchEvent(new CustomEvent('mm:persisted-state-changed', { detail: { key: 'mm:notifications' } }));
+    } catch { /* ignore */ }
+  };
+
+  const handleDeclineInvite = (inviteId: string) => {
+    setInvites(prev => prev.map(iv => (iv.id === inviteId ? { ...iv, status: 'declined' as const } : iv)));
+    toast({ title: "Video Date Declined", description: "The invitation has been declined." });
+  };
+
+  const handleRescheduleInvite = (inviteId: string) => {
+    setInvites(prev => prev.map(iv => (iv.id === inviteId ? { ...iv, status: 'rescheduled' as const } : iv)));
+    toast({ title: "Reschedule Requested", description: "A new time has been suggested for this video date." });
+    setActiveTab('new');
+  };
+
+  const handleRebook = (doctorId: string) => {
+    toast({ title: "Booking Reopened", description: `Scheduling a new video date with Dr. ${doctorId}.` });
+    setActiveTab('upcoming');
+  };
+
+  const [submitting, setSubmitting] = useState(false);
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (submitting) return;
     
     if (!selectedDoctor) {
       toast({
@@ -202,16 +324,60 @@ const VideoDatePage: React.FC = () => {
       });
       return;
     }
+
+    setSubmitting(true);
+    if (!consumeVideoDate()) {
+      toast({
+        title: "Video date limit reached",
+        description: `Your ${planName} plan allows ${quota === Infinity ? 'unlimited' : quota} video date${quota === 1 ? '' : 's'} per month. Upgrade your plan for more.`,
+        variant: "destructive"
+      });
+      setSubmitting(false);
+      return;
+    }
     
     toast({
       title: "Success",
       description: "Video date request has been sent!",
     });
     
+    setSentRequests(prev => [
+      ...prev,
+      {
+        id: Date.now().toString(),
+        doctorName: doctorDisplayNameFor(selectedDoctor),
+        date: selectedDate ? new Date(selectedDate).toISOString() : '',
+        duration,
+      },
+    ]);
+
+    // Durable record on the wired backend — the server re-enforces its own
+    // quota atomically; a failure here degrades to local-only with a notice.
+    if (hasServerSession() && selectedDate) {
+      const displayName = doctorDisplayNameFor(selectedDoctor);
+      const pid = profileIdByNameRef.current[String(displayName).toLowerCase()];
+      // Consultation mode (?mode=consultation): books against the purchased
+      // astrologer entitlement — no video-date quota consumed.
+      if (isConsultationMode) {
+        void serverCreateConsultation(new Date(selectedDate).toISOString(), Number(duration) || 45)
+          .then((r0) => {
+            if (!r0.ok && r0.error) toast({ title: 'Booking not confirmed', description: r0.error, variant: 'destructive' });
+          })
+          .catch(() => {});
+      } else if (pid) {
+        void serverCreateVideoDate(pid, new Date(selectedDate).toISOString(), Number(duration) || 30)
+          .then((r0) => {
+            if (!r0.ok && r0.error) toast({ title: 'Not synced', description: r0.error, variant: 'destructive' });
+          })
+          .catch(() => {});
+      }
+    }
+
     setSelectedDoctor('');
     setSelectedDate(null);
     setDuration('30');
     setMessage('');
+    setSubmitting(false);
   };
 
   return (
@@ -227,27 +393,27 @@ const VideoDatePage: React.FC = () => {
               </h1>
               
               <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-                <TabsList className="grid grid-cols-4 mb-6">
-                  <TabsTrigger value="upcoming" className="flex items-center gap-2">
-                    <Calendar className="h-4 w-4" />
-                    <span className="hidden sm:inline">Upcoming</span>
+                <TabsList className="grid grid-cols-2 sm:grid-cols-4 mb-6 h-auto p-1.5 gap-1 bg-white border border-slate-200 shadow-sm rounded-xl">
+                  <TabsTrigger value="upcoming" className="flex items-center justify-center gap-1.5 text-xs py-2">
+                    <Calendar className="h-3.5 w-3.5" />
+                    <span>Upcoming</span>
                   </TabsTrigger>
-                  <TabsTrigger value="invites" className="flex items-center gap-2">
-                    <MessageSquare className="h-4 w-4" />
-                    <span className="hidden sm:inline">Invites</span>
-                    {pendingInvites.length > 0 && (
-                      <Badge className="ml-1 bg-blue-500">{pendingInvites.length}</Badge>
+                  <TabsTrigger value="invites" className="flex items-center justify-center gap-1.5 text-xs py-2">
+                    <MessageSquare className="h-3.5 w-3.5" />
+                    <span>Invites</span>
+                    {invites.filter(i => i.status === 'pending').length > 0 && (
+                      <Badge className="ml-1 px-1.5 py-0 text-[10px] bg-blue-500">{invites.filter(i => i.status === 'pending').length}</Badge>
                     )}
                   </TabsTrigger>
-                  <TabsTrigger value="history" className="flex items-center gap-2">
-                    <History className="h-4 w-4" />
-                    <span className="hidden sm:inline">History</span>
+                  <TabsTrigger value="history" className="flex items-center justify-center gap-1.5 text-xs py-2">
+                    <History className="h-3.5 w-3.5" />
+                    <span>History</span>
                   </TabsTrigger>
-                  <TabsTrigger value="notifications" className="flex items-center gap-2">
-                    <Bell className="h-4 w-4" />
-                    <span className="hidden sm:inline">Notifications</span>
+                  <TabsTrigger value="notifications" className="flex items-center justify-center gap-1.5 text-xs py-2">
+                    <Bell className="h-3.5 w-3.5" />
+                    <span>Alerts</span>
                     {notifications.filter(n => !n.isRead).length > 0 && (
-                      <Badge className="ml-1 bg-red-500">
+                      <Badge className="ml-1 px-1.5 py-0 text-[10px] bg-red-500">
                         {notifications.filter(n => !n.isRead).length}
                       </Badge>
                     )}
@@ -256,9 +422,9 @@ const VideoDatePage: React.FC = () => {
                 
                 <TabsContent value="upcoming" className="space-y-4">
                   <h2 className="text-xl font-semibold mb-4">Upcoming Video Dates</h2>
-                  {upcomingDates.length > 0 ? (
+                  {[...serverDates.map(d => ({ id: d.id, doctorName: d.profile.name, doctorSpecialty: 'Match', doctorImage: d.profile.imageUrl || '', date: new Date(d.scheduledFor), duration: d.durationMinutes, _src: 'server' as const })), ...upcomingDates.map(u => ({ ...u, _src: 'static' as const })), ...scheduled.map(s => ({ id: s.id, doctorName: s.doctorName, doctorSpecialty: s.doctorSpecialty, doctorImage: s.doctorImage, date: new Date(s.date), duration: s.duration, _src: 'scheduled' as const }))].length > 0 ? (
                     <div className="space-y-4">
-                      {upcomingDates.map(date => (
+                      {[...serverDates.map(d => ({ id: d.id, doctorName: d.profile.name, doctorSpecialty: 'Match', doctorImage: d.profile.imageUrl || '', date: new Date(d.scheduledFor), duration: d.durationMinutes, _src: 'server' as const })), ...upcomingDates.map(u => ({ ...u, _src: 'static' as const })), ...scheduled.map(s => ({ id: s.id, doctorName: s.doctorName, doctorSpecialty: s.doctorSpecialty, doctorImage: s.doctorImage, date: new Date(s.date), duration: s.duration, _src: 'scheduled' as const }))].map(date => (
                         <Card key={date.id}>
                           <CardHeader className="flex flex-row items-center gap-4 pb-2">
                             <Avatar className="h-12 w-12">
@@ -266,7 +432,7 @@ const VideoDatePage: React.FC = () => {
                               <AvatarFallback>{date.doctorName.split(' ').map(n => n[0]).join('')}</AvatarFallback>
                             </Avatar>
                             <div>
-                              <CardTitle>{date.doctorName}</CardTitle>
+                              <CardTitle className="text-lg">{date.doctorName}</CardTitle>
                               <CardDescription>{date.doctorSpecialty}</CardDescription>
                             </div>
                           </CardHeader>
@@ -283,12 +449,38 @@ const VideoDatePage: React.FC = () => {
                             </div>
                           </CardContent>
                           <CardFooter className="flex flex-col sm:flex-row gap-3 pt-2">
-                            <Button className="w-full sm:w-auto flex items-center gap-2">
+                            <Button className="w-full sm:w-auto flex items-center gap-2 bg-mediblue-600 hover:bg-mediblue-700 text-white" onClick={() => {
+                              // Joining an ALREADY-BOOKED date is free: the slot was
+                              // charged when the date was scheduled or accepted.
+                              // Charging again here double-billed the same event (audit M1).
+                              toast({ title: "Joining Video Date", description: `Connecting live video call with ${date.doctorName}...` });
+                              navigate('/video-match');
+                            }}>
                               <Phone className="h-4 w-4" />
                               Join Video Date
                             </Button>
-                            <Button variant="outline" className="w-full sm:w-auto">Reschedule</Button>
-                            <Button variant="ghost" className="w-full sm:w-auto text-red-600">Cancel</Button>
+                            <Button variant="outline" className="w-full sm:w-auto" onClick={() => { setSelectedDoctor(doctorSelectValueFor(date.doctorName)); setActiveTab('new'); toast({ title: "Reschedule", description: `Pick a new time for ${date.doctorName}.` }); }}>Reschedule</Button>
+                            <Button variant="ghost" className="w-full sm:w-auto text-red-600 hover:bg-red-50 hover:text-red-700" onClick={() => {
+                              if ((date as { _src?: string })._src === 'server') {
+                                // Server-backed date: the DB refunds the quota
+                                // atomically with the cancellation (M1/M5 fix).
+                                void serverCancelVideoDate(date.id).then((ok) => {
+                                  if (!ok) toast({ title: 'Could not cancel', description: 'Please try again.', variant: 'destructive' });
+                                }).catch(() => {});
+                                setServerDates(prev => prev.filter(d => d.id !== date.id));
+                              } else {
+                                if (date._src === 'scheduled') {
+                                  saveScheduled(loadScheduled().filter(s => s.id !== date.id));
+                                }
+                                // A cancelled upcoming date does not spend quota —
+                                // refund the slot it consumed when scheduled/accepted
+                                // (product default; audit M1).
+                                refundVideoDate();
+                              }
+                              // Force a re-render so the cancelled date disappears immediately.
+                              setScheduledVersion(v => v + 1);
+                              toast({ title: "Date cancelled", description: `Video date with ${date.doctorName} has been cancelled. Your video date quota was refunded.` });
+                            }}>Cancel</Button>
                           </CardFooter>
                         </Card>
                       ))}
@@ -314,18 +506,22 @@ const VideoDatePage: React.FC = () => {
                 
                 <TabsContent value="invites">
                   <VideoDateInvites 
-                    invites={pendingInvites}
-                    onAccept={(id) => console.log('Accepted invite:', id)}
-                    onDecline={(id) => console.log('Declined invite:', id)}
-                    onReschedule={(id) => console.log('Reschedule invite:', id)}
+                    invites={invites}
+                    onAccept={handleAcceptInvite}
+                    onDecline={handleDeclineInvite}
+                    onReschedule={handleRescheduleInvite}
                   />
                 </TabsContent>
                 
                 <TabsContent value="history">
                   <VideoDateHistory 
                     history={dateHistory} 
-                    onRebook={(doctorId) => console.log('Rebook with doctor:', doctorId)}
-                    onViewRecording={(sessionId) => console.log('View recording:', sessionId)}
+                    onRebook={handleRebook}
+                    onViewRecording={(sessionId) => {
+                    const item = dateHistory.find((d) => d.id === sessionId);
+                    if (!item) return;
+                    setViewingRecording(ensureRecording({ id: item.id, doctorName: item.doctorName, doctorImage: item.doctorImage, duration: item.duration }));
+                  }}
                   />
                 </TabsContent>
                 
@@ -396,7 +592,14 @@ const VideoDatePage: React.FC = () => {
                             <Input
                               type="datetime-local"
                               id="date"
-                              min={new Date().toISOString().slice(0, 16)}
+                              min={(() => {
+                                // datetime-local values are in the user's local
+                                // timezone — a UTC toISOString() min can forbid
+                                // today's valid local times.
+                                const now = new Date();
+                                const pad = (n: number) => String(n).padStart(2, '0');
+                                return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`;
+                              })()}
                               onChange={(e) => setSelectedDate(e.target.value ? new Date(e.target.value) : null)}
                             />
                           </div>
@@ -437,7 +640,13 @@ const VideoDatePage: React.FC = () => {
                           />
                         </div>
                         
-                        <div className="pt-2 flex flex-col sm:flex-row gap-3">
+                        <div className="pt-2 flex items-center justify-between gap-3 flex-col sm:flex-row">
+                          <p className="text-sm text-gray-500">
+                            Video dates used this month: {usedThisMonth} of {quota === Infinity ? 'unlimited' : quota}
+                            {quota !== Infinity && videoDatesLeft === 0 && ' — none left'}
+                            <span className="capitalize"> ({planName} plan)</span>
+                          </p>
+                          <div className="flex gap-3 w-full sm:w-auto">
                           <Button type="submit" className="w-full sm:w-auto">
                             Send Request
                           </Button>
@@ -445,10 +654,34 @@ const VideoDatePage: React.FC = () => {
                             onClick={() => setActiveTab('upcoming')}>
                             Cancel
                           </Button>
+                          </div>
                         </div>
                       </form>
                     </CardContent>
                   </Card>
+
+                  {sentRequests.length > 0 && (
+                    <div className="bg-white rounded-lg shadow-sm p-4 mt-4">
+                      <h3 className="font-semibold mb-3">Pending Requests ({sentRequests.length})</h3>
+                      <ul className="space-y-2">
+                        {sentRequests.slice().reverse().map((req) => (
+                          <li key={req.id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-sm border-b pb-2">
+                            <span className="font-medium">{req.doctorName}</span>
+                            <span className="text-gray-500">
+                              {req.date ? format(new Date(req.date), 'PPP') : 'TBD'} · {req.duration} min
+                            </span>
+                            <button
+                              type="button"
+                              className="text-red-500 hover:underline text-left"
+                              onClick={() => setSentRequests(prev => prev.filter(r => r.id !== req.id))}
+                            >
+                              Cancel request
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
                 </TabsContent>
               </Tabs>
             </div>
@@ -515,7 +748,7 @@ const VideoDatePage: React.FC = () => {
                     <p className="text-sm text-gray-600">
                       If you experience any technical issues during your video date:
                     </p>
-                    <Button variant="link" className="p-0 h-auto text-blue-600 mt-1">
+                    <Button variant="link" className="p-0 h-auto text-blue-600 mt-1" onClick={() => navigate('/help')}>
                       Contact Technical Support
                     </Button>
                   </div>
@@ -524,6 +757,7 @@ const VideoDatePage: React.FC = () => {
             </div>
           </div>
         </div>
+        <RecordingPlayer recording={viewingRecording} open={Boolean(viewingRecording)} onClose={() => setViewingRecording(null)} />
       </main>
     </div>
   );

@@ -1,73 +1,63 @@
-# Welcome to your Lovable project
+﻿# MedicoMatch
 
-## Project info
+Exclusive matrimony platform for doctors and healthcare professionals (India).
 
-**URL**: https://lovable.dev/projects/8633777c-98bc-4096-8ac0-11078853b67f
+## Stack
 
-## How can I edit this code?
+- **Frontend**: React 18 + TypeScript + Vite + Tailwind/shadcn (`src/`)
+- **Backend**: single Express process (`server/`) — email/password auth with
+  scrypt, Razorpay orders + signature verification, single-use entitlement
+  tokens, GST invoices. Persistence: JSON files in `server/data/`.
+- **Payments**: Razorpay (UPI / Cards / NetBanking). The KEY SECRET only ever
+  lives on the server; plans activate exclusively by redeeming a server-issued
+  token after signature verification.
 
-There are several ways of editing your application.
+> **Status note**: profiles, matches, chats and video dates are currently
+> client-side demonstration content (production builds show a banner saying
+> so). The server-backed surface today is auth + payments + entitlements.
 
-**Use Lovable**
-
-Simply visit the [Lovable Project](https://lovable.dev/projects/8633777c-98bc-4096-8ac0-11078853b67f) and start prompting.
-
-Changes made via Lovable will be committed automatically to this repo.
-
-**Use your preferred IDE**
-
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
-
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
-
-Follow these steps:
+## Development
 
 ```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
-
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
-
-# Step 3: Install the necessary dependencies.
-npm i
-
-# Step 4: Start the development server with auto-reloading and an instant preview.
-npm run dev
+npm install
+npm run dev                               # frontend on :8080
+cd server && npm install && npm run dev   # API on :3001
 ```
 
-**Edit a file directly in GitHub**
+## Tests & gates
 
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
+```sh
+npm run lint
+npx tsc -p tsconfig.app.json --noEmit
+npx tsc -p tsconfig.node.json --noEmit
+npx vitest run
+npm run build
 
-**Use GitHub Codespaces**
+cd server && npm test     # end-to-end smoke test (auth, payments, invoices)
+```
 
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
+## Environment variables
 
-## What technologies are used for this project?
+Copy `.env.example` values into `.env`. All frontend vars are optional in dev.
 
-This project is built with:
+| Variable | Purpose | Required for |
+| --- | --- | --- |
+| `VITE_API_BASE_URL` | URL of your backend (holds the Razorpay key secret) | Payments / real sign-in |
+| `VITE_RAZORPAY_KEY_ID` | Razorpay publishable key | Live payments |
+| `VITE_DEV_SKIP_AUTH` | `true` skips login on protected pages (**dev builds only** — statically eliminated from prod builds) | Local development |
+| `VITE_SUPPORT_EMAIL` | Support inbox shown on the Help page | Ops |
 
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
+Server-side variables and boot requirements are documented in
+[`DEPLOYMENT.md`](./DEPLOYMENT.md) and [`server/README.md`](./server/README.md).
 
-## How can I deploy this project?
+## Payments flow (security-relevant)
 
-Simply open [Lovable](https://lovable.dev/projects/8633777c-98bc-4096-8ac0-11078853b67f) and click on Share -> Publish.
+1. Frontend asks the server to create an order for a catalog `sku`; the server
+   owns pricing.
+2. Razorpay Checkout collects payment; the signature is verified server-side
+   against the order **this server issued for that sku**.
+3. A single-use activation token is minted; the plan activates ONLY when it is
+   redeemed against a signed-in account. A `?checkout=success` URL alone
+   grants nothing.
 
-## Can I connect a custom domain to my Lovable project?
-
-Yes it is!
-
-To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
-
-Read more here: [Setting up a custom domain](https://docs.lovable.dev/tips-tricks/custom-domain#step-by-step-guide)
+Never expose `RAZORPAY_KEY_SECRET` in the frontend bundle.

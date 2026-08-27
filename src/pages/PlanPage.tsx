@@ -1,5 +1,5 @@
 
-import React from 'react';
+import React, { useState } from 'react';
 import Header from '@/components/Header';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/hooks/use-toast';
@@ -17,15 +17,39 @@ import {
 } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import PaymentModal from '@/components/PaymentModal';
+import { useCheckoutResult } from '@/hooks/useCheckoutResult';
+import { usePlan, PlanName } from '@/hooks/usePlan';
+
+// Map a server-issued entitlement sku (e.g. "premium-annual") to a plan name.
+// Returns null for anything the server did not actually sell.
+const planNameFromSku = (sku?: string | null): PlanName | null => {
+  if (!sku) return null;
+  if (sku.startsWith('platinum')) return 'platinum';
+  if (sku.startsWith('premium')) return 'premium';
+  return null;
+};
 
 const PlanPage = () => {
   const { toast } = useToast();
-  
-  const handleUpgrade = (plan: string) => {
-    toast({
-      title: `${plan} plan selected`,
-      description: "You'll be redirected to complete your purchase.",
-    });
+  const [selectedPlan, setSelectedPlan] = useState<{ name: string; amount: number; sku: string } | null>(null);
+  const { planName, activate } = usePlan();
+
+  // After a checkout redirect the hook redeems the server-issued entitlement
+  // token and hands us the PURCHASED sku — activation never comes from the URL.
+  useCheckoutResult((sku) => {
+    const plan = planNameFromSku(sku);
+    if (plan) {
+      activate(plan);
+      toast({
+        title: "Plan activated!",
+        description: "Your membership is now active. Enjoy the upgraded features.",
+      });
+    }
+  });
+
+  const handleUpgrade = (plan: string, amount: number, sku: string) => {
+    setSelectedPlan({ name: plan, amount, sku });
   };
   
   return (
@@ -60,7 +84,7 @@ const PlanPage = () => {
                   description="Perfect for getting started"
                   features={[
                     "Limited matches per day",
-                    "Basic search filters",
+                    "Advanced search filters",
                     "Limited messaging",
                     "Access to public profiles",
                     "1 video date per month",
@@ -71,14 +95,14 @@ const PlanPage = () => {
                     "No priority support",
                     "Limited visibility in search results",
                   ]}
-                  buttonText="Current Plan"
+                  buttonText="Free Plan"
                   buttonAction={() => {}}
                   buttonDisabled={true}
                 />
                 
                 <PlanCard 
                   name="Premium"
-                  price="$29.99"
+                  price="₹1,499"
                   period="month"
                   description="Most popular for medical professionals"
                   features={[
@@ -94,14 +118,15 @@ const PlanPage = () => {
                   limitations={[
                     "Standard support response time",
                   ]}
-                  buttonText="Upgrade to Premium"
-                  buttonAction={() => handleUpgrade("Premium")}
+                  buttonText={planName === 'premium' ? 'Current Plan' : 'Upgrade to Premium'}
+                  buttonAction={() => handleUpgrade("Premium", 1499, "premium")}
+                  buttonDisabled={planName !== 'basic'}
                   highlight={true}
                 />
-                
-                <PlanCard 
+
+                <PlanCard
                   name="Platinum"
-                  price="$49.99"
+                  price="₹2,999"
                   period="month"
                   description="Complete access with priority features"
                   features={[
@@ -115,12 +140,13 @@ const PlanPage = () => {
                     "Exclusive events access",
                   ]}
                   limitations={[]}
-                  buttonText="Upgrade to Platinum"
-                  buttonAction={() => handleUpgrade("Platinum")}
+                  buttonText={planName === 'platinum' ? 'Current Plan' : 'Upgrade to Platinum'}
+                  buttonAction={() => handleUpgrade("Platinum", 2999, "platinum")}
+                  buttonDisabled={planName === 'platinum'}
                 />
               </div>
             </TabsContent>
-            
+
             <TabsContent value="annual" className="mt-8">
               <div className="grid md:grid-cols-3 gap-6">
                 <PlanCard 
@@ -129,7 +155,7 @@ const PlanPage = () => {
                   description="Perfect for getting started"
                   features={[
                     "Limited matches per day",
-                    "Basic search filters",
+                    "Advanced search filters",
                     "Limited messaging",
                     "Access to public profiles",
                     "1 video date per month",
@@ -140,16 +166,16 @@ const PlanPage = () => {
                     "No priority support",
                     "Limited visibility in search results",
                   ]}
-                  buttonText="Current Plan"
+                  buttonText="Free Plan"
                   buttonAction={() => {}}
                   buttonDisabled={true}
                 />
                 
                 <PlanCard 
                   name="Premium"
-                  price="$287.90"
+                  price="₹14,390"
                   period="year"
-                  originalPrice="$359.88"
+                  originalPrice="₹17,988"
                   description="Most popular for medical professionals"
                   features={[
                     "Unlimited matches",
@@ -164,16 +190,17 @@ const PlanPage = () => {
                   limitations={[
                     "Standard support response time",
                   ]}
-                  buttonText="Upgrade to Premium"
-                  buttonAction={() => handleUpgrade("Premium Annual")}
+                  buttonText={planName === 'premium' ? 'Current Plan' : 'Upgrade to Premium'}
+                  buttonAction={() => handleUpgrade("Premium Annual", 14390, "premium-annual")}
+                  buttonDisabled={planName !== 'basic'}
                   highlight={true}
                 />
                 
                 <PlanCard 
                   name="Platinum"
-                  price="$479.90"
+                  price="₹28,790"
                   period="year"
-                  originalPrice="$599.88"
+                  originalPrice="₹35,988"
                   description="Complete access with priority features"
                   features={[
                     "All Premium features",
@@ -186,17 +213,19 @@ const PlanPage = () => {
                     "Exclusive events access",
                   ]}
                   limitations={[]}
-                  buttonText="Upgrade to Platinum"
-                  buttonAction={() => handleUpgrade("Platinum Annual")}
+                  buttonText={planName === 'platinum' ? 'Current Plan' : 'Upgrade to Platinum'}
+                  buttonAction={() => handleUpgrade("Platinum Annual", 28790, "platinum-annual")}
+                  buttonDisabled={planName === 'platinum'}
                 />
               </div>
             </TabsContent>
           </Tabs>
           
           <div className="mt-12 mb-6">
-            <h2 className="text-2xl font-bold text-center mb-8">Feature Comparison</h2>
-            <div className="overflow-x-auto">
-              <table className="w-full border-collapse">
+            <h2 className="text-2xl font-bold text-center mb-2 sm:mb-8">Feature Comparison</h2>
+            <p className="text-xs text-slate-400 text-center mb-3 md:hidden">← Swipe horizontally to view all plans →</p>
+            <div className="overflow-x-auto rounded-xl border border-slate-200 shadow-xs">
+              <table className="w-full border-collapse min-w-[620px]">
                 <thead>
                   <tr className="bg-gray-100">
                     <th className="p-4 text-left">Feature</th>
@@ -215,7 +244,7 @@ const PlanPage = () => {
                   />
                   <FeatureRow 
                     feature="Advanced Search Filters" 
-                    basic={<X className="mx-auto text-red-500" size={18} />}
+                    basic={<CheckCircle2 className="mx-auto text-green-500" size={18} />}
                     premium={<CheckCircle2 className="mx-auto text-green-500" size={18} />}
                     platinum={<CheckCircle2 className="mx-auto text-green-500" size={18} />}
                     icon={<Users size={18} />}
@@ -289,12 +318,10 @@ const PlanPage = () => {
                   Special Offer for Healthcare Professionals
                 </h3>
                 <p className="mt-2 text-gray-600">
-                  As a medical professional, you're eligible for an additional 15% discount on any premium plan. 
-                  Verify your medical credentials to unlock this exclusive offer.
+                  As a medical professional, you're eligible for an additional 15% discount on any premium plan.
+                  Document-based credential verification is required to unlock this exclusive offer —
+                  upload your medical council registration from your Account page once verification launches.
                 </p>
-              </div>
-              <div className="mt-4 md:mt-0">
-                <Button>Verify Credentials</Button>
               </div>
             </div>
           </div>
@@ -322,6 +349,30 @@ const PlanPage = () => {
           </div>
         </div>
       </main>
+
+      {selectedPlan && (
+        <PaymentModal
+          isOpen={!!selectedPlan}
+          onClose={() => setSelectedPlan(null)}
+          serviceName={`${selectedPlan.name} Membership`}
+          amount={selectedPlan.amount}
+          sku={selectedPlan.sku}
+          plan={selectedPlan.name}
+          onSuccess={(redeemedSku) => {
+            // The server-redeemed sku wins; the local selection is only used
+            // in the no-server sandbox path (redeemedSku undefined).
+            const plan = planNameFromSku(redeemedSku) ?? planNameFromSku(selectedPlan.sku);
+            if (plan) {
+              activate(plan);
+              toast({
+                title: "Plan activated! 🎉",
+                description: `Your ${selectedPlan.name} membership is now active. Enjoy all upgraded features!`,
+              });
+            }
+            setSelectedPlan(null);
+          }}
+        />
+      )}
     </div>
   );
 };
@@ -345,7 +396,7 @@ const PlanCard = ({
   features, limitations, buttonText, buttonAction, 
   buttonDisabled = false, highlight = false 
 }: PlanCardProps) => (
-  <Card className={`relative overflow-hidden ${highlight ? 'border-mediblue-300 shadow-lg' : ''}`}>
+  <Card className={`relative overflow-hidden flex flex-col h-full ${highlight ? 'border-mediblue-300 shadow-lg' : ''}`}>
     {highlight && (
       <div className="absolute top-0 right-0 left-0 bg-mediblue-600 text-white text-center text-sm py-1">
         Most Popular
@@ -359,7 +410,7 @@ const PlanCard = ({
       </CardTitle>
       <CardDescription>{description}</CardDescription>
     </CardHeader>
-    <CardContent>
+    <CardContent className="flex-grow">
       <div className="mb-6">
         <div className="flex items-end">
           <span className="text-3xl font-bold">{price}</span>
@@ -407,7 +458,7 @@ const PlanCard = ({
         )}
       </div>
     </CardContent>
-    <CardFooter>
+    <CardFooter className="mt-auto">
       <Button 
         className={`w-full ${highlight ? 'bg-mediblue-600 hover:bg-mediblue-700' : ''}`} 
         onClick={buttonAction}
