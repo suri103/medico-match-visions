@@ -1,5 +1,6 @@
 /* eslint-disable react-refresh/only-export-components */
 import React, { createContext, useCallback, useContext, useEffect, useRef } from "react";
+import { toast } from "@/hooks/use-toast";
 import { Doctor } from "@/features/matches/types";
 import { doctorProfiles } from "@/features/matches/data/sampleData";
 import { usePersistedState } from "@/hooks/usePersistedState";
@@ -302,7 +303,42 @@ export const FavoritesProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       // Duplicate check BEFORE consuming quota: a resend must neither burn an
       // interest slot nor double-append (the ledger never refunds).
       if (interests.some((i) => i.doctor.id === doctor.id)) return true;
-      // Quota is enforced BEFORE any mutation (single source = usePlan).
+
+      // Wired mode: the SERVER is the awaited authority. Its verdict decides
+      // both the optimistic UI and the local ledger charge (audit C-3: the old
+      // fire-and-forget flow charged local quota even when the durable record
+      // never landed). Demo/offline keeps the previous local-only behavior.
+      if (hasServerSession()) {
+        void (async () => {
+          const r = await serverSendInterest(doctor.id);
+          // Server-side rejection (quota/profile state): no local mutation at all.
+          if (!r.ok && r.error !== "no-server" && r.error !== "network") {
+            toast({ title: "Interest not sent", description: r.error || "Please try again.", variant: "destructive" });
+            return;
+          }
+          // Optimistic UI + ledger charge only after an accepted send.
+          consumeInterest();
+          setConnections(prev => {
+            const existing = prev.find(c => c.doctorId === doctor.id);
+            if (existing?.status === 'matched' || existing?.status === 'blocked') return prev;
+            const theyLikedMe = interestedInYou.some(i => i.doctor.id === doctor.id);
+            const nextStatus: ConnectionStatus = theyLikedMe ? 'matched' : 'pending';
+            if (existing) return prev.map(c => c.doctorId === doctor.id ? { ...c, status: nextStatus, updatedAt: new Date().toISOString() } : c);
+            return [...prev, { doctorId: doctor.id, status: nextStatus, updatedAt: new Date().toISOString() }];
+          });
+          setInterests((prev) => {
+            if (prev.some((i) => i.doctor.id === doctor.id)) return prev;
+            return [...prev, { id: `myint${Date.now()}`, doctor, note: "You showed interest in this profile", createdAt: new Date() }];
+          });
+          if (r.alreadyInterested) {
+            // Reconcile server ids so withdraw/respond can target rows.
+            void serverListInterests();
+          }
+        })().catch(() => {});
+        return true;
+      }
+
+      // Local/demo mode: quota before mutation (single source = usePlan).
       if (!consumeInterest()) return false;
       setConnections(prev => {
         const existing = prev.find(c => c.doctorId === doctor.id);
@@ -316,17 +352,6 @@ export const FavoritesProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         if (prev.some((i) => i.doctor.id === doctor.id)) return prev;
         return [...prev, { id: `myint${Date.now()}`, doctor, note: "You showed interest in this profile", createdAt: new Date() }];
       });
-      // Durable record on the wired backend (server re-enforces its own quota;
-      // failures degrade to local-only state, logged for ops).
-      void serverSendInterest(doctor.id).then((r) => {
-        if (!r.ok && r.error && r.error !== "no-server" && r.error !== "network") {
-          console.warn(JSON.stringify({ level: "warn", msg: "interest_sync_failed", error: r.error }));
-        }
-        if (r.alreadyInterested) {
-          // Reconcile: refresh server ids so withdraw/respond can target rows.
-          void serverListInterests();
-        }
-      }).catch(() => {});
       return true;
     },
     [blockedIds, interests, interestedInYou, setConnections, setInterests, consumeInterest]

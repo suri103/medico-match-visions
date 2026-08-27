@@ -44,7 +44,7 @@ type Message = {
   content: string;
   sender: 'user' | 'doctor';
   timestamp: string | Date;
-  status?: 'sending' | 'sent' | 'delivered' | 'read';
+  status?: 'sending' | 'sent' | 'delivered' | 'read' | 'failed';
 };
 
 const PREBUILT_STARTERS = [
@@ -154,11 +154,17 @@ const Chat: React.FC<ChatProps> = ({
 
   // ---- Wired backend: real message history for matched, server-backed chats.
   // Local storage remains the immediate cache; the server is the record. ----
+  const sessionKey = useAuthSessionKey();
   const [serverChannelId, setServerChannelId] = useState<string | null>(null);
   const [peerUserId, setPeerUserId] = useState<string | null>(null);
   const [showCall, setShowCall] = useState(false);
   useEffect(() => {
-    if (!canMessage(doctorId) || !hasServerSession()) return;
+    // M-7 fix: gate the SERVER history only on having a session. The previous
+    // local-cache gate (canMessage) dead-ended genuinely matched users whose
+    // connections had not hydrated (fresh login / cross-device), because this
+    // effect never re-ran after hydration. Local gating still controls the
+    // composer below; reading must not depend on cache freshness.
+    if (!hasServerSession()) return;
     let cancelled = false;
     (async () => {
       const channels = await listChannels();
@@ -185,7 +191,7 @@ const Chat: React.FC<ChatProps> = ({
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [doctorId]);
+  }, [doctorId, sessionKey]);
 
   // ---- Realtime delivery: SSE push (primary) with the 6s poller as fallback
   // whenever the stream is down. Both paths funnel into one merge so optimistic
@@ -194,7 +200,6 @@ const Chat: React.FC<ChatProps> = ({
   const myUserIdRef = useRef<string | null>(null);
   // Audit H6: refresh `myUserId` when the signed-in identity changes (without a
   // reload), so optimistic sends are attributed to the current account.
-  const sessionKey = useAuthSessionKey();
   useEffect(() => {
     try {
       const raw = localStorage.getItem('mm:authSession');
@@ -316,7 +321,10 @@ const Chat: React.FC<ChatProps> = ({
           setMessages(prev => prev.map(m => (m.id === message.id ? { ...m, status: 'sent' as const } : m)));
         })
         .catch(() => {
-          setMessages(prev => prev.map(m => (m.id === message.id ? { ...m, status: 'sent' as const } : m)));
+          // Honest failure: the durable record did NOT land. Keep the bubble
+          // locally but mark it failed instead of silently claiming success.
+          setMessages(prev => prev.map(m => (m.id === message.id ? { ...m, status: 'failed' as const } : m)));
+          toast({ title: "Message not delivered", description: "The message could not be synced. Please try again.", variant: "destructive" });
         });
     }
     setNewMessage('');

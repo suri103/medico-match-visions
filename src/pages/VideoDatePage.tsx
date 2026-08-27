@@ -303,7 +303,7 @@ const VideoDatePage: React.FC = () => {
   };
 
   const [submitting, setSubmitting] = useState(false);
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (submitting) return;
     
@@ -326,7 +326,47 @@ const VideoDatePage: React.FC = () => {
     }
 
     setSubmitting(true);
-    if (!consumeVideoDate()) {
+
+    // Wired mode: ask the SERVER first - it owns quota truth. The local ledger
+    // is charged only after acceptance (audit C-3: users were locally charged
+    // even when the durable booking never landed, and blocked when drift said
+    // "full" while the server had room). Demo/offline keeps local-first.
+    if (hasServerSession()) {
+      const displayName0 = doctorDisplayNameFor(selectedDoctor);
+      const pid0 = profileIdByNameRef.current[String(displayName0).toLowerCase()];
+      const whenIso = new Date(selectedDate!).toISOString();
+      try {
+        if (isConsultationMode) {
+          const rc = await serverCreateConsultation(whenIso, Number(duration) || 45);
+          if (!rc.ok) {
+            toast({ title: "Booking not confirmed", description: rc.error || "Please try again.", variant: "destructive" });
+            setSubmitting(false);
+            return;
+          }
+        } else {
+          if (!pid0) {
+            toast({
+              title: "Member not found",
+              description: "Could not resolve that member for booking. Please refresh and try again.",
+              variant: "destructive",
+            });
+            setSubmitting(false);
+            return;
+          }
+          const rv = await serverCreateVideoDate(pid0, whenIso, Number(duration) || 30);
+          if (!rv.ok) {
+            toast({ title: "Video date not booked", description: rv.error || "Please try again.", variant: "destructive" });
+            setSubmitting(false);
+            return;
+          }
+          consumeVideoDate(); // durable record exists -> now spend the local unit
+        }
+      } catch {
+        toast({ title: "Could not reach the server", description: "Your request was not booked. Please try again.", variant: "destructive" });
+        setSubmitting(false);
+        return;
+      }
+    } else if (!consumeVideoDate()) {
       toast({
         title: "Video date limit reached",
         description: `Your ${planName} plan allows ${quota === Infinity ? 'unlimited' : quota} video date${quota === 1 ? '' : 's'} per month. Upgrade your plan for more.`,

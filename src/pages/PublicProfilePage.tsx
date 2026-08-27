@@ -150,7 +150,18 @@ const PublicProfilePage = () => {
         });
         return;
       }
-      // network/no-server → fall through to the demo path below.
+      // Server reached but the reveal failed for any reason other than an
+      // unconfigured server: stop here (audit H-6). Falling through used to
+      // charge LOCAL quota and show demo contact data for a reveal that never
+      // happened. Only a missing backend (no-server) may use the demo path.
+      if (r.error !== 'no-server') {
+        toast({
+          title: 'Contact not available',
+          description: r.error || 'Could not fetch contact details. Please try again.',
+          variant: 'destructive',
+        });
+        return;
+      }
     }
     // Only charge quota when this profile actually carries contact details —
     // a paid view must never be burned on an empty profile (audit H1).
