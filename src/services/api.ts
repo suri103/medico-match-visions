@@ -172,6 +172,36 @@ export async function getQuota(): Promise<QuotaSummary | null> {
   return out ?? null;
 }
 
+/**
+ * M-2 recovery: when an activation token cannot be redeemed, the purchase is
+ * usually ALREADY granted server-side (verify/webhook recordCapturedPayment).
+ * Refreshing mm:activePlan from the authoritative quota answer gives the user
+ * their plan back without support involvement.
+ */
+export function planNameFromQuotaSku(sku: string | null | undefined): string | null {
+  if (!sku) return null;
+  if (sku.startsWith("platinum")) return "platinum";
+  if (sku.startsWith("premium")) return "premium";
+  return null;
+}
+
+export async function refreshLocalPlanFromServer(): Promise<string | null> {
+  const q = await getQuota();
+  if (!q) return null;
+  const plan = planNameFromQuotaSku(q.plan);
+  if (!plan) return null;
+  try {
+    localStorage.setItem(
+      "mm:activePlan",
+      JSON.stringify({ name: plan, activatedAt: new Date().toISOString() })
+    );
+    window.dispatchEvent(
+      new CustomEvent("mm:persisted-state-changed", { detail: { key: "mm:activePlan" } })
+    );
+  } catch { /* storage unavailable */ }
+  return plan;
+}
+
 // ---------------------------------------------------------------------------
 // Interests
 // ---------------------------------------------------------------------------

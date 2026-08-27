@@ -12,6 +12,7 @@ import {
   storeActivationToken,
   CheckoutError,
 } from '@/services/checkout';
+import { refreshLocalPlanFromServer } from '@/services/api';
 
 interface PaymentModalProps {
   isOpen: boolean;
@@ -97,12 +98,22 @@ const PaymentModal: React.FC<PaymentModalProps> = ({
       const purchasedSku = await redeemActivationToken(verification.activation.token);
       if (!purchasedSku) {
         storeActivationToken(verification.activation.token);
-        toast({
-          title: 'Activation pending',
-          description:
-            "Your payment was verified but couldn't be activated right now. Sign in with your account and reopen this page — your purchase stays valid. If it persists, contact support with your payment id.",
-          variant: 'destructive',
-        });
+        // M-2: try the authoritative /api/quota before alarming the user -
+        // verify-time grants usually landed server-side already.
+        const recoveredSandbox = await refreshLocalPlanFromServer().catch(() => null);
+        if (recoveredSandbox) {
+          toast({
+            title: 'Purchase activated',
+            description: `Your ${recoveredSandbox} membership is active.`,
+          });
+        } else {
+          toast({
+            title: 'Activation pending',
+            description:
+              "Your payment was verified but couldn't be activated right now. Sign in with your account and reopen this page — your purchase stays valid. If it persists, contact support with your payment id.",
+            variant: 'destructive',
+          });
+        }
       }
       if (onSuccess && purchasedSku) onSuccess(purchasedSku);
       else if (!onSuccess) redirectWithSuccess();
@@ -194,12 +205,23 @@ const PaymentModal: React.FC<PaymentModalProps> = ({
             // PAID token must never be dropped silently (audit C2): persist it
             // so the post-reload flow can redeem it, and tell the user.
             storeActivationToken(verification.activation.token);
-            toast({
-              title: "Activation pending",
-              description:
-                "Your payment was verified but couldn't be activated right now. Sign in with your account and reopen this page — your purchase stays valid. If it persists, contact support with your payment id.",
-              variant: "destructive",
-            });
+            // M-2: the grant usually landed server-side already (verify-time
+            // recordCapturedPayment). Refresh the local plan from /api/quota
+            // before showing an alarming message.
+            const recoveredPlan = await refreshLocalPlanFromServer().catch(() => null);
+            if (recoveredPlan) {
+              toast({
+                title: "Purchase activated",
+                description: `Your ${recoveredPlan} membership is active.`,
+              });
+            } else {
+              toast({
+                title: "Activation pending",
+                description:
+                  "Your payment was verified but couldn't be activated right now. Sign in with your account and reopen this page — your purchase stays valid. If it persists, contact support with your payment id.",
+                variant: "destructive",
+              });
+            }
           }
         } else {
           storeActivationToken(verification.activation.token);

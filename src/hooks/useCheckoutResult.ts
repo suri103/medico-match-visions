@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
 import { toast } from "@/hooks/use-toast";
 import { redeemActivationToken, takeActivationToken } from "@/services/checkout";
+import { refreshLocalPlanFromServer } from "@/services/api";
 
 /**
  * Consumes the ?checkout=success|cancelled query param that a checkout flow
@@ -44,17 +45,28 @@ export const useCheckoutResult = (onSuccess?: (plan?: string) => void) => {
       if (token) {
         processingTokenRef.current = true;
         redeemActivationToken(token)
-          .then((plan) => {
+          .then(async (plan) => {
             processingTokenRef.current = false;
             if (plan) {
               onSuccessRef.current?.(plan);
             } else {
-              toast({
-                title: "Activation pending",
-                description:
-                  "Your payment was recorded but the activation token could not be redeemed (it may have expired or been used). Please contact support with your payment id.",
-                variant: "destructive",
-              });
+              // M-2: try the authoritative quota endpoint before alarming the
+              // user - webhook/verify grants often landed already.
+              const recovered = await refreshLocalPlanFromServer().catch(() => null);
+              if (recovered) {
+                toast({
+                  title: "Purchase activated",
+                  description: `Your ${recovered} membership is active. (It was verified moments ago.)`,
+                });
+                onSuccessRef.current?.(recovered);
+              } else {
+                toast({
+                  title: "Activation pending",
+                  description:
+                    "Your payment was recorded but the activation token could not be redeemed (it may have expired or been used). Please contact support with your payment id.",
+                  variant: "destructive",
+                });
+              }
             }
           })
           .catch(() => {
