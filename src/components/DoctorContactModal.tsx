@@ -82,7 +82,7 @@ export const DoctorContactModal: React.FC<DoctorContactModalProps> = ({
                 )}
               </div>
               <p className="text-xs font-semibold text-mediblue-700 mt-0.5">
-                {doctor.degree || 'MBBS'} · {doctor.specialty}
+                {doctor.degree ? `${doctor.degree} · ` : ''}{doctor.specialty}
               </p>
               <p className="text-[11px] text-slate-500 truncate mt-0.5">
                 {doctor.hospital} · {doctor.city}, {doctor.state || doctor.country || 'India'}

@@ -22,7 +22,8 @@ const VerifyEmail: React.FC = () => {
     let cancelled = false;
     verifyEmail(token).then((res) => {
       if (cancelled) return;
-      if (res.ok && res.token && res.user) {
+      // H-1: cookie-first — browsers get token:null (cookie carries session).
+      if (res.ok && res.user) {
         signIn({
           id: res.user.id,
           email: res.user.email,
@@ -31,7 +32,7 @@ const VerifyEmail: React.FC = () => {
           fullName: res.user.fullName,
           specialty: res.user.specialty || undefined,
           degree: res.user.degree || undefined,
-        }, res.token);
+        }, res.token || undefined);
         toast({ title: 'Email verified', description: 'Your account is now active. Welcome!' });
         navigate('/matches');
       } else {

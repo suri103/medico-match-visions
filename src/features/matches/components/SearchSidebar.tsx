@@ -62,6 +62,15 @@ interface SearchSidebarProps {
   setMinGunas?: (value: number) => void;
   selectedColor: string;
   setSelectedColor: (value: string) => void;
+  // P0-4 family depth (optional so old callers keep compiling).
+  selectedFamilyType?: string;
+  setSelectedFamilyType?: (value: string) => void;
+  selectedFamilyStatus?: string;
+  setSelectedFamilyStatus?: (value: string) => void;
+  selectedIncomeBand?: string;
+  setSelectedIncomeBand?: (value: string) => void;
+  selectedDiet?: string;
+  setSelectedDiet?: (value: string) => void;
   availableStates: {value: string, label: string}[];
   availableCities: {value: string, label: string}[];
   handleSearch: (e: React.FormEvent) => void;
@@ -120,6 +129,14 @@ const SearchSidebar: React.FC<SearchSidebarProps> = ({
   setMinGunas,
   selectedColor,
   setSelectedColor,
+  selectedFamilyType = 'No preference',
+  setSelectedFamilyType,
+  selectedFamilyStatus = 'No preference',
+  setSelectedFamilyStatus,
+  selectedIncomeBand = 'No preference',
+  setSelectedIncomeBand,
+  selectedDiet = 'No preference',
+  setSelectedDiet,
   availableStates,
   availableCities,
   handleSearch,
@@ -475,7 +492,31 @@ const SearchSidebar: React.FC<SearchSidebarProps> = ({
               </Select>
             </SidebarGroupContent>
           </SidebarGroup>
-          
+
+          {/* P0-4 family depth filters. */}
+          <SidebarGroup>
+            <SidebarGroupLabel>Family & Lifestyle</SidebarGroupLabel>
+            <SidebarGroupContent className="p-4 space-y-3">
+              {[
+                { label: 'Family Type', value: selectedFamilyType, set: setSelectedFamilyType, opts: ['Joint', 'Nuclear', 'Extended'] },
+                { label: 'Family Status', value: selectedFamilyStatus, set: setSelectedFamilyStatus, opts: ['Middle Class', 'Upper Middle Class', 'Affluent'] },
+                { label: 'Income', value: selectedIncomeBand, set: setSelectedIncomeBand, opts: ['Under ₹10L', '₹10–25L', '₹25–50L', '₹50L–1Cr', '₹1Cr+'] },
+                { label: 'Diet', value: selectedDiet, set: setSelectedDiet, opts: ['Vegetarian', 'Non-Vegetarian', 'Eggetarian', 'Vegan'] },
+              ].map((f) => (
+                <div key={f.label}>
+                  <Label className="mb-1 block text-xs">{f.label}</Label>
+                  <Select value={f.value} onValueChange={f.set}>
+                    <SelectTrigger><SelectValue placeholder="No preference" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="No preference">No preference</SelectItem>
+                      {f.opts.map((o) => (<SelectItem key={o} value={o}>{o}</SelectItem>))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              ))}
+            </SidebarGroupContent>
+          </SidebarGroup>
+
           <SidebarGroup>
             <SidebarGroupContent className="p-4">
               <div className="flex items-center space-x-2 mb-6">

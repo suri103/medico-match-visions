@@ -7,16 +7,31 @@ const getApiBaseUrl = (): string => (import.meta.env.VITE_API_BASE_URL as string
 
 export { getApiBaseUrl };
 
-// Attach the server session token when present, so redeemed entitlements are
-// persisted to the signed-in user's account.
+// Attach the server session cookie (httpOnly, sent automatically with
+// credentials: 'include') AND echo the CSRF token on mutating calls. The
+// legacy Bearer path is retained for the mobile app.
+const readCsrfCookie = (): string | null => {
+  if (typeof document === "undefined") return null;
+  const raw = document.cookie || "";
+  for (const part of raw.split(/;\s*/)) {
+    const eq = part.indexOf("=");
+    if (eq > 0 && part.slice(0, eq) === "mm_csrf") return part.slice(eq + 1);
+  }
+  return null;
+};
+
 const authBearer = (): Record<string, string> => {
+  const headers: Record<string, string> = {};
+  const t = readCsrfCookie();
+  if (t) headers["X-CSRF-Token"] = t;
   try {
     const raw = localStorage.getItem("mm:authSession");
     const session = raw ? JSON.parse(raw) : null;
-    return session?.token ? { Authorization: `Bearer ${session.token}` } : {};
+    if (session?.token) headers.Authorization = `Bearer ${session.token}`;
   } catch {
-    return {};
+    /* ignore */
   }
+  return headers;
 };
 
 export interface CreateRazorpayOrderRequest {
@@ -27,6 +42,8 @@ export interface CreateRazorpayOrderRequest {
   currency?: string; // default: "INR"
   receipt?: string;
   notes?: Record<string, string>;
+  /** P0-10 coupon code (server-validated, discounted total must match). */
+  coupon?: string;
 }
 
 export interface RazorpayOrder {
@@ -87,8 +104,9 @@ export const createRazorpayOrder = async (
   try {
     res = await fetch(`${getApiBaseUrl()}/api/razorpay/create-order`, {
       method: "POST",
+      credentials: "include",
       headers: { "Content-Type": "application/json", ...authBearer() },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ ...payload, csrfToken: readCsrfCookie() }),
     });
   } catch {
     throw new CheckoutError("Could not reach the payment server. Please try again in a moment.");
@@ -122,12 +140,14 @@ export const verifyRazorpayPayment = async (payload: {
   try {
     res = await fetch(`${getApiBaseUrl()}/api/razorpay/verify-payment`, {
       method: "POST",
+      credentials: "include",
       headers: { "Content-Type": "application/json", ...authBearer() },
       body: JSON.stringify({
         razorpay_order_id: payload.orderId,
         razorpay_payment_id: payload.paymentId,
         razorpay_signature: payload.signature,
         sku: payload.sku,
+        csrfToken: readCsrfCookie(),
       }),
     });
   } catch {
@@ -155,8 +175,9 @@ export const redeemActivationToken = async (token: string): Promise<string | nul
   try {
     res = await fetch(`${getApiBaseUrl()}/api/razorpay/redeem`, {
       method: "POST",
+      credentials: "include",
       headers: { "Content-Type": "application/json", ...authBearer() },
-      body: JSON.stringify({ token }),
+      body: JSON.stringify({ token, csrfToken: readCsrfCookie() }),
     });
   } catch {
     return null;

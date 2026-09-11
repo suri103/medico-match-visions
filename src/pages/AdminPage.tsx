@@ -7,16 +7,20 @@ import { Input } from '@/components/ui/input';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useToast } from '@/hooks/use-toast';
 import {
-  adminMe, listAdminReports, resolveAdminReport,
+  adminMe, adminStats, listAdminReports, resolveAdminReport,
   listAdminUsers, setUserSuspended,
   listAdminProfiles, patchAdminProfile,
   listAdminPayments, adminRefund,
   promoteAdmin, demoteAdmin,
   listAuditLog, setSamplesHidden,
+  listVerifications, reviewVerification, warnAdminUser,
+  triggerRenewalReminders,
+  type VerificationDocRow, type AdminStats,
   type AdminReport, type AdminUserRow, type AdminProfileRow, type AdminPaymentRow,
 } from '@/services/api';
+import ErrorState from '@/components/ErrorState';
 
-type Tab = 'reports' | 'users' | 'profiles' | 'payments' | 'audit';
+type Tab = 'dashboard' | 'reports' | 'users' | 'profiles' | 'payments' | 'audit' | 'trust';
 
 /**
  * Admin & moderation console (/admin).
@@ -29,7 +33,15 @@ const AdminPage = () => {
   const [checked, setChecked] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
   const [isRoot, setIsRoot] = useState(false);
-  const [tab, setTab] = useState<Tab>('reports');
+  // Launch-gap fix #3: dashboard is the default tab (most valuable at a glance).
+  const [tab, setTab] = useState<Tab>('dashboard');
+
+  // Dashboard counts (launch-gap fix #3).
+  const [stats, setStats] = useState<AdminStats | null>(null);
+
+  const loadStats = useCallback(async () => {
+    setStats(await adminStats());
+  }, []);
 
   const [reports, setReports] = useState<AdminReport[]>([]);
   const [reportStatus, setReportStatus] = useState<'open' | 'resolved' | 'all'>('open');
@@ -39,15 +51,17 @@ const AdminPage = () => {
   const [profileQuery, setProfileQuery] = useState('');
   const [payments, setPayments] = useState<AdminPaymentRow[]>([]);
   const [audit, setAudit] = useState<{ id: string; adminEmail: string; action: string; target: string; details: string; createdAt: string }[]>([]);
+  // P0-2/P0-8 trust queue.
+  const [docs, setDocs] = useState<VerificationDocRow[]>([]);
 
   const loadReports = useCallback(async (status: typeof reportStatus) => {
     setReports((await listAdminReports(status === 'all' ? 'all' : status)) ?? []);
   }, []);
-  const loadUsers = useCallback(async (q: string) => {
-    setUsers((await listAdminUsers(q)) ?? []);
+  const loadUsers = useCallback(async (q?: string) => {
+    setUsers((await listAdminUsers(q ?? '')) ?? []);
   }, []);
-  const loadProfiles = useCallback(async (q: string) => {
-    setProfiles((await listAdminProfiles(q)) ?? []);
+  const loadProfiles = useCallback(async (q?: string) => {
+    setProfiles((await listAdminProfiles(q ?? '')) ?? []);
   }, []);
   const loadPayments = useCallback(async () => {
     setPayments((await listAdminPayments()) ?? []);
@@ -64,15 +78,20 @@ const AdminPage = () => {
     })();
   }, []);
 
+  // Fetch on tab/status change only — NOT on every keystroke. userQuery /
+  // profileQuery update onChange; explicit Search buttons / Enter call the
+  // loaders. Previously each keystroke fired a fetch with no debounce/cancel.
   useEffect(() => {
     if (!isAdmin) return;
+    if (tab === 'dashboard') void loadStats();
     if (tab === 'reports') void loadReports(reportStatus);
-    if (tab === 'users') void loadUsers(userQuery);
-    if (tab === 'profiles') void loadProfiles(profileQuery);
+    if (tab === 'users') void loadUsers();
+    if (tab === 'profiles') void loadProfiles();
     if (tab === 'payments') void loadPayments();
     if (tab === 'audit') void listAuditLog().then((rows) => setAudit(rows ?? []));
+    if (tab === 'trust') void listVerifications('pending').then((rows) => setDocs(rows ?? []));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAdmin, tab]);
+  }, [isAdmin, tab, reportStatus]);
 
   const act = async (
     fn: () => Promise<{ ok: boolean; error: string | null }>,
@@ -99,24 +118,66 @@ const AdminPage = () => {
           {!checked ? (
             <p className="text-slate-500 text-sm">Checking access…</p>
           ) : !isAdmin ? (
-            <Card className="max-w-lg">
-              <CardContent className="p-6">
-                <p className="font-semibold text-red-700 mb-1">Access denied</p>
-                <p className="text-sm text-slate-600">
-                  This console is restricted to administrators. Ask an operator to add your account email to the
-                  server&apos;s <code>ADMIN_EMAILS</code> list.
-                </p>
-              </CardContent>
-            </Card>
+            // Launch-gap fix #6: the 403-forbidden state is a reusable component
+            // (also used for expired sessions and failed fetches), not ad-hoc text.
+            <ErrorState
+              variant="forbidden"
+              title="Access denied"
+              description="This console is restricted to administrators. Ask an operator to add your account email to the server's ADMIN_EMAILS list."
+              actionLabel="Back to home"
+              actionTo="/"
+            />
           ) : (
             <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)}>
               <TabsList>
+                <TabsTrigger value="dashboard">Dashboard</TabsTrigger>
                 <TabsTrigger value="reports">Reports</TabsTrigger>
                 <TabsTrigger value="users">Users</TabsTrigger>
                 <TabsTrigger value="profiles">Profiles</TabsTrigger>
                 <TabsTrigger value="payments">Payments</TabsTrigger>
                 <TabsTrigger value="audit">Audit log</TabsTrigger>
+                <TabsTrigger value="trust">Trust & safety</TabsTrigger>
               </TabsList>
+              {/* Dashboard — launch-gap fix #3: the overview that matters most. */}
+              <TabsContent value="dashboard" className="mt-4 space-y-3">
+                {!stats ? (
+                  <p className="text-sm text-slate-500">Loading stats…</p>
+                ) : (
+                  <>
+                    <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                      {([
+                        ["Total users", stats.total_users],
+                        ["New (30 days)", stats.new_users_30d],
+                        ["Verified doctors", stats.verified_doctors],
+                        ["Pending verifications", stats.pending_verifications],
+                        ["Active memberships", stats.active_memberships],
+                        ["Open reports", stats.open_reports],
+                        ["Interests sent", stats.interests_sent],
+                        ["Failed payments", stats.failed_payments],
+                        ["Refunds", stats.refunds],
+                      ] as [string, number][]).map(([label, value]) => (
+                        <Card key={label}>
+                          <CardContent className="p-4">
+                            <p className="text-2xl font-bold text-slate-900">{value ?? 0}</p>
+                            <p className="text-xs text-slate-500 mt-0.5">{label}</p>
+                          </CardContent>
+                        </Card>
+                      ))}
+                    </div>
+                    {(stats.open_reports > 0 || stats.pending_verifications > 0) && (
+                      <Card className="border-amber-200 bg-amber-50">
+                        <CardContent className="p-3 text-xs text-amber-900">
+                          Needs attention: {stats.open_reports} open report{stats.open_reports === 1 ? '' : 's'} and {stats.pending_verifications} pending verification{stats.pending_verifications === 1 ? '' : 's'}.
+                          <span className="ml-2">
+                            <Button size="sm" variant="outline" onClick={() => setTab('reports')}>Review reports</Button>
+                            <Button size="sm" variant="outline" className="ml-2" onClick={() => setTab('trust')}>Review verifications</Button>
+                          </span>
+                        </CardContent>
+                      </Card>
+                    )}
+                  </>
+                )}
+              </TabsContent>
               {/* Reports */}
               <TabsContent value="reports" className="mt-4 space-y-3">
                 <div className="flex gap-2 items-center">
@@ -312,6 +373,41 @@ const AdminPage = () => {
                       <div>
                         <p><span className="font-semibold text-slate-800">{a.action}</span> → <span className="font-mono text-slate-600">{a.target || '—'}</span></p>
                         <p className="text-slate-500">{a.adminEmail} · {new Date(a.createdAt).toLocaleString()}{a.details ? ` · ${a.details}` : ''}</p>
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
+              </TabsContent>
+
+              {/* P0-2/P0-8 Trust & safety: verification queue, warn ladder, renewals. */}
+              <TabsContent value="trust" className="mt-4 space-y-3">
+                <div className="flex gap-2">
+                  <Button size="sm" variant="outline" onClick={() => void (async () => {
+                    const r = await triggerRenewalReminders();
+                    toast({ title: r ? `Renewal reminders sent (${r.sent}/${r.total})` : "Reminders unavailable", description: r ? undefined : "Server unreachable." });
+                  })}>
+                    Send renewal reminders
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => void listVerifications('pending').then((rows) => setDocs(rows ?? []))}>
+                    Refresh queue
+                  </Button>
+                </div>
+                {docs.length === 0 && <p className="text-sm text-slate-500">No pending verifications.</p>}
+                {docs.map((d) => (
+                  <Card key={d.id}>
+                    <CardContent className="p-4 text-xs flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <p className="font-semibold text-slate-800">{d.docType} · {d.userEmail}</p>
+                        <p className="text-slate-500 font-mono break-all">{d.url.slice(0, 120)}</p>
+                        <p className="text-slate-400">{new Date(d.createdAt).toLocaleString()}</p>
+                      </div>
+                      <div className="flex gap-2">
+                        <Button size="sm" onClick={() => void act(() => reviewVerification(d.id, 'approved'), () => listVerifications('pending').then((r) => setDocs(r ?? [])), 'Document approved')}>Approve</Button>
+                        <Button size="sm" variant="destructive" onClick={() => void act(() => reviewVerification(d.id, 'rejected', 'Unclear document'), () => listVerifications('pending').then((r) => setDocs(r ?? [])), 'Document rejected')}>Reject</Button>
+                        <Button size="sm" variant="outline" onClick={() => void (async () => {
+                          const r = await warnAdminUser(d.userId, 'Verification document issue');
+                          toast({ title: r.ok ? `Warned (${r.strikes}/3${r.autoSuspend ? ', auto-suspended' : ''})` : 'Warn failed', description: r.error || undefined, variant: r.ok ? undefined : 'destructive' });
+                        })}>Warn user</Button>
                       </div>
                     </CardContent>
                   </Card>

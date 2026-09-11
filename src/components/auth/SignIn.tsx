@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -53,6 +53,15 @@ const SignIn: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [isForgotModalOpen, setIsForgotModalOpen] = useState(false);
   const [forgotEmail, setForgotEmail] = useState('');
+  // Launch-gap fix #6: name the expired-session case so members are not left
+  // guessing why they landed back here. Set by ProtectedRoute.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const sessionExpired = searchParams.get('reason') === 'expired';
+  const dismissExpired = () => {
+    const next = new URLSearchParams(searchParams);
+    next.delete('reason');
+    setSearchParams(next, { replace: true });
+  };
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -80,9 +89,13 @@ const SignIn: React.FC = () => {
 
     // Real accounts: passwords are verified server-side. A wrong password
     // FAILS here — it never falls through to a session.
+    // H-1: the web SPA is cookie-first — the server sets the httpOnly
+    // mm_session cookie and returns token:null for browsers (Bearer is only
+    // for explicit mobile opt-in). Success = res.ok + res.user; the token is
+    // optional and, when absent, nothing is stored in localStorage.
     if (isAuthServerConfigured()) {
       const res = await loginWithServer(email.trim(), password);
-      if (res.ok && res.token && res.user) {
+      if (res.ok && res.user) {
         const name = res.user.firstName || doctorName;
         signIn(
           {
@@ -94,7 +107,8 @@ const SignIn: React.FC = () => {
             specialty: res.user.specialty || undefined,
             degree: res.user.degree || undefined,
           },
-          res.token
+          // H-1: cookie-first — pass the Bearer through only when issued.
+          res.token || undefined
         );
         setIsLoading(false);
         toast({
@@ -235,6 +249,17 @@ const SignIn: React.FC = () => {
             <h2 className="text-lg font-bold text-slate-900">Welcome Back, Doctor</h2>
             <p className="text-xs text-slate-500 mt-0.5">Sign in to access your matrimonial matches and chats</p>
           </div>
+
+          {sessionExpired && (
+            <div role="status" className="mb-4 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-left">
+              <KeyRound size={15} className="mt-0.5 shrink-0 text-amber-700" />
+              <div className="flex-1">
+                <p className="text-xs font-semibold text-amber-900">Your session expired</p>
+                <p className="text-[11px] text-amber-800">Please sign in again — nothing was lost, your profile and matches are waiting.</p>
+              </div>
+              <button type="button" onClick={dismissExpired} aria-label="Dismiss" className="text-amber-700 hover:text-amber-900 text-xs font-bold px-1">✕</button>
+            </div>
+          )}
 
           <form onSubmit={handleLogin} className="space-y-4">
             {/* Email / Reg Number */}
@@ -387,9 +412,9 @@ const SignIn: React.FC = () => {
           </p>
           <p className="text-[10px] text-slate-400">
             By signing in, you agree to MedicoMatch{' '}
-            <Link to="/help" className="text-slate-600 hover:underline">Terms of Service</Link>
+            <Link to="/terms" className="text-slate-600 hover:underline">Terms of Service</Link>
             {' '}and{' '}
-            <Link to="/help" className="text-slate-600 hover:underline">Privacy Policy</Link>.
+            <Link to="/privacy" className="text-slate-600 hover:underline">Privacy Policy</Link>.
           </p>
         </div>
       </div>

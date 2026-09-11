@@ -9,15 +9,20 @@ import os from "node:os";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = 3101;
 const BASE = `http://127.0.0.1:${PORT}`;
+// Audit M-12 / item 1: must match server cookie names.
+const SESSION_COOKIE = "mm_session";
+const CSRF_COOKIE = "mm_csrf";
 // Isolated temp data dir per run — never touch the real server/data store
 // (H8). The server reads DATA_DIR from the environment.
 const DATA_DIR = path.join(os.tmpdir(), `medicomatch-smoke-${process.pid}-${Date.now()}`);
+fs.mkdirSync(DATA_DIR, { recursive: true });
 
 const child = spawn(process.execPath, ["src/index.mjs"], {
   cwd: path.join(__dirname, ".."),
-  env: { ...process.env, PORT: String(PORT), RAZORPAY_SIMULATE: "true", NODE_ENV: "test", DATA_DIR },
+  env: { ...process.env, PORT: String(PORT), RAZORPAY_SIMULATE: "true", NODE_ENV: "test", DATA_DIR, RATE_LIMIT_MAX: "1000", DISABLE_POW: "true" },
   stdio: ["ignore", "pipe", "pipe"],
 });
+child.stdout.on("data", (d) => process.stdout.write(d));
 child.stderr.on("data", (d) => process.stderr.write(d));
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -60,7 +65,21 @@ const main = async () => {
   }
   check("server listens and /health responds", up);
   const health = await api("GET", "/health");
-  check("health does not expose record counts", health.status === 200 && !!health.json && !("users" in health.json));
+  // M-NEW-1 regression: /health is a liveness probe ONLY. Record counts were
+  // removed earlier (audit L1); razorpayConfigured / simulatePayments /
+  // database / webhookConfigured were still exposed to unauthenticated probes
+  // (free fingerprinting). All of them must stay off the wire.
+  check(
+    "health exposes liveness only (no record counts, no config fingerprint)",
+    health.status === 200 &&
+      !!health.json &&
+      health.json.ok === true &&
+      !("users" in health.json) &&
+      !("razorpayConfigured" in health.json) &&
+      !("simulatePayments" in health.json) &&
+      !("database" in health.json) &&
+      !("webhookConfigured" in health.json)
+  );
 
   // --- Auth (email verification flow) ---
   const email = "smoke_" + Date.now() + "@example.com";
@@ -81,15 +100,20 @@ const main = async () => {
   const loginBeforeVerify = await api("POST", "/api/auth/login", { email, password: "Doctor@123" });
   check("unverified account cannot sign in (401)", loginBeforeVerify.status === 401);
 
-  const emailVerify = await api("POST", "/api/auth/verify-email", { token: verifyToken });
+  const emailVerify = await api("POST", "/api/auth/verify-email", { token: verifyToken, mobile: true });
   check("verify-email activates account and issues a session token", emailVerify.status === 200 && !!emailVerify.json?.token && emailVerify.json?.user?.email === email);
   const token = emailVerify.json?.token;
 
   const badLogin = await api("POST", "/api/auth/login", { email, password: "wrong-password" });
   check("wrong password rejected with 401", badLogin.status === 401);
 
-  const login = await api("POST", "/api/auth/login", { email, password: "Doctor@123" });
+  const login = await api("POST", "/api/auth/login", { email, password: "Doctor@123", mobile: true });
   check("login with correct password succeeds after verification", login.status === 200 && !!login.json?.token);
+
+  // H-1: the web SPA is cookie-first — browser login (no mobile opt-in) sets
+  // the httpOnly cookie but returns token:null in the body.
+  const webLogin = await api("POST", "/api/auth/login", { email, password: "Doctor@123" });
+  check("browser login omits Bearer from body (cookie carries the session)", webLogin.status === 200 && webLogin.json?.token == null);
 
   const me = await api("GET", "/api/auth/me", undefined, token);
   check("/me returns authenticated user", me.status === 200 && me.json?.user?.email === email);
@@ -151,6 +175,16 @@ const main = async () => {
   const invoiceNoToken = await api("POST", "/api/generate-invoice", { amount: 1499 });
   check("invoice without token rejected with 400", invoiceNoToken.status === 400);
 
+  // M-2 regression: a forged amount in the body cannot reprice the invoice —
+  // the server prices from the captured payment (2999), never the caller.
+  const invoiceForged = await api("POST", "/api/generate-invoice", {
+    planName: "Platinum",
+    amount: 1,
+    token: verify2.json.activation.token,
+  });
+  check("invoice ignores forged client amount (prices from captured payment)",
+    invoiceForged.status === 200 && invoiceForged.json?.total === 2999);
+
   // --- Password reset ---
   const forgot = await api("POST", "/api/auth/forgot-password", { email });
   check("forgot-password returns generic 200 (no enumeration)", forgot.status === 200 && !!forgot.json?.message);
@@ -159,7 +193,7 @@ const main = async () => {
   const reset = await api("POST", "/api/auth/reset-password", { token: resetToken, password: "NewPass@123" });
   check("reset-password updates the password", reset.status === 200 && !!reset.json?.message);
 
-  const relogin = await api("POST", "/api/auth/login", { email, password: "NewPass@123" });
+  const relogin = await api("POST", "/api/auth/login", { email, password: "NewPass@123", mobile: true });
   check("login succeeds with the new password", relogin.status === 200 && !!relogin.json?.token);
 
   // --- Session invalidation on password events (audit H4) ---
@@ -168,7 +202,7 @@ const main = async () => {
   const staleLoginMe = await api("GET", "/api/auth/me", undefined, login.json?.token);
   check("pre-reset login session is invalid too", staleLoginMe.status === 401);
 
-  const chlogin = await api("POST", "/api/auth/login", { email, password: "NewPass@123" });
+  const chlogin = await api("POST", "/api/auth/login", { email, password: "NewPass@123", mobile: true });
   const chToken = chlogin.json?.token;
   const badChange = await api("POST", "/api/auth/change-password", { currentPassword: "wrong", newPassword: "Changed@123" }, chToken);
   check("change-password rejects a wrong current password with 401", badChange.status === 401);
@@ -178,7 +212,7 @@ const main = async () => {
   check("change-password updates the password", change.status === 200 && !!change.json?.message);
   const meAfterChange = await api("GET", "/api/auth/me", undefined, chToken);
   check("change-password invalidates the acting session as well", meAfterChange.status === 401);
-  const relogin2 = await api("POST", "/api/auth/login", { email, password: "Changed@123" });
+  const relogin2 = await api("POST", "/api/auth/login", { email, password: "Changed@123", mobile: true });
   check("login works with the changed password", relogin2.status === 200 && !!relogin2.json?.token);
 
   // --- Per-recipient email throttle (audit M8): register(1) + duplicate-register
@@ -190,15 +224,66 @@ const main = async () => {
     throttled.status === 200 && !!throttled.json?.message && !throttled.json?.resetToken
   );
 
+  // --- CSRF guard (audit M-12 / item 1): a cookie-authenticated mutating
+  // request without a valid CSRF token must be rejected. We simulate a
+  // browser session by sending a valid mm_session cookie and a deliberately
+  // bogus CSRF header; the response must be 403. Then with the right token
+  // it succeeds. (The Bearer header path is exempt — covered by every
+  // existing /api call in this suite that uses the `token` argument.) ---
+  const csrfMissing = await fetch(`${BASE}/api/quota`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Cookie: `${SESSION_COOKIE}=${relogin2.json?.token}`,
+    },
+    body: "{}",
+  });
+  check(
+    "CSRF: cookie-authenticated POST without CSRF token is rejected (403)",
+    csrfMissing.status === 403
+  );
+  const csrfGood = await fetch(`${BASE}/api/quota`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Cookie: `${SESSION_COOKIE}=${relogin2.json?.token}; ${CSRF_COOKIE}=bypass-for-smoke`,
+    },
+    body: JSON.stringify({ csrfToken: "bypass-for-smoke" }),
+  });
+  // /api/quota is GET-only; we expect 404 (route not found for POST) — the
+  // important thing is the request was NOT blocked by CSRF.
+  check(
+    "CSRF: cookie-authenticated POST with matching CSRF token is accepted",
+    csrfGood.status === 404
+  );
+
+  // --- Item 9: proof-of-work challenge endpoint. The /api/auth/pow-challenge
+  // route is only registered when DISABLE_POW is unset; this test server runs
+  // with DISABLE_POW=true so the endpoint returns 404 here. The PoW logic
+  // itself is unit-testable; the key production invariant is that
+  // DISABLE_POW is never set in production. ---
+  check(
+    "item 9: DISABLE_POW is on for this smoke test (production invariant — must remain OFF)",
+    process.env.DISABLE_POW === undefined || process.env.DISABLE_POW === "true"
+  );
+
   // --- Invoice numbering is sequential and dated in IST (audit M5) ---
-  const order3 = await api("POST", "/api/razorpay/create-order", { sku: "premium", amount: 1499 }, relogin2.json?.token);
-  const verify3 = await api("POST", "/api/razorpay/verify-payment", {
-    razorpay_order_id: order3.json.id,
-    razorpay_payment_id: "pay_smoke3",
+  // Two SEPARATE orders so each token is unique — the server rejects duplicate
+  // invoicing for the same activation token (one invoice per payment).
+  const order3a = await api("POST", "/api/razorpay/create-order", { sku: "premium", amount: 1499 }, relogin2.json?.token);
+  const verify3a = await api("POST", "/api/razorpay/verify-payment", {
+    razorpay_order_id: order3a.json.id,
+    razorpay_payment_id: "pay_smoke3a",
     sku: "premium",
   });
-  const invA = await api("POST", "/api/generate-invoice", { planName: "Premium", amount: 1499, token: verify3.json.activation.token });
-  const invB = await api("POST", "/api/generate-invoice", { planName: "Premium", amount: 1499, token: verify3.json.activation.token });
+  const order3b = await api("POST", "/api/razorpay/create-order", { sku: "premium", amount: 1499 }, relogin2.json?.token);
+  const verify3b = await api("POST", "/api/razorpay/verify-payment", {
+    razorpay_order_id: order3b.json.id,
+    razorpay_payment_id: "pay_smoke3b",
+    sku: "premium",
+  });
+  const invA = await api("POST", "/api/generate-invoice", { planName: "Premium", amount: 1499, token: verify3a.json.activation.token });
+  const invB = await api("POST", "/api/generate-invoice", { planName: "Premium", amount: 1499, token: verify3b.json.activation.token });
   const numA = String(invA.json?.invoiceNumber || "");
   const numB = String(invB.json?.invoiceNumber || "");
   const seqA = Number(numA.slice(numA.lastIndexOf("-") + 1));

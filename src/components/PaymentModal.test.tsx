@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, act } from '@testing-library/react';
+import { render, act } from '@testing-library/react';
+import { screen, fireEvent } from '@testing-library/dom';
 import PaymentModal from './PaymentModal';
 
 // Regression tests for the paid-but-not-activated hole (audit C2): when the

@@ -1,7 +1,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import {
   Heart, Video, ArrowRight, ShieldCheck,
   Sparkles, Lock, Mail, KeyRound, Search,
@@ -124,7 +124,8 @@ const Index = () => {
     // development an unreachable server fails CLOSED (audits H2/H3).
     if (isAuthServerConfigured()) {
       const res = await loginWithServer(loginEmail.trim(), loginPassword);
-      if (res.ok && res.token && res.user) {
+      // H-1: cookie-first — browsers get token:null (cookie carries session).
+      if (res.ok && res.user) {
         const name = res.user.firstName || firstName;
         signIn({
           id: res.user.id,
@@ -134,7 +135,7 @@ const Index = () => {
           fullName: res.user.fullName || `Dr. ${name}`,
           specialty: res.user.specialty || undefined,
           degree: res.user.degree || undefined,
-        }, res.token);
+        }, res.token || undefined);
         setIsLoggingIn(false);
         toast({
           title: `Welcome back, Dr. ${name}! 🩺`,
@@ -669,13 +670,24 @@ const Index = () => {
       </section>
 
       {/* Footer */}
-      {/* Simple Footer */}
+      {/* Launch-gap fix #2: legal links surfaced from the only site-wide chrome
+          that exists today (the landing page). Every legal page is one click away. */}
       <footer className="bg-gray-900 text-gray-300 py-8">
         <div className="max-w-7xl mx-auto px-4 text-center">
           <h3 className="text-white text-lg font-bold mb-2">MedicoMatch</h3>
           <p className="text-gray-400 mb-4">
             Connecting medical professionals for meaningful relationships.
           </p>
+          <nav aria-label="Legal" className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 mb-4 text-xs">
+            <Link to="/privacy" className="text-gray-400 hover:text-white">Privacy Policy</Link>
+            <Link to="/terms" className="text-gray-400 hover:text-white">Terms of Service</Link>
+            <Link to="/refunds" className="text-gray-400 hover:text-white">Refunds & Cancellation</Link>
+            <Link to="/community" className="text-gray-400 hover:text-white">Community Guidelines</Link>
+            <Link to="/cookies" className="text-gray-400 hover:text-white">Cookie Policy</Link>
+            <Link to="/security" className="text-gray-400 hover:text-white">Security</Link>
+            <Link to="/accessibility" className="text-gray-400 hover:text-white">Accessibility</Link>
+            <Link to="/help" className="text-gray-400 hover:text-white">Help & Support</Link>
+          </nav>
           <p className="text-sm text-gray-400">
             © {new Date().getFullYear()} MedicoMatch. All rights reserved.
           </p>

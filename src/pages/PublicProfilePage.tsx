@@ -27,7 +27,7 @@ import { Carousel, CarouselContent, CarouselItem, CarouselNext, CarouselPrevious
 import { DoctorMessageModal } from '@/components/DoctorMessageModal';
 import { DoctorVideoInviteModal } from '@/components/DoctorVideoInviteModal';
 import { DoctorContactModal } from '@/components/DoctorContactModal';
-import { hasServerSession, revealContact } from '@/services/api';
+import { hasServerSession, revealContact, fetchProfile, serverProfileToDoctor, getKundaliReport, type KundaliReport } from '@/services/api';
 import { ReportProfileModal } from '@/components/ReportProfileModal';
 import { BlockProfileModal } from '@/components/BlockProfileModal';
 import { usePersistedState } from '@/hooks/usePersistedState';
@@ -50,6 +50,11 @@ const PublicProfilePage = () => {
   const [myInterests] = usePersistedState<string[]>('mm:profileInterests', ['Reading', 'Travel', 'Medical Research', 'Fitness']);
 
   const [doctor, setDoctor] = useState<Doctor | null>(null);
+  // Detailed Kundali Match Report (paid) — null until bought/generated.
+  const [report, setReport] = useState<KundaliReport | null>(null);
+  const [reportBusy, setReportBusy] = useState(false);
+  const [reportError, setReportError] = useState<string | null>(null);
+  const [reportPurchaseRequired, setReportPurchaseRequired] = useState(false);
   const [galleryIndex, setGalleryIndex] = useState<number | null>(null);
   const [isMessageModalOpen, setIsMessageModalOpen] = useState(false);
   const [isVideoModalOpen, setIsVideoModalOpen] = useState(false);
@@ -71,6 +76,14 @@ const PublicProfilePage = () => {
       const found = doctorProfiles.find(d => String(d.id) === String(id));
       if (found) {
         setDoctor(found);
+      } else if (hasServerSession() && id) {
+        // Real profile from DB — fetch via API when not in demo dataset.
+        let cancelled = false;
+        fetchProfile(id).then((p) => {
+          if (cancelled || !p) { if (!cancelled) setDoctor(null); return; }
+          setDoctor(serverProfileToDoctor(p));
+        }).catch(() => { if (!cancelled) setDoctor(null); });
+        return () => { cancelled = true; };
       } else {
         // Audit M17: an unknown/removed id must render the not-found state —
         // showing doctorProfiles[0] as if the exact profile existed would be a
@@ -119,8 +132,8 @@ const PublicProfilePage = () => {
         safeImageUrl.includes('?') ? `${safeImageUrl}&v=3` : `${safeImageUrl}?v=3`,
       ];
 
-  const bio = doctor.aboutMe || `Dedicated ${doctor.specialty} practicing at ${doctor.hospital} in ${doctor.city}. Passionate about patient care, clinical excellence, continuous medical education, and maintaining a balanced, meaningful life. Looking for an understanding partner who shares medical or professional lifestyle values and mutual family aspirations.`;
-  const lookingForText = doctor.lookingFor || `Seeking a caring, educated, and supportive life partner who values family, professional ambition, mutual respect, and long-term companionship.`;
+  const bio = doctor.aboutMe || "";
+  const lookingForText = doctor.lookingFor || "";
 
   // Contact info — only what the profile actually carries, plus anything the
   // server's metered reveal endpoint has unlocked this session. Nothing is
@@ -192,12 +205,27 @@ const PublicProfilePage = () => {
     } catch {
       toast({ title: 'Message not saved', description: 'Could not save your message. Please try again.', variant: 'destructive' });
     }
+
+    // Backend dispatch: if a match channel exists, sync through server messages
+    // (api.ts exports listChannels — the previous listMyChannels name did not
+    // exist, so this dispatch never type-checked nor ran).
+    import('@/services/api').then(async ({ listChannels, sendChatMessage }) => {
+      try {
+        const channels = await listChannels();
+        const ch = channels?.find((c) => c.profile?.id === doctorId);
+        if (ch) {
+          await sendChatMessage(ch.channelId, text);
+        }
+      } catch (err) {
+        console.warn('Could not dispatch profile message to server channel', err);
+      }
+    }).catch(() => {});
   };
 
   // Deliver the video-date invite into the outgoing requests store shown on
   // the Video Dates page — previously the chosen date/slot were discarded
   // while the modal toasted success (audit H5).
-  const deliverProfileInvite = (_doctorId: string, date: string, time: string) => {
+  const deliverProfileInvite = (doctorId: string, date: string, time: string) => {
     try {
       const key = 'mm:sentVideoRequests';
       const raw = localStorage.getItem(key);
@@ -207,6 +235,21 @@ const PublicProfilePage = () => {
       window.dispatchEvent(new CustomEvent('mm:persisted-state-changed', { detail: { key } }));
     } catch {
       toast({ title: 'Invite not saved', description: 'Could not save your video date request. Please try again.', variant: 'destructive' });
+    }
+
+    // Backend dispatch: if profile ID is known, request video date on server
+    // (api.ts exports createVideoDate — requestVideoDate never existed).
+    const targetId = doctorId || doctor.id;
+    if (targetId) {
+      import('@/services/api').then(async ({ createVideoDate }) => {
+        try {
+          const timeSlot = time.includes(':') ? time : '10:00';
+          const scheduledFor = new Date(`${date}T${timeSlot}:00`).toISOString();
+          await createVideoDate(targetId, scheduledFor, 30);
+        } catch (err) {
+          console.warn('Could not dispatch video date request to server', err);
+        }
+      }).catch(() => {});
     }
   };
 
@@ -298,7 +341,7 @@ const PublicProfilePage = () => {
                 </Button>
                 <div className="h-4 w-px bg-slate-200 hidden sm:block" />
                 <span className="text-xs text-slate-600 font-medium hidden sm:inline-block">
-                  {doctorDisplayName} ({doctor.degree || 'MBBS'}, {doctor.specialty})
+                  {doctorDisplayName} ({[doctor.degree, doctor.specialty].filter(Boolean).join(', ') || 'Member'})
                 </span>
               </div>
 
@@ -776,6 +819,58 @@ const PublicProfilePage = () => {
                     <span className="font-semibold text-slate-800">{doctor.nakshatra || 'Not Specified'}</span>
                   </div>
                 </div>
+
+                {/* Detailed Kundali Match Report (paid, REPORTS_ENABLED server-side).
+                    Server 503s when the flag is off — the button hides on 503 so
+                    the product is never sellable with no reachable purchase path. */}
+                {hasServerSession() && (
+                  <div className="mt-3 pt-3 border-t border-slate-100">
+                    {reportError && !reportPurchaseRequired && (
+                      <p className="text-[11px] text-slate-400">{reportError}</p>
+                    )}
+                    {report ? (
+                      <div className="space-y-1.5">
+                        {report.kootas.map((k) => (
+                          <div key={k.id} className="flex items-center justify-between text-[11px] px-2 py-1.5 bg-amber-50/60 rounded border border-amber-100">
+                            <span className="text-slate-600">{k.name}</span>
+                            <span className={`font-semibold ${k.status === 'Dosha' ? 'text-rose-700' : 'text-emerald-700'}`}>
+                              {k.obtainedPoints}/{k.max}
+                            </span>
+                          </div>
+                        ))}
+                        <p className="text-[10px] text-slate-400 pt-1">{report.disclaimer}</p>
+                      </div>
+                    ) : (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="w-full text-xs"
+                        disabled={reportBusy}
+                        onClick={() => void (async () => {
+                          setReportBusy(true);
+                          try {
+                            const r = await getKundaliReport(doctor.id);
+                            if (r.ok) {
+                              setReport(r.report);
+                              toast({ title: "Kundali report unlocked", description: `You scored ${r.report.totalPoints}/36 Gunas with ${doctor.name}.` });
+                            } else if (r.purchaseRequired) {
+                              setReportPurchaseRequired(true);
+                              // Route the buyer through the standard checkout
+                              // (sku kundali-report, ₹499) — same Razorpay path.
+                              navigate(`/plan?sku=kundali-report&profileId=${encodeURIComponent(doctor.id)}`);
+                            } else {
+                              setReportError(r.error);
+                            }
+                          } finally {
+                            setReportBusy(false);
+                          }
+                        })()}
+                      >
+                        {reportBusy ? 'Preparing…' : 'Get Detailed Match Report (₹499)'}
+                      </Button>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* Personal & Cultural Background */}

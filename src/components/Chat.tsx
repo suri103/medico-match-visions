@@ -35,7 +35,7 @@ import { demoModeEnabled } from '@/lib/devAuth';
 import { useAuthSessionKey } from '@/hooks/useAuthSessionKey';
 import {
   hasServerSession, listChannels, listMessages as listServerMessages,
-  sendChatMessage as sendServerMessage, openEventStream,
+  sendChatMessage as sendServerMessage, openEventStream, sendTyping,
 } from '@/services/api';
 import CallModal from '@/components/CallModal';
 
@@ -228,13 +228,34 @@ const Chat: React.FC<ChatProps> = ({
   }, [setMessages]);
 
   const [sseLive, setSseLive] = useState(false);
+  // Typing indicator: peer's ephemeral "typing…" state for THIS channel.
+  const [peerTyping, setPeerTyping] = useState(false);
+  const peerTypingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Emit-side typing throttle: at most one POST per 2s while composing. The
+  // peer's banner self-expires after 4s, so a dropped signal never sticks.
+  const lastTypingSentAt = useRef(0);
+  const maybeEmitTyping = () => {
+    if (!serverChannelId || !hasServerSession()) return;
+    const now = Date.now();
+    if (now - lastTypingSentAt.current < 2000) return;
+    lastTypingSentAt.current = now;
+    void sendTyping(serverChannelId).catch(() => {});
+  };
   useEffect(() => {
     if (!serverChannelId || !hasServerSession()) return;
     return openEventStream({
       onOpen: () => setSseLive(true),
       onError: () => setSseLive(false),
+      onTyping: (payload) => {
+        if (payload.channelId !== serverChannelId) return;
+        setPeerTyping(true);
+        if (peerTypingTimer.current) clearTimeout(peerTypingTimer.current);
+        peerTypingTimer.current = setTimeout(() => setPeerTyping(false), 4000);
+      },
       onMessage: (payload) => {
         if (payload.channelId !== serverChannelId) return;
+        // An incoming message implicitly ends the typing state.
+        setPeerTyping(false);
         const mine = payload.message.senderId === myUserIdRef.current;
         mergeServerMessages([{
           id: payload.message.id,
@@ -270,6 +291,13 @@ const Chat: React.FC<ChatProps> = ({
     };
     void tick();
     const iv = setInterval(tick, 6000);
+    // P0-7: tell the server the peer's messages are now seen (read receipts).
+    void (async () => {
+      try {
+        const { markMessagesRead } = await import('@/services/api');
+        await markMessagesRead(serverChannelId);
+      } catch { /* non-fatal */ }
+    })();
     return () => {
       cancelled = true;
       clearInterval(iv);
@@ -317,8 +345,13 @@ const Chat: React.FC<ChatProps> = ({
     });
     if (serverChannelId) {
       void sendServerMessage(serverChannelId, message.content)
-        .then(() => {
-          setMessages(prev => prev.map(m => (m.id === message.id ? { ...m, status: 'sent' as const } : m)));
+        .then((ok) => {
+          if (ok) {
+            setMessages(prev => prev.map(m => (m.id === message.id ? { ...m, status: 'sent' as const } : m)));
+          } else {
+            setMessages(prev => prev.map(m => (m.id === message.id ? { ...m, status: 'failed' as const } : m)));
+            toast({ title: "Message not delivered", description: "The message could not be synced. Please try again.", variant: "destructive" });
+          }
         })
         .catch(() => {
           // Honest failure: the durable record did NOT land. Keep the bubble
@@ -326,12 +359,13 @@ const Chat: React.FC<ChatProps> = ({
           setMessages(prev => prev.map(m => (m.id === message.id ? { ...m, status: 'failed' as const } : m)));
           toast({ title: "Message not delivered", description: "The message could not be synced. Please try again.", variant: "destructive" });
         });
+    } else {
+      setTimeout(() => {
+        setMessages(prev => prev.map(m => m.id === message.id ? { ...m, status: 'delivered' as const } : m));
+      }, 1200);
     }
     setNewMessage('');
     setIsComposing(false);
-    setTimeout(() => {
-      setMessages(prev => prev.map(m => m.id === message.id ? { ...m, status: 'delivered' as const } : m));
-    }, 1200);
   };
 
   const handleStartEdit = (id: string, content: string) => {
@@ -708,6 +742,17 @@ const Chat: React.FC<ChatProps> = ({
             ))}
           </div>
         )}
+        {/* Peer typing indicator (ephemeral SSE state; auto-expires). */}
+        {peerTyping && (
+          <div className="flex items-center gap-1.5 px-1 pb-1.5" aria-live="polite">
+            <span className="flex gap-0.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-mediblue-400 animate-bounce" style={{ animationDelay: '0ms' }} />
+              <span className="w-1.5 h-1.5 rounded-full bg-mediblue-400 animate-bounce" style={{ animationDelay: '120ms' }} />
+              <span className="w-1.5 h-1.5 rounded-full bg-mediblue-400 animate-bounce" style={{ animationDelay: '240ms' }} />
+            </span>
+            <span className="text-[11px] text-slate-500">Dr. {doctorName.replace(/^Dr\.\s*/i, '')} is typing…</span>
+          </div>
+        )}
         {isComposing ? (
           <div className="flex flex-col space-y-2">
             <div className="flex justify-between items-center">
@@ -725,7 +770,7 @@ const Chat: React.FC<ChatProps> = ({
             </div>
             <Textarea
               value={newMessage}
-              onChange={(e) => setNewMessage(e.target.value)}
+              onChange={(e) => { setNewMessage(e.target.value); maybeEmitTyping(); }}
               onKeyDown={handleKeyDown}
               placeholder="Type your message here..."
               className="min-h-[120px]"
@@ -760,7 +805,7 @@ const Chat: React.FC<ChatProps> = ({
               <div className="flex-grow relative">
                 <Input
                   value={newMessage}
-                  onChange={(e) => setNewMessage(e.target.value)}
+                  onChange={(e) => { setNewMessage(e.target.value); maybeEmitTyping(); }}
                   onKeyDown={handleKeyDown}
                   placeholder={isPremium ? "Type a message..." : "Select a prebuilt starter above..."}
                   className="pr-10 text-xs"

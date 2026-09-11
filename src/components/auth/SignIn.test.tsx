@@ -1,14 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, act, fireEvent } from '@testing-library/react';
+import { render, act } from '@testing-library/react';
+import { fireEvent } from '@testing-library/dom';
 import { MemoryRouter } from 'react-router-dom';
 import SignIn from './SignIn';
 
 // Hoisted mocks — the demo flag is mutable per-test so we can simulate both a
 // production build (demoModeEnabled=false) and a dev build.
-const { demoFlag, loginMock, configuredMock } = vi.hoisted(() => ({
+const { demoFlag, loginMock, configuredMock, serverMeMock } = vi.hoisted(() => ({
   demoFlag: { value: false },
   loginMock: vi.fn(),
   configuredMock: vi.fn(),
+  serverMeMock: vi.fn().mockResolvedValue({ valid: true, source: 'network' as const }),
 }));
 
 vi.mock('@/lib/devAuth', () => ({
@@ -22,6 +24,7 @@ vi.mock('@/services/auth', () => ({
   isAuthServerConfigured: () => configuredMock(),
   loginWithServer: (...args: unknown[]) => loginMock(...args),
   forgotPassword: vi.fn(),
+  serverMe: (...args: unknown[]) => serverMeMock(...args),
 }));
 
 const renderSignIn = () =>
@@ -113,5 +116,23 @@ describe('SignIn offline behaviour (audits H2/H3 regression)', () => {
     const storedRaw = localStorage.getItem('mm:authSession');
     const storedSession = storedRaw ? JSON.parse(storedRaw) : null;
     expect(storedSession?.user ?? null).toBeNull();
+  });
+
+  it('cookie-first login succeeds without a Bearer token in the body (H-1)', async () => {
+    demoFlag.value = false;
+    configuredMock.mockReturnValue(true);
+    // Browser login: server sets httpOnly cookie, body token is null.
+    loginMock.mockResolvedValue({ ok: true, status: 200, token: null, user: { id: 'u1', email: 'doctor@hospital.in', firstName: 'Doc' } });
+
+    renderSignIn();
+    await submitCredentials();
+    await flushAsync();
+
+    const raw = localStorage.getItem('mm:authSession');
+    expect(raw).not.toBeNull();
+    const session = JSON.parse(raw!) as { user?: { email?: string }; token?: string };
+    expect(session.user?.email).toBe('doctor@hospital.in');
+    // No Bearer copy may be persisted for the cookie-first web flow.
+    expect(session.token).toBeUndefined();
   });
 });

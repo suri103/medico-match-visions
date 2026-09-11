@@ -1,35 +1,174 @@
 import React, { useEffect, useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import Header from '@/components/Header';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { User, Shield, CreditCard, Bell, Crown, CheckCircle2, Lock, ShieldCheck, FileText, Upload, AlertCircle } from 'lucide-react';
+import { User, Shield, CreditCard, Bell, Crown, CheckCircle2, Lock, ShieldCheck, FileText, Upload, AlertCircle, Eye } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { usePersistedState } from '@/hooks/usePersistedState';
-import { useNavigate } from 'react-router-dom';
 import { usePlan } from '@/hooks/usePlan';
 import { useAuth } from '@/hooks/useAuth';
 import { changePassword, isAuthServerConfigured } from '@/services/auth';
 import {
-  hasServerSession, getQuota, cancelBilling, resumeBilling,
+  hasServerSession, getQuota, cancelBilling, resumeBilling, listInvoices, requestRefund, type ServerInvoice,
+  listProfileViewers, type ProfileViewRow,
 } from '@/services/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { EMPTY_PROFILE } from '@/lib/profile';
 import { medicalCouncilsList } from '@/features/matches/data/constants';
 
+// P0-1 phone possession check. Server-issued OTP, 10-min TTL, 5 attempts.
+function PhoneVerificationCard() {
+  const { toast } = useToast();
+  const [phone, setPhone] = useState('');
+  const [code, setCode] = useState('');
+  const [sent, setSent] = useState(false);
+  const [verified, setVerified] = useState<boolean | null>(null);
+  useEffect(() => {
+    (async () => {
+      try {
+        const { phoneStatus, hasServerSession } = await import('@/services/api');
+        if (!hasServerSession()) return;
+        const s = await phoneStatus();
+        if (s) { setVerified(s.verified); if (s.phone) setPhone(s.phone); }
+      } catch { /* offline */ }
+    })();
+  }, []);
+  const request = async () => {
+    const { requestPhoneOtp } = await import('@/services/api');
+    const r = await requestPhoneOtp(phone);
+    if (!r.ok) { toast({ title: "Could not send code", description: r.error, variant: "destructive" }); return; }
+    setSent(true);
+    toast({ title: "Code sent", description: "Enter the 6-digit code within 10 minutes." });
+  };
+  const confirm = async () => {
+    const { verifyPhoneOtp } = await import('@/services/api');
+    const r = await verifyPhoneOtp(code);
+    if (!r.ok) { toast({ title: "Verification failed", description: r.error, variant: "destructive" }); return; }
+    setVerified(true);
+    toast({ title: "Number verified", description: "Your mobile number is now verified." });
+  };
+  return (
+    <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-3">
+      <h3 className="text-sm font-semibold text-slate-800">Mobile Verification {verified ? '✓' : ''}</h3>
+      {verified ? (
+        <p className="text-xs text-emerald-700">Verified{phone ? `: ${phone}` : ''}. Council review unlocks the badge.</p>
+      ) : (
+        <div className="flex flex-col sm:flex-row gap-2">
+          <Input placeholder="+91 98765 43210" value={phone} onChange={(e) => setPhone(e.target.value)} className="flex-1" />
+          <Button type="button" variant="outline" size="sm" onClick={() => void request()}>Send code</Button>
+        </div>
+      )}
+      {sent && !verified && (
+        <div className="flex flex-col sm:flex-row gap-2">
+          <Input placeholder="6-digit code" value={code} onChange={(e) => setCode(e.target.value)} maxLength={6} className="flex-1" />
+          <Button type="button" size="sm" onClick={() => void confirm()}>Verify</Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Launch-gap fix #5: member-facing refund request (AccountPage billing tab).
+ * SAFE DEFAULT: this is an ADVISORY ticket delivered to the billing/support
+ * inbox — it never auto-refunds. Approval & execution stay with the admin
+ * refund endpoints / Razorpay dashboard + refund.processed webhook revocation.
+ */
+function RefundRequestCard() {
+  const { toast } = useToast();
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    if (reason.trim().length < 10) {
+      toast({ title: "Tell us a bit more", description: "Please describe the reason (min 10 characters).", variant: "destructive" });
+      return;
+    }
+    setBusy(true);
+    try {
+      const r = await requestRefund(reason.trim());
+      if (r.ok) {
+        toast({ title: "Refund request sent", description: r.message || "Our billing team will reach out within 2 business days." });
+        setOpen(false);
+        setReason('');
+      } else if (r.error) {
+        toast({ title: "Could not send request", description: r.error, variant: "destructive" });
+      } else {
+        toast({ title: "Could not send request", description: "You may be offline — try again in a moment.", variant: "destructive" });
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="p-5 border rounded-2xl bg-slate-50">
+      <div className="flex items-center justify-between mb-2">
+        <div>
+          <h3 className="font-medium text-slate-900 text-sm">Refunds & Cancellation</h3>
+          <p className="text-xs text-slate-500 mt-0.5">
+            Cancel anytime from Membership. Refunds follow our{' '}
+            <Link to="/refunds" className="text-mediblue-600 underline">Refund Policy</Link>.
+          </p>
+        </div>
+        <CreditCard className="text-slate-400 shrink-0" size={18} />
+      </div>
+      {!open ? (
+        <Button variant="outline" size="sm" onClick={() => setOpen(true)}>Request a refund</Button>
+      ) : (
+        <div className="space-y-2 mt-2">
+          <Textarea
+            rows={3}
+            placeholder="Tell us why you're requesting a refund (order id helps — find it in your invoices above)…"
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            maxLength={2000}
+          />
+          <div className="flex gap-2">
+            <Button size="sm" className="bg-mediblue-600 hover:bg-mediblue-700 text-white" disabled={busy} onClick={() => void submit()}>
+              {busy ? 'Sending…' : 'Send request'}
+            </Button>
+            <Button size="sm" variant="outline" disabled={busy} onClick={() => { setOpen(false); setReason(''); }}>
+              Cancel
+            </Button>
+          </div>
+          <p className="text-[11px] text-slate-500">Goes to our billing team as a support ticket. Nothing is charged or refunded automatically by this form.</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 const AccountPage = () => {
   const { toast } = useToast();
   const navigate = useNavigate();
-  const { signOut } = useAuth();
+  const { user, signOut } = useAuth();
   const { planName, videoDatesLeft, interestLeft, contactLeft } = usePlan();
 
+  // Audit C-2: defaults are empty and hydrate from the authenticated session.
   const [personal, setPersonal] = usePersistedState('mm:accountPersonal', {
-    firstName: 'Doctor',
-    lastName: 'User',
-    email: 'doctor@medicomatch.com',
-    phone: '+91 98765 43210',
+    firstName: user?.firstName || '',
+    lastName: user?.lastName || '',
+    email: user?.email || '',
+    phone: '',
   });
+
+  // Sync with session if personal state is empty but user is logged in
+  useEffect(() => {
+    if (user) {
+      setPersonal(prev => ({
+        firstName: prev.firstName || user.firstName || '',
+        lastName: prev.lastName || user.lastName || '',
+        email: prev.email || user.email || '',
+        phone: prev.phone || '',
+      }));
+    }
+  }, [user, setPersonal]);
 
   const [profile, setProfile] = usePersistedState('mm:profileData', EMPTY_PROFILE);
   const [notifPrefs, setNotifPrefs] = usePersistedState<string[]>('mm:accountNotifPrefs', ['messages', 'views', 'matches']);
@@ -40,6 +179,25 @@ const AccountPage = () => {
     next: '',
     confirm: '',
   });
+
+  const [invoices, setInvoices] = useState<ServerInvoice[]>([]);
+  const [loadingInvoices, setLoadingInvoices] = useState(false);
+  // "Who viewed your profile" — real server feed (durable view rows).
+  const [profileViewers, setProfileViewers] = useState<ProfileViewRow[]>([]);
+
+  useEffect(() => {
+    if (!hasServerSession()) return;
+    setLoadingInvoices(true);
+    listInvoices()
+      .then((invs) => {
+        if (invs) setInvoices(invs);
+      })
+      .catch(() => {})
+      .finally(() => setLoadingInvoices(false));
+    listProfileViewers(20)
+      .then((views) => { if (views.length) setProfileViewers(views); })
+      .catch(() => {});
+  }, []);
 
   const updateField = (field: 'firstName' | 'lastName' | 'email' | 'phone', value: string) => {
     setPersonal(prev => ({ ...prev, [field]: value }));
@@ -99,20 +257,30 @@ const AccountPage = () => {
     if (certFileRef.current) certFileRef.current.value = '';
   };
 
-  const handleVerifyDoctor = () => {
-    // No verification backend exists in this build — submitting can only
-    // queue the profile as pending, never mark it verified (audit H2).
+  const handleVerifyDoctor = async () => {
+    // Verification backend now exists — submit the document URL for review.
+    // Local pending state remains the offline fallback (never self-verifies).
     setProfile(prev => ({
       ...prev,
       verificationStatus: 'pending',
     }));
+    try {
+      const { submitVerificationDoc, hasServerSession } = await import('@/services/api');
+      if (hasServerSession() && profile.verificationDocumentUrl) {
+        const r = await submitVerificationDoc('council', profile.verificationDocumentUrl);
+        if (!r.ok) {
+          toast({ title: "Server upload failed", description: r.error || "Saved on this device only.", variant: "destructive" });
+          return;
+        }
+      }
+    } catch { /* offline: local pending stands */ }
     toast({
       title: "Verification submitted",
-      description: "Your registration details are queued for review. The Verified badge activates only after credential checks launch.",
+      description: "Your registration details are queued for review. The Verified badge activates after credential checks pass.",
     });
   };
 
-  const handleSavePersonal = (e: React.FormEvent) => {
+  const handleSavePersonal = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanFirst = personal.firstName.replace(/^dr\.?\s*/i, '').trim();
     const cleanLast = personal.lastName.trim();
@@ -125,10 +293,31 @@ const AccountPage = () => {
       phone: personal.phone || prev.phone,
     }));
 
-    toast({
-      title: "Account details updated",
-      description: "Your personal information and doctor profile have been synchronized successfully.",
-    });
+    let syncFailed = false;
+    try {
+      const { saveMyServerProfile, hasServerSession } = await import('@/services/api');
+      if (hasServerSession()) {
+        const saved = await saveMyServerProfile({
+          full_name: combinedName || undefined,
+          email: personal.email || undefined,
+          phone: personal.phone || undefined,
+        });
+        if (saved === null) syncFailed = true;
+      }
+    } catch { syncFailed = true; /* offline / local fallback */ }
+
+    toast(
+      syncFailed
+        ? {
+            title: "Saved on this device only",
+            description: "Server sync failed — your changes are kept locally and will retry on next save.",
+            variant: "destructive",
+          }
+        : {
+            title: "Account details updated",
+            description: "Your personal information and doctor profile have been synchronized successfully.",
+          }
+    );
   };
 
   const [pwBusy, setPwBusy] = React.useState(false);
@@ -286,6 +475,8 @@ const actBilling = async (
               </div>
 
               <div className="space-y-6 max-w-2xl">
+                {/* P0-1 phone OTP: possession check before council review. */}
+                <PhoneVerificationCard />
                 <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-4">
                   <h3 className="text-sm font-semibold text-slate-800">State Medical Council Details</h3>
                   
@@ -332,10 +523,12 @@ const actBilling = async (
                       <FileText size={18} className="text-slate-400 shrink-0" />
                       <div>
                         <p className="text-xs font-medium text-slate-800">
-                          {profile.verificationDocumentName || 'nmc_registration_certificate.pdf'}
+                          {profile.verificationDocumentName || 'No document uploaded yet'}
                         </p>
                         <p className="text-[11px] text-slate-500">
-                          Official council registration certificate or state degree credential
+                          {profile.verificationDocumentName
+                            ? 'Official council registration certificate or state degree credential'
+                            : 'Upload official council registration certificate or state degree credential (PDF or Image)'}
                         </p>
                       </div>
                     </div>
@@ -539,6 +732,103 @@ const actBilling = async (
                   </div>
                 </div>
                 
+                <div className="p-4 border rounded-2xl">
+                  <h3 className="font-medium text-slate-800 text-sm mb-2">Spotlight Boost</h3>
+                  <p className="text-xs text-slate-500 mb-3">Paid-member perk: rank first in browse + daily picks for 7 days.</p>
+                  <Button size="sm" variant="outline" onClick={() => void (async () => {
+                    const { activateBoost, getBoost } = await import('@/services/api');
+                    const cur = await getBoost();
+                    if (cur?.active) {
+                      toast({ title: "Boost active", description: `Your profile is boosted through ${new Date(cur.expiresAt!).toLocaleDateString('en-IN')}.` });
+                      return;
+                    }
+                    const r = await activateBoost();
+                    toast(r.ok ? { title: "Spotlight on ✨", description: "Your profile now ranks first for 7 days." }
+                      : { title: "Boost unavailable", description: r.error || "Upgrade to a paid plan first.", variant: "destructive" });
+                  })}>
+                    Activate 7-day Spotlight
+                  </Button>
+                </div>
+
+                {/* Who viewed my profile — real server data (durable view rows). */}
+                <div className="p-5 border rounded-2xl bg-slate-50">
+                  <div className="flex items-center justify-between mb-3">
+                    <div>
+                      <h3 className="font-medium text-slate-900 text-sm">Who viewed your profile</h3>
+                      <p className="text-xs text-slate-500">Members who opened your biodata recently.</p>
+                    </div>
+                    <Eye className="text-slate-400 shrink-0" size={18} />
+                  </div>
+                  {profileViewers.length === 0 ? (
+                    <p className="text-xs text-slate-500 py-2">No profile views yet. Complete your biodata and upload photos to appear in more searches.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {profileViewers.slice(0, 5).map((v) => (
+                        <div key={v.viewerUserId} className="flex items-center gap-3 p-2 bg-white border border-slate-200 rounded-xl">
+                          {v.imageUrl ? (
+                            <img src={v.imageUrl} alt={v.name} className="w-9 h-9 rounded-full object-cover" />
+                          ) : (
+                            <div className="w-9 h-9 rounded-full bg-slate-200 flex items-center justify-center text-[11px] font-semibold text-slate-600">
+                              {v.name.replace(/^Dr\.\s*/i, '').slice(0, 2).toUpperCase()}
+                            </div>
+                          )}
+                          <div className="min-w-0 flex-1">
+                            <div className="text-xs font-semibold text-slate-800 truncate flex items-center gap-1">
+                              {v.name}
+                              {v.isVerified && <CheckCircle2 size={12} className="text-emerald-600 shrink-0" />}
+                            </div>
+                            <div className="text-[11px] text-slate-500 truncate">
+                              {[v.specialty, v.city].filter(Boolean).join(' · ') || 'Member'}
+                            </div>
+                          </div>
+                          <div className="text-right shrink-0">
+                            <div className="text-[10px] text-slate-400">
+                              {new Date(v.lastViewedAt).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' })}
+                            </div>
+                            {v.totalViews > 1 && (
+                              <div className="text-[10px] text-slate-400">{v.totalViews} views</div>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="p-5 border rounded-2xl bg-slate-50">
+                  <div className="flex items-center justify-between mb-3">
+                    <div>
+                      <h3 className="font-medium text-slate-900 text-sm">Invoices & Receipts</h3>
+                      <p className="text-xs text-slate-500">Download GST tax invoices for your membership and consultations.</p>
+                    </div>
+                    <FileText className="text-slate-400 shrink-0" size={18} />
+                  </div>
+                  {loadingInvoices ? (
+                    <p className="text-xs text-slate-400 py-2">Loading invoices...</p>
+                  ) : invoices.length === 0 ? (
+                    <p className="text-xs text-slate-500 py-2">No invoices found for this account.</p>
+                  ) : (
+                    <div className="divide-y divide-slate-200 border rounded-xl bg-white overflow-hidden text-xs">
+                      {invoices.map((inv) => (
+                        <div key={inv.invoiceNumber} className="p-3 flex items-center justify-between gap-2">
+                          <div>
+                            <div className="font-semibold text-slate-800">{inv.invoiceNumber}</div>
+                            <div className="text-slate-500 text-[11px]">{inv.planName} • {inv.date}</div>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <span className="font-medium text-slate-900">₹{inv.total.toFixed(2)}</span>
+                            <span className="text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded font-semibold">{inv.status}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Launch-gap fix #5: member-facing refund request (advisory
+                    ticket to the billing team; approval stays admin-side). */}
+                <RefundRequestCard />
+
                 <div className="p-4 border rounded-2xl">
                   <h3 className="font-medium text-slate-800 text-sm mb-2">Payment Security</h3>
                   <div className="flex items-center text-xs text-slate-500 gap-2">

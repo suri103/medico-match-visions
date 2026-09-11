@@ -88,6 +88,9 @@ jobs:
       - name: Smoke test (auth + payments + entitlements, simulation mode)
         run: node tests/smoke.mjs
 
+      - name: Regression fixes suite (PoW, coupons, admin sync)
+        run: node tests/regression-fixes.mjs
+
       - name: Wired-backend e2e (Postgres service)
         env:
           TEST_DATABASE_URL: postgres://postgres:testpass@localhost:5432/medicomatch_test

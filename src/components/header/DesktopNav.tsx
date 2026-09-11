@@ -3,8 +3,9 @@ import NavItem from './NavItem';
 import { 
   Heart, User, Star, Video, MessageSquare, Users, 
   CreditCard, HelpCircle, Calendar, MoreHorizontal,
-  Settings, UsersRound, Bookmark
+  Settings, UsersRound, Bookmark, Sparkles
 } from 'lucide-react';
+import { astrologyEnabled } from '@/lib/features';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   DropdownMenu,
@@ -126,6 +127,12 @@ const DesktopNav: React.FC = () => {
             <Calendar className="mr-2 h-4 w-4" />
             <span>Meets & Events</span>
           </DropdownMenuItem>
+          {astrologyEnabled && (
+            <DropdownMenuItem className="cursor-pointer" onClick={() => navigate('/astrology')}>
+              <Sparkles className="mr-2 h-4 w-4 text-purple-600" />
+              <span>Astrology Consultation</span>
+            </DropdownMenuItem>
+          )}
           <DropdownMenuItem className="cursor-pointer" onClick={() => navigate('/plan')}>
             <CreditCard className="mr-2 h-4 w-4" />
             <span>Club Plan</span>

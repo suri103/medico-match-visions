@@ -1,6 +1,10 @@
 import { usePersistedState } from "@/hooks/usePersistedState";
+import { useEffect, useState } from "react";
+import { hasServerSession, getQuota } from "@/services/api";
 
 export type PlanName = "basic" | "premium" | "platinum";
+
+export type SubscriptionStatus = "active" | "canceling" | "expired" | "refunded" | null;
 
 interface ActivePlan {
   name: PlanName;
@@ -26,9 +30,18 @@ const CONTACT_VIEW_QUOTAS: Record<PlanName, number> = {
   platinum: Infinity,
 };
 
-// Local-time month key (not UTC): quotas reset on the user's calendar month.
-const monthKeyOf = (date: Date = new Date()): string =>
-  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+// Business period in India's timezone (Asia/Kolkata), matching server quota periods (audit H-3).
+const monthKeyOf = (date: Date = new Date()): string => {
+  try {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Kolkata",
+      year: "numeric",
+      month: "2-digit",
+    }).format(date);
+  } catch {
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+  }
+};
 
 // Rank each plan for easy comparison.
 const PLAN_RANK: Record<PlanName, number> = { basic: 0, premium: 1, platinum: 2 };
@@ -87,7 +100,62 @@ export const usePlan = () => {
     null
   );
 
+  // Server-side subscription state (audit M-2): a `canceling` subscription still
+  // grants access until current_period_end, but the UI must warn the user. This
+  // mirrors /api/quota.subscriptionStatus / .canceling into a single source of
+  // truth the rest of the app can read.
+  const [subscriptionStatus, setSubscriptionStatus] =
+    useState<SubscriptionStatus>(null);
+  const [planExpiresAt, setPlanExpiresAt] = useState<string | null>(null);
+  const [canceling, setCanceling] = useState(false);
+
   const planName: PlanName = activePlan?.name ?? "basic";
+
+  // Reconcile local storage ledgers with authoritative server quota (audit H-1)
+  useEffect(() => {
+    if (!hasServerSession()) return;
+    let cancelled = false;
+    getQuota().then((q) => {
+      if (!q || cancelled) return;
+      // Surface the cancelling state so the header / plan card can warn the user
+      // before period_end, instead of silently dropping them to basic mid-day.
+      setSubscriptionStatus((q.subscriptionStatus as SubscriptionStatus) ?? null);
+      setPlanExpiresAt(q.planExpiresAt ?? null);
+      setCanceling(Boolean(q.canceling));
+      const currentMonth = q.period || monthKeyOf();
+      try {
+        const vdRaw = localStorage.getItem(VIDEO_DATES_KEY);
+        const vdLedger = vdRaw ? JSON.parse(vdRaw) : {};
+        if (vdLedger[currentMonth] !== q.videoDates.used) {
+          vdLedger[currentMonth] = q.videoDates.used;
+          localStorage.setItem(VIDEO_DATES_KEY, JSON.stringify(vdLedger));
+        }
+
+        const intRaw = localStorage.getItem(INTEREST_LEDGER_KEY);
+        const intLedger = intRaw ? JSON.parse(intRaw) : {};
+        if (intLedger[currentMonth] !== q.interests.used) {
+          intLedger[currentMonth] = q.interests.used;
+          localStorage.setItem(INTEREST_LEDGER_KEY, JSON.stringify(intLedger));
+        }
+
+        const cvRaw = localStorage.getItem(CONTACT_VIEWS_KEY);
+        const cvLedger = cvRaw ? JSON.parse(cvRaw) : {};
+        if (cvLedger[currentMonth] !== q.contactViews.used) {
+          cvLedger[currentMonth] = q.contactViews.used;
+          localStorage.setItem(CONTACT_VIEWS_KEY, JSON.stringify(cvLedger));
+        }
+
+        window.dispatchEvent(
+          new CustomEvent("mm:persisted-state-changed", { detail: { key: VIDEO_DATES_KEY } })
+        );
+      } catch {
+        /* storage unavailable */
+      }
+    }).catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Unlock features according to the plan required by each gated feature.
   const canUse = (feature: GatedFeature): boolean =>
@@ -169,5 +237,10 @@ export const usePlan = () => {
     contactUsed,
     contactLeft,
     consumeContactView,
+    // Audit M-2: subscription lifecycle state mirrored from /api/quota so the
+    // UI can render "your plan ends on <date>" banners and call the resume API.
+    subscriptionStatus,
+    planExpiresAt,
+    canceling,
   };
 };

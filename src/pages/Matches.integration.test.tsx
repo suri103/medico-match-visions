@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render } from '@testing-library/react';
+import { screen, waitFor } from '@testing-library/dom';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import Matches from './Matches';
 import { FavoritesProvider } from '@/features/favorites/FavoritesContext';

@@ -1,5 +1,6 @@
 
 export const degreesList = [
+  // Completed qualifications
   'MBBS',
   'MD',
   'MS',
@@ -18,7 +19,30 @@ export const degreesList = [
   'BPT / MPT (Physiotherapy)',
   'Pharm.D / M.Pharm',
   'MRCP / FRCS',
-  'Other'
+  'Other',
+  // Pursuing (student tier — fully eligible to marry, never auto-labelled Dr.)
+  'MBBS (Pursuing)',
+  'BDS (Pursuing)',
+  'BHMS / BAMS (Pursuing)',
+  'BVSc (Pursuing)',
+  'Nursing (Pursuing)',
+];
+
+// Honest career stage — SEPARATE from verification. A student is fully
+// eligible to marry but is NOT a "Dr."; these stages gate the title prefix.
+export const careerStagesList = [
+  'Medical Student',
+  'Intern / House Surgeon',
+  'Resident (JR/SR)',
+  'Consultant / Specialist',
+  'Surgeon',
+  'General Practitioner',
+  'Ayurveda / Homeopathy / Unani Practitioner',
+  'Veterinary Doctor',
+  'Nursing Professional',
+  'Allied Health / Physiotherapist',
+  'Academic / Researcher',
+  'Other',
 ];
 
 export const specialtiesList = [

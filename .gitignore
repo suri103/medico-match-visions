@@ -13,10 +13,12 @@ dist-ssr
 *.local
 
 # Environment files — never commit real/dev credentials.
-# .env.example is committed on purpose as the documentation file.
+# .env.example and *.production.example are committed on purpose as
+# documentation files (values are placeholders, not secrets).
 .env
 .env.*
 !.env.example
+!.env.production.example
 
 # Editor directories and files
 .vscode/*
@@ -35,6 +37,8 @@ server/data/
 # Local tool state (not product source; per-developer)
 .commandcode/
 .kiro/
+.kilo/
+.kilo/
 
 # Windows shell accident artifact
 $null

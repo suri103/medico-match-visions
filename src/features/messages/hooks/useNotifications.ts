@@ -1,4 +1,7 @@
 import { usePersistedState } from '@/hooks/usePersistedState';
+import { demoModeEnabled } from '@/lib/devAuth';
+import { hasServerSession, listNotifications as serverListNotifications } from '@/services/api';
+import { useEffect } from 'react';
 
 export interface Notification {
   id: string;
@@ -14,7 +17,10 @@ export interface Notification {
   city?: string;
 }
 
-const seedNotifications: Notification[] = [
+// Demo seeds are DEV-ONLY (audit C-4 pattern): fabricated "profile views" from
+// randomuser.me fixtures must never appear in a production build. The wired
+// store below is the real data source when a server session exists.
+const seedNotifications: Notification[] = demoModeEnabled ? [
   {
     id: '1',
     type: 'message' as const,
@@ -80,13 +86,47 @@ const seedNotifications: Notification[] = [
     hospital: 'Skin Care Clinic',
     city: 'Miami'
   }
-];
+] : [];
 
 export const useNotifications = () => {
   const [notifications, setNotifications] = usePersistedState<Notification[]>(
     'mm:notifications',
     seedNotifications
   );
+
+  // Wired mode: the SERVER notification center is the source of truth (durable
+  // rows incl. type='profile_view'). Merge on mount — server rows win by id;
+  // local-only rows (demo/optimistic) are kept so nothing disappears offline.
+  useEffect(() => {
+    if (!hasServerSession()) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const d = await serverListNotifications();
+        if (cancelled || !d?.notifications?.length) return;
+        setNotifications((prev) => {
+          const byId = new Map(prev.map((n) => [n.id, n]));
+          for (const sn of d.notifications) {
+            byId.set(sn.id, {
+              id: sn.id,
+              type: (sn.type as Notification['type']) || 'message',
+              from: sn.title || 'MedicoMatch',
+              content: sn.body || '',
+              timestamp: sn.createdAt,
+              read: Boolean(sn.read),
+              imageUrl: '',
+              city: undefined,
+              specialty: undefined,
+              hospital: undefined,
+            });
+          }
+          return Array.from(byId.values()).slice(0, 100);
+        });
+      } catch { /* offline — local store remains */ }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const getNotificationCount = (type?: string) => {
     if (!type || type === 'all') {

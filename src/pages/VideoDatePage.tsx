@@ -33,6 +33,7 @@ import { Separator } from '@/components/ui/separator';
 import {
   hasServerSession, listVideoDates as serverListVideoDates,
   createVideoDate as serverCreateVideoDate, cancelVideoDate as serverCancelVideoDate,
+  respondVideoDate as serverRespondVideoDate,
   createConsultation as serverCreateConsultation,
   browseProfiles, type ServerVideoDate,
 } from '@/services/api';
@@ -233,6 +234,7 @@ const VideoDatePage: React.FC = () => {
 
   // ---- Wired backend sync: real video dates + profile-id resolution ----
   const [serverDates, setServerDates] = useState<ServerVideoDate[]>([]);
+  const [availableDoctors, setAvailableDoctors] = useState<Array<{ id: string; name: string; specialty?: string }>>([]);
   const profileIdByNameRef = useRef<Record<string, string>>({});
   useEffect(() => {
     if (!hasServerSession()) return;
@@ -243,11 +245,14 @@ const VideoDatePage: React.FC = () => {
       const profiles = await browseProfiles({ limit: 200 });
       if (profiles && !cancelled) {
         const map: Record<string, string> = {};
+        const docs: Array<{ id: string; name: string; specialty?: string }> = [];
         for (const p of profiles) {
           map[p.name.toLowerCase()] = p.id;
           map[`dr. ${p.name}`.toLowerCase()] = p.id;
+          docs.push({ id: p.id, name: p.name, specialty: p.specialty ?? undefined });
         }
         profileIdByNameRef.current = map;
+        setAvailableDoctors(docs);
       }
     })().catch(() => {
       /* offline — local/demo behaviour remains */
@@ -259,34 +264,48 @@ const VideoDatePage: React.FC = () => {
   const [viewingRecording, setViewingRecording] = React.useState<import('@/lib/videoStore').VideoRecording | null>(null);
 
   const handleAcceptInvite = (inviteId: string) => {
-    // Accepting an invite books a video date — it must pass the same quota
-    // gate as scheduling one (audit H3).
-    if (!consumeVideoDate()) {
-      toast({
-        title: "Video date limit reached",
-        description: `Your ${planName} plan's monthly video date limit is reached. Upgrade for more.`,
-        variant: "destructive"
-      });
-      return;
-    }
     const invite = invites.find(i => i.id === inviteId);
-    setInvites(prev => prev.map(iv => (iv.id === inviteId ? { ...iv, status: 'accepted' as const } : iv)));
-    if (invite) {
+    if (!invite) return;
+
+    const commitLocalAccept = () => {
+      setInvites(prev => prev.map(iv => (iv.id === inviteId ? { ...iv, status: 'accepted' as const } : iv)));
       const scheduled = loadScheduled();
       scheduled.push(acceptInviteToScheduled({ ...invite, proposedDate: (invite.proposedDate as unknown as string) } as unknown as import('@/lib/videoStore').VideoInvite));
       saveScheduled(scheduled);
+      toast({ title: "Video Date Accepted", description: "The video date has been added to your calendar." });
+      try {
+        const raw = localStorage.getItem('mm:notifications');
+        const arr = raw ? JSON.parse(raw) : [];
+        arr.unshift({ id: Date.now().toString(), type: 'video_request', from: 'Video Date', content: 'You accepted a video date invitation.', timestamp: new Date().toISOString(), read: false, imageUrl: 'https://randomuser.me/api/portraits/women/44.jpg' });
+        localStorage.setItem('mm:notifications', JSON.stringify(arr.slice(0, 50)));
+        window.dispatchEvent(new CustomEvent('mm:persisted-state-changed', { detail: { key: 'mm:notifications' } }));
+      } catch { /* ignore */ }
+    };
+
+    // Wired mode: accept the incoming invite on the server without consuming recipient quota
+    if (hasServerSession()) {
+      void (async () => {
+        try {
+          const rv = await serverRespondVideoDate(inviteId, 'accept');
+          if (!rv.ok && rv.error !== 'no-server' && !/not found/i.test(rv.error || '')) {
+            toast({ title: "Video date not accepted", description: rv.error || "Please try again.", variant: "destructive" });
+            return;
+          }
+          commitLocalAccept();
+        } catch {
+          toast({ title: "Could not reach server", description: "Video date acceptance could not be saved. Please try again.", variant: "destructive" });
+        }
+      })();
+      return;
     }
-    toast({ title: "Video Date Accepted", description: "The video date has been added to your calendar." });
-    try {
-      const raw = localStorage.getItem('mm:notifications');
-      const arr = raw ? JSON.parse(raw) : [];
-      arr.unshift({ id: Date.now().toString(), type: 'video_request', from: 'Video Date', content: 'You accepted a video date invitation.', timestamp: new Date().toISOString(), read: false, imageUrl: 'https://randomuser.me/api/portraits/women/44.jpg' });
-      localStorage.setItem('mm:notifications', JSON.stringify(arr.slice(0, 50)));
-      window.dispatchEvent(new CustomEvent('mm:persisted-state-changed', { detail: { key: 'mm:notifications' } }));
-    } catch { /* ignore */ }
+
+    commitLocalAccept();
   };
 
   const handleDeclineInvite = (inviteId: string) => {
+    if (hasServerSession()) {
+      void serverRespondVideoDate(inviteId, 'decline').catch(() => {});
+    }
     setInvites(prev => prev.map(iv => (iv.id === inviteId ? { ...iv, status: 'declined' as const } : iv)));
     toast({ title: "Video Date Declined", description: "The invitation has been declined." });
   };
@@ -332,8 +351,9 @@ const VideoDatePage: React.FC = () => {
     // even when the durable booking never landed, and blocked when drift said
     // "full" while the server had room). Demo/offline keeps local-first.
     if (hasServerSession()) {
-      const displayName0 = doctorDisplayNameFor(selectedDoctor);
-      const pid0 = profileIdByNameRef.current[String(displayName0).toLowerCase()];
+      const docMatch = availableDoctors.find((d) => d.id === selectedDoctor);
+      const displayName0 = docMatch ? (docMatch.name.startsWith('Dr.') ? docMatch.name : `Dr. ${docMatch.name}`) : doctorDisplayNameFor(selectedDoctor);
+      const pid0 = docMatch ? docMatch.id : (profileIdByNameRef.current[String(displayName0).toLowerCase()] || (selectedDoctor.length > 5 ? selectedDoctor : null));
       const whenIso = new Date(selectedDate!).toISOString();
       try {
         if (isConsultationMode) {
@@ -390,28 +410,6 @@ const VideoDatePage: React.FC = () => {
         duration,
       },
     ]);
-
-    // Durable record on the wired backend — the server re-enforces its own
-    // quota atomically; a failure here degrades to local-only with a notice.
-    if (hasServerSession() && selectedDate) {
-      const displayName = doctorDisplayNameFor(selectedDoctor);
-      const pid = profileIdByNameRef.current[String(displayName).toLowerCase()];
-      // Consultation mode (?mode=consultation): books against the purchased
-      // astrologer entitlement — no video-date quota consumed.
-      if (isConsultationMode) {
-        void serverCreateConsultation(new Date(selectedDate).toISOString(), Number(duration) || 45)
-          .then((r0) => {
-            if (!r0.ok && r0.error) toast({ title: 'Booking not confirmed', description: r0.error, variant: 'destructive' });
-          })
-          .catch(() => {});
-      } else if (pid) {
-        void serverCreateVideoDate(pid, new Date(selectedDate).toISOString(), Number(duration) || 30)
-          .then((r0) => {
-            if (!r0.ok && r0.error) toast({ title: 'Not synced', description: r0.error, variant: 'destructive' });
-          })
-          .catch(() => {});
-      }
-    }
 
     setSelectedDoctor('');
     setSelectedDate(null);
@@ -618,10 +616,21 @@ const VideoDatePage: React.FC = () => {
                               <SelectValue placeholder="Choose a doctor" />
                             </SelectTrigger>
                             <SelectContent>
-                              <SelectItem value="1">Dr. Priya Sharma (Cardiologist)</SelectItem>
-                              <SelectItem value="2">Dr. Rajiv Mehta (Neurologist)</SelectItem>
-                              <SelectItem value="3">Dr. Ananya Patel (Pediatrician)</SelectItem>
-                              <SelectItem value="4">Dr. Vikram Singh (Orthopedic Surgeon)</SelectItem>
+                              {availableDoctors.length > 0 ? (
+                                availableDoctors.map((doc) => (
+                                  <SelectItem key={doc.id} value={doc.id}>
+                                    {doc.name.startsWith('Dr.') ? doc.name : `Dr. ${doc.name}`}
+                                    {doc.specialty ? ` (${doc.specialty})` : ''}
+                                  </SelectItem>
+                                ))
+                              ) : (
+                                <>
+                                  <SelectItem value="1">Dr. Priya Sharma (Cardiologist)</SelectItem>
+                                  <SelectItem value="2">Dr. Rajiv Mehta (Neurologist)</SelectItem>
+                                  <SelectItem value="3">Dr. Ananya Patel (Pediatrician)</SelectItem>
+                                  <SelectItem value="4">Dr. Vikram Singh (Orthopedic Surgeon)</SelectItem>
+                                </>
+                              )}
                             </SelectContent>
                           </Select>
                         </div>

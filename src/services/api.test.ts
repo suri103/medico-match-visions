@@ -18,6 +18,7 @@ import {
   listInterests,
   cancelVideoDate,
   hasServerSession,
+  sendSupportMessage,
 } from './api';
 
 describe('wired backend client (services/api)', () => {
@@ -101,5 +102,29 @@ describe('wired backend client (services/api)', () => {
   it('cancelVideoDate returns false when the server rejects', async () => {
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'not cancellable' }), { status: 404 }));
     expect(await cancelVideoDate('v1')).toBe(false);
+  });
+
+  // H1 regression: Shaadi-style advanced filters must reach SQL query params.
+  it('browseProfiles forwards religion/caste/gotra/motherTongue/minGunas', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ profiles: [] }), { status: 200 })
+    );
+    await browseProfiles({ religion: 'Hindu', caste: 'Brahmin', gotra: 'Kashyap', motherTongue: 'Hindi', orientation: 'Straight', ethnicity: 'Asian', minGunas: 18 });
+    const url = new URL(fetchMock.mock.calls[0][0] as string);
+    expect(url.searchParams.get('religion')).toBe('Hindu');
+    expect(url.searchParams.get('caste')).toBe('Brahmin');
+    expect(url.searchParams.get('gotra')).toBe('Kashyap');
+    expect(url.searchParams.get('motherTongue')).toBe('Hindi');
+    expect(url.searchParams.get('orientation')).toBe('Straight');
+    expect(url.searchParams.get('ethnicity')).toBe('Asian');
+    expect(url.searchParams.get('minGunas')).toBe('18');
+  });
+
+  // M6 regression: support inbox posts to the real server endpoint.
+  it('sendSupportMessage posts to /api/support', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    const r = await sendSupportMessage({ name: 'A', email: 'a@x.in', subject: 'Hi', message: 'Need help with my profile please' });
+    expect(r.ok).toBe(true);
+    expect(String(fetchMock.mock.calls[0][0])).toBe('https://api.test/api/support');
   });
 });

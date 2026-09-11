@@ -1,9 +1,10 @@
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import Header from '@/components/Header';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { usePersistedState } from '@/hooks/usePersistedState';
+import { demoModeEnabled } from '@/lib/devAuth';
 import { 
   Trophy, Search, Heart, MessageSquare, Share2 
 } from 'lucide-react';
@@ -129,7 +130,26 @@ const SuccessStoriesPage = () => {
   const [sortBy, setSortBy] = useState("latest");
   const [filterTag, setFilterTag] = useState("all");
   
-  const [stories, setStories] = usePersistedState<typeof successStories>('mm:stories', successStories);
+  // Audit C-4: fabricated testimonials must never appear in production — the
+  // seed data is only used in development/demo mode.
+  const [stories, setStories] = usePersistedState<typeof successStories>('mm:stories', demoModeEnabled ? successStories : []);
+  // P0-6: approved server stories (moderated) merge above local drafts.
+  const [serverStories, setServerStories] = useState<typeof successStories>([]);
+  useEffect(() => { void (async () => {
+    try {
+      const { listServerStories } = await import('@/services/api');
+      const rows = await listServerStories();
+      if (rows && rows.length > 0) {
+        setServerStories(rows.map((r) => ({
+          id: r.id, title: `Together: ${r.partnerName}`, content: r.story,
+          date: new Date(r.createdAt).toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" }),
+          author: { name: "Verified couple", image: r.photoUrl || "", specialty: "Doctor", location: "" },
+          partner: { name: r.partnerName, image: r.photoUrl || "", specialty: "Doctor", location: "" },
+          likes: 0, comments: 0, featured: true, tags: ["Verified"],
+        })));
+      }
+    } catch { /* offline */ }
+  })(); }, []);
   const [likedIds, setLikedIds] = usePersistedState<string[]>('mm:storiesLiked', []);
   const [commentingStoryId, setCommentingStoryId] = useState<string | null>(null);
   const [commentText, setCommentText] = useState("");
@@ -175,6 +195,19 @@ const SuccessStoriesPage = () => {
       toast({ title: "Missing details", description: "Please provide both a title and your story.", variant: "destructive" });
       return;
     }
+    // P0-6: durable server submission when wired (goes to moderation queue);
+    // local draft remains the offline fallback.
+    void (async () => {
+      try {
+        const { submitStory, hasServerSession } = await import('@/services/api');
+        if (hasServerSession()) {
+          const r = await submitStory({ partnerName: title.slice(0, 120), story: content.slice(0, 4000) });
+          if (r.ok) {
+            toast({ title: "Story submitted for review", description: "Our team reviews every story before publishing." });
+          }
+        }
+      } catch { /* local draft stands */ }
+    })();
 
     const newStory = {
       id: `story-${Date.now()}`,
@@ -196,7 +229,7 @@ const SuccessStoriesPage = () => {
   
   const allTags = Array.from(new Set(successStories.flatMap(story => story.tags)));
   
-  const filteredStories = stories.filter(story => {
+  const filteredStories = [...serverStories, ...stories].filter(story => {
     const matchesSearch = 
       story.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
       story.content.toLowerCase().includes(searchTerm.toLowerCase()) ||

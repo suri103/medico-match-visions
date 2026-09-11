@@ -58,8 +58,16 @@ const SignUp: React.FC = () => {
 
     setTimeout(async () => {
       const cleanName = fullName.replace(/^dr\.?\s*/i, '');
-      const chosenDegree = degree && degree !== 'Select Degree (Optional)' ? degree : 'MBBS';
-      const chosenSpecialty = specialty && specialty !== 'Select Specialty (Optional)' ? specialty : 'Physician / Medical Practitioner';
+      // Honest career stage at signup: degree/specialty are OPTIONAL — a
+      // medical student is fully eligible to marry and must NOT be forced
+      // into "MBBS" or titled "Dr." (the completed-qualification question is
+      // answered honestly on the profile, and verification is opt-in anyway).
+      const chosenDegree = degree && degree !== 'Select Degree (Optional)' ? degree : '';
+      const chosenSpecialty = specialty && specialty !== 'Select Specialty (Optional)' ? specialty : '';
+      const isCompletedQualification = Boolean(chosenDegree) &&
+        !chosenDegree.toLowerCase().includes('pursuing') &&
+        !chosenDegree.toLowerCase().includes('student');
+      const displayTitle = isCompletedQualification ? 'Dr. ' : '';
 
       // Real accounts live on the server (password actually checked on
       // sign-in). Duplicate emails are rejected there; if the server is
@@ -70,8 +78,8 @@ const SignUp: React.FC = () => {
           password,
           firstName: cleanName.split(' ')[0] || cleanName || 'Doctor',
           lastName: cleanName.split(' ').slice(1).join(' '),
-          degree: chosenDegree,
-          specialty: chosenSpecialty,
+          ...(chosenDegree ? { degree: chosenDegree } : {}),
+          ...(chosenSpecialty ? { specialty: chosenSpecialty } : {}),
         });
         if (res.ok) {
           // Email verification flow: no auto-login. The account activates only
@@ -124,7 +132,7 @@ const SignUp: React.FC = () => {
 
       // Save profile to local storage
       const newProfile = {
-        name: `Dr. ${cleanName}`,
+        name: `${displayTitle}${cleanName}`,
         age: 29,
         gender: "Male",
         degree: chosenDegree,
@@ -141,7 +149,7 @@ const SignUp: React.FC = () => {
         isVerified: false,
         email,
         phone,
-        aboutMe: `Medical professional (${chosenSpecialty}) looking for a compatible life partner.`,
+        aboutMe: `Medical professional (${chosenSpecialty || 'medical field'}) looking for a compatible life partner.`,
       };
 
       try {
@@ -152,7 +160,7 @@ const SignUp: React.FC = () => {
           email,
           firstName: cleanName.replace(/^dr\.?\s*/i, '') || 'Doctor',
           lastName: '',
-          fullName: `Dr. ${cleanName}`,
+          fullName: `${displayTitle}${cleanName}`,
           imageUrl: localAvatar(cleanName),
           specialty: chosenSpecialty,
           degree: chosenDegree,
@@ -360,9 +368,9 @@ const SignUp: React.FC = () => {
               />
               <Label htmlFor="agreeTerms" className="text-[11px] text-slate-600 leading-tight cursor-pointer">
                 I agree to the MedicoMatch{' '}
-                <Link to="/help" className="text-mediblue-600 font-semibold hover:underline">Terms of Service</Link>
+                <Link to="/terms" className="text-mediblue-600 font-semibold hover:underline">Terms of Service</Link>
                 {' '}and{' '}
-                <Link to="/help" className="text-mediblue-600 font-semibold hover:underline">Privacy Policy</Link>.
+                <Link to="/privacy" className="text-mediblue-600 font-semibold hover:underline">Privacy Policy</Link>.
               </Label>
             </div>
 

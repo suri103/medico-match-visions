@@ -14,6 +14,7 @@ import {
   respondInterest as serverRespondInterest,
   blockUser as serverBlockUser, unblockUser as serverUnblockUser,
   listFavoriteIds, addFavoriteRemote, removeFavoriteRemote,
+  listShortlistIds, addShortlistRemote, removeShortlistRemote,
 } from "@/services/api";
 
 export type ConnectionStatus = 'pending' | 'matched' | 'passed' | 'blocked';
@@ -187,6 +188,21 @@ export const FavoritesProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         return merged;
       });
     }).catch(() => {});
+
+    listShortlistIds().then((ids) => {
+      if (!ids || cancelled || ids.length === 0) return;
+      setShortlist((prev) => {
+        const have = new Set(prev.map((x) => x.id));
+        const merged = prev.map((d) => ({ ...d }));
+        for (const id of ids) {
+          if (have.has(id)) continue;
+          const doc = doctorProfiles.find((x) => x.id === id);
+          merged.push((doc ? { ...doc } : { id, name: `Profile ${id}`, age: 0, specialty: "", degree: "", hospital: "", city: "", state: "", country: "India", imageUrl: localAvatar(`Profile ${id}`), matchPercentage: 0, interests: [], isOnline: false, sexualOrientation: "Straight" }) as Doctor);
+        }
+        return merged;
+      });
+    }).catch(() => {});
+
     (async () => {
       const data = await serverListInterests();
       if (!data || cancelled) return;
@@ -319,9 +335,19 @@ export const FavoritesProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   const shortlistDoctor = useCallback((doctor: Doctor) => {
     setShortlist(prev => prev.some(d => d.id === doctor.id) ? prev : [...prev, doctor]);
+    if (hasServerSession()) {
+      queueMicrotask(() => {
+        void addShortlistRemote(doctor.id).catch(() => {});
+      });
+    }
   }, [setShortlist]);
   const unshortlistDoctor = useCallback((id: string) => {
     setShortlist(prev => prev.filter(d => d.id !== id));
+    if (hasServerSession()) {
+      queueMicrotask(() => {
+        void removeShortlistRemote(id).catch(() => {});
+      });
+    }
   }, [setShortlist]);
 
   const sendInterest = useCallback(
@@ -331,34 +357,40 @@ export const FavoritesProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       // interest slot nor double-append (the ledger never refunds).
       if (interests.some((i) => i.doctor.id === doctor.id)) return true;
 
-      // Wired mode: the SERVER is the awaited authority. Its verdict decides
-      // both the optimistic UI and the local ledger charge (audit C-3: the old
-      // fire-and-forget flow charged local quota even when the durable record
-      // never landed). Demo/offline keeps the previous local-only behavior.
+      // Wired mode: optimistic UI with server-authoritative reconciliation and
+      // rollback (audit C-1: optimistic UI must cleanly rollback on quota/server error).
       if (hasServerSession()) {
+        const tempId = `myint${Date.now()}`;
+        setConnections(prev => {
+          const existing = prev.find(c => c.doctorId === doctor.id);
+          if (existing?.status === 'matched' || existing?.status === 'blocked') return prev;
+          const theyLikedMe = interestedInYou.some(i => i.doctor.id === doctor.id);
+          const nextStatus: ConnectionStatus = theyLikedMe ? 'matched' : 'pending';
+          if (existing) return prev.map(c => c.doctorId === doctor.id ? { ...c, status: nextStatus, updatedAt: new Date().toISOString() } : c);
+          return [...prev, { doctorId: doctor.id, status: nextStatus, updatedAt: new Date().toISOString() }];
+        });
+        setInterests(prev => prev.some(i => i.doctor.id === doctor.id) ? prev : [...prev, { id: tempId, doctor, note: "You showed interest in this profile", createdAt: new Date() }]);
+
         void (async () => {
           const r = await serverSendInterest(doctor.id);
-          // Server-side rejection (quota/profile state): no local mutation at all.
-          if (!r.ok && r.error !== "no-server" && r.error !== "network") {
-            toast({ title: "Interest not sent", description: r.error || "Please try again.", variant: "destructive" });
+          if (!r.ok) {
+            // C-NEW-2: only "ok" guarantees the server recorded the interest.
+            // Rollback optimistic state AND do NOT burn the local quota unit
+            // (the server may have rejected for quota / auth / never received
+            //  the request at all — the local ledger was never a binding
+            //  counter).
+            setConnections(prev => prev.filter(c => c.doctorId !== doctor.id || c.status === 'matched' || c.status === 'blocked'));
+            setInterests(prev => prev.filter(i => i.doctor.id !== doctor.id));
+            setFavorites(prev => prev.filter(d => d.id !== doctor.id));
+            toast({
+              title: "Interest not sent",
+              description: r.error || "Please try again.",
+              variant: "destructive",
+            });
             return;
           }
-          // Optimistic UI + ledger charge only after an accepted send.
           consumeInterest();
-          setConnections(prev => {
-            const existing = prev.find(c => c.doctorId === doctor.id);
-            if (existing?.status === 'matched' || existing?.status === 'blocked') return prev;
-            const theyLikedMe = interestedInYou.some(i => i.doctor.id === doctor.id);
-            const nextStatus: ConnectionStatus = theyLikedMe ? 'matched' : 'pending';
-            if (existing) return prev.map(c => c.doctorId === doctor.id ? { ...c, status: nextStatus, updatedAt: new Date().toISOString() } : c);
-            return [...prev, { doctorId: doctor.id, status: nextStatus, updatedAt: new Date().toISOString() }];
-          });
-          setInterests((prev) => {
-            if (prev.some((i) => i.doctor.id === doctor.id)) return prev;
-            return [...prev, { id: `myint${Date.now()}`, doctor, note: "You showed interest in this profile", createdAt: new Date() }];
-          });
           if (r.alreadyInterested) {
-            // Reconcile server ids so withdraw/respond can target rows.
             void serverListInterests();
           }
         })().catch(() => {});
@@ -381,7 +413,7 @@ export const FavoritesProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       });
       return true;
     },
-    [blockedIds, interests, interestedInYou, setConnections, setInterests, consumeInterest]
+    [blockedIds, interests, interestedInYou, setConnections, setInterests, setFavorites, consumeInterest]
   );
 
   const withdrawInterest = useCallback(

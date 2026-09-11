@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import Header from '@/components/Header';
 import { Calendar, Filter, MapPin, Users, Clock, Check, PlusCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -72,8 +72,9 @@ const INITIAL_EVENTS: EventItem[] = [
 const EventsPage = () => {
   const { toast } = useToast();
   const [activeTab, setActiveTab] = useState('upcoming');
-  const [registeredIds, setRegisteredIds] = usePersistedState<string[]>('mm:eventsRegistered', ['e1']);
+  const [registeredIds, setRegisteredIds] = usePersistedState<string[]>('mm:eventsRegistered', []);
   const [customEvents, setCustomEvents] = usePersistedState<EventItem[]>('mm:customEvents', []);
+  const [serverEvents, setServerEvents] = useState<EventItem[] | null>(null);
   const [expandedIds, setExpandedIds] = useState<string[]>([]);
   const [locationFilter, setLocationFilter] = useState('all');
   const [showFilter, setShowFilter] = useState(false);
@@ -88,7 +89,19 @@ const EventsPage = () => {
     description: '',
   });
 
-  const allEvents = [...INITIAL_EVENTS, ...customEvents];
+  const allEvents = [...(serverEvents ?? INITIAL_EVENTS), ...customEvents];
+
+  // P0-6: real server events replace fixtures when the backend is wired.
+  // Fixtures remain the offline fallback so the page never goes empty.
+  useEffect(() => { void (async () => {
+    try {
+      const { listServerEvents } = await import('@/services/api');
+      const rows = await listServerEvents();
+      if (rows && rows.length > 0) {
+        setServerEvents(rows.map((r) => ({ id: r.id, title: r.title, date: r.date, time: r.time, location: r.location, attendees: 0, description: r.description })));
+      }
+    } catch { /* offline: fixtures stand */ }
+  })(); }, []);
 
   const isRegistered = (id: string) => registeredIds.includes(id);
 
@@ -98,6 +111,15 @@ const EventsPage = () => {
       toast({ title: "RSVP cancelled", description: `You are no longer registered for ${event.title}.` });
     } else {
       setRegisteredIds(prev => [...prev, event.id]);
+      // P0-6: durable server RSVP when wired (best-effort; local state is truth for UI).
+      void (async () => {
+        try {
+          const { rsvpEvent, hasServerSession } = await import('@/services/api');
+          if (hasServerSession() && !event.id.startsWith('ce-') && !INITIAL_EVENTS.some((e) => e.id === event.id)) {
+            await rsvpEvent(event.id);
+          }
+        } catch { /* local RSVP stands */ }
+      })();
       toast({ title: "You're in! 🎉", description: `You have registered for ${event.title} on ${event.date}.` });
     }
   };

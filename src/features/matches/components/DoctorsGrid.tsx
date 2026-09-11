@@ -65,7 +65,14 @@ const DoctorsGrid: React.FC<DoctorsGridProps> = ({
         });
         return;
       }
-      // network/no-server → fall through to the demo path below.
+      if (r.error !== 'no-server') {
+        toast({
+          title: 'Contact not available',
+          description: r.error || 'Could not fetch contact details. Please try again.',
+          variant: 'destructive',
+        });
+        return;
+      }
     }
     // Demo path: quota is only charged when there is actually contact info to
     // reveal — a paid view must never be burned on an empty profile (H1).

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { render, screen, act } from '@testing-library/react';
+import { render, act } from '@testing-library/react';
+import { screen } from '@testing-library/dom';
 import React from 'react';
 import { usePersistedState } from './usePersistedState';
 

@@ -10,9 +10,10 @@
   interests, chat channels/messages, video dates, billing, admin audit and
   notifications. The schema is `server/migrations/schema.sql`, idempotent,
   applied automatically at boot behind a Postgres advisory lock.
-  The JSON files in `server/data/` are the **dev/test fallback** mode used only
-  when `DATABASE_URL` is unset; in production the only JSON file treated as
-  state is `invoice_seq.json` (the sequential GST invoice counter).
+  In production DB mode, state is 100% database-backed: sequential GST invoices use
+  Postgres `invoice_sequences`, rate limiting uses `rate_limit_buckets`, and
+  SSE pub/sub fanout uses Postgres `LISTEN/NOTIFY`. The JSON files in `server/data/`
+  are dev/test fallbacks used only when `DATABASE_URL` is unset.
 
 > The static viewable catalog / demo seeds are marked `is_sample` or gated
 > behind demo mode and are never presented as real members in production.
@@ -47,6 +48,12 @@
 | `SUPABASE_URL` / `SUPABASE_SERVICE_KEY` | no | Object storage for profile photos (else bounded data-URL blobs) |
 | `DATA_DIR` | no | Dev JSON-store directory (default `server/data`) |
 | `ASTROLOGY_ENABLED` | no | `true` to sell astrologer consultation SKUs; off by default |
+| `REPORTS_ENABLED` | no | `true` to sell kundali-report SKU; off by default |
+| `RATE_LIMIT_MAX` / `USER_RATE_LIMIT_MAX` | no | Defaults 30 / 60 req/min |
+| `BROWSE_DAILY_MAX` | no | Daily profile-row budget (default 1000) |
+| `ADMIN_FLAG_TTL_MS` | no | Admin flag cache TTL ms (default 30000). Change the roster via the admin API, not raw SQL (M-5) |
+| `REQUIRE_VERIFIED_INTERACT` | no | `true` hard-gates member interactions on verified email (403 `email_unverified`); default `false` (H-2) |
+| `DISABLE_POW` / `DISABLE_DIGEST` | no | Test-only; production boot refuses to start if set |
 | `PORT` | no | Default 3001 |
 ## Pre-deploy checklist
 
@@ -54,39 +61,73 @@
 2. `cd server && node tests/smoke.mjs` (and `node tests/smoke-db.mjs` against a scratch `TEST_DATABASE_URL`) - green.
 3. Boot the server in production mode locally with real env first: it must start cleanly (fail-closed boot validates Razorpay, APP_URL https, ACTIVATION_SECRET, DATABASE_URL and RESEND_API_KEY). Migrations run automatically at boot.
 4. Schema changes are applied by the idempotent boot-time migration (`migrate()` in `server/src/db.mjs`, advisory-locked so concurrent boots never race). Sessions carry a token version => each user signs in once more after a deploy.
-5. Back up the **database** (see Backup/restore) AND `server/data/invoice_seq.json` before anything touching billing - the GST invoice counter must never be reset.
+5. Back up the **database** (see Backup/restore) before anything touching billing - the GST invoice counter lives in Postgres `invoice_sequences` in DB mode (`server/data/invoice_seq.json` is only the no-DB dev fallback) and must never be reset.
 
 ## Deploy steps
 
-1. Push frontend; build with prod env vars; upload `dist/`.
-2. Deploy `server/` (Node 20+ host) behind TLS. Set runtime env vars from the table above. Configure TWO Razorpay webhooks at `https://API/api/webhooks/razorpay` using `RAZORPAY_WEBHOOK_SECRET`: `payment.captured` and `refund.processed`. Set `ADMIN_EMAILS` to your operator addresses.
-3. Smoke test production:
-   - `curl https://API/health` -> `{"ok":true,"razorpayConfigured":true,"simulatePayments":false}`
+> Lock the split: **backend on Railway** (long-lived container), **frontend as
+> static SPA** (Vercel or any CDN), **database + photo storage on Supabase**.
+> The Express process must persist — it holds SSE connections in memory
+> (`server/src/events.mjs`), keeps a Postgres LISTEN/NOTIFY socket open, runs
+> the engagement digest on `setInterval`, runs idempotent migrations at boot,
+> and keeps the PoW challenge map in-process. Serverless per-request functions
+> cannot do any of these. Deploying the API anywhere serverless breaks
+> realtime, digests, and the multi-replica PoW contract — do not do it until
+> the realtime layer is moved off SSE and the PoW map to a shared store
+> (both constraints are called out in Operational notes below).
+
+1. **Supabase (once)**: create the project → run `supabase/storage-profile-photos.sql`
+   in the SQL Editor (creates the public `profile-photos` bucket, 2 MB image
+   limit) → copy the **pooler URI** (port 6543, Settings → Database) and the
+   `SUPABASE_URL` + `SUPABASE_SERVICE_KEY` (service-role, server side only).
+2. **Railway (backend)**: new service from `server/` (Dockerfile + `railway.json`
+   already in the repo; single instance — `numReplicas: 1`, health probe
+   `GET /health`). Paste `server/.env.production.example` into the service's
+   Variables tab and fill in the secrets. The first boot runs `schema.sql`
+   automatically (advisory-locked migration). `PORT` is injected by Railway;
+   the code honors it (`server/src/index.mjs:70`).
+3. **Vercel (frontend)**: import the repo root, build `npm run build` →
+   output `dist/`, paste `.env.production.example` into the Vercel
+   Environment Variables for Production. Set the backend domain into
+   `APP_URL`/`CORS_ORIGINS` on Railway at the same time.
+4. **Razorpay**: create TWO webhooks at `https://<railway-domain>/api/webhooks/razorpay`
+   using `RAZORPAY_WEBHOOK_SECRET`: `payment.captured` and `refund.processed`.
+   Set `ADMIN_EMAILS` to operator addresses.
+5. Smoke test production:
+   - `curl https://API/health` -> `{"ok":true}` (liveness only; config state lives in the `server_started` boot log line)
+   - `curl https://API/readyz` -> `{"ok":true,"mode":"db"}` (migrations + DB probe)
    - Register + login a test account via `/api/auth/register` / `/api/auth/login`.
    - Place a real minimum purchase in Razorpay test mode before live.
-4. Watch structured logs (`msg:"request"` JSON lines) for 5xx rates.
+6. Watch structured logs (`msg:"request"` JSON lines) for 5xx rates.
 
 ## Rollback plan
 
 - **Frontend**: redeploy the previous `dist/` artifact - stateless.
 - **Backend / database**: redeploy the previous `server/` build and restore the Postgres schema/data from the pre-deploy backup (schema.sql is additive-only and idempotent, so an older binary will not lock out a newer schema).
 - **Session invalidation (all users)**: rotate `ACTIVATION_SECRET` and restart. Individual users are invalidated automatically when their password changes (tokenVersion bump).
-- **Refund policy (default)**: a refunded membership payment downgrades the account to basic immediately; consumed quotas are not clawed back. Admin refunds live in `/admin` > Payments.
+- **Refund policy (default, explicit)**: a FULL refund revokes access immediately (membership → basic, consultation/report → refunded/expired); a PARTIAL refund is bookkept but keeps access. Consumed quotas are not clawed back. Kundali reports are single-use per pair; consultations single-use per booking. Self-service cancel affects memberships only. Admin refunds live in `/admin` > Payments.
 - **Payments emergency**: to stop checkout, scale the API to a maintenance page - the frontend fails closed with "Checkout is not configured".
 
 ## Backup / restore
 
-- What to back up: the **Postgres database** (profiles, quotas, interests, chat, video dates, billing, admin audit, notifications) AND `server/data/invoice_seq.json` (sequential GST invoice counter).
+- What to back up: the **Postgres database** (profiles, quotas, interests, chat, video dates, billing incl. `invoice_sequences`, admin audit, notifications). `server/data/invoice_seq.json` is only the no-DB dev fallback — back it up only when running without `DATABASE_URL`.
 - Postgres backup: `pg_dump --no-owner --no-privileges -Fc "$(cat DATABASE_URL)" > medicomatch.dump` (or your host's managed snapshot, e.g. Supabase PITR). Migrations are idempotent, so a fresh install + `schema.sql` + the dump restores cleanly.
+- **Operator runbook scripts** (item 12): `server/scripts/db-backup.sh`, `db-restore.sh`, `db-verify-restore.sh`. The restore is destructive — the script requires typing the literal `RESTORE` to confirm.
+- **Verify every restore** by running `db-verify-restore.sh` against the restored DB; the script runs `smoke-db.mjs` which exercises the full quota / billing / SSE / admin pipeline.
 - Frequency: daily + before each deploy.
-- Restore: stop the server, restore the dump into the target database (or a fresh one, then repoint `DATABASE_URL`), restore `server/data/invoice_seq.json`, then start the server.
+- Restore: stop the server, restore the dump into the target database (or a fresh one, then repoint `DATABASE_URL`), restore `server/data/invoice_seq.json` only for no-DB mode, then start the server.
 
-## Operational notes / known limits
+## Audit log retention
 
-- **Single instance**: the invoice counter and per-IP rate limits are in-process state; in DB mode redeemed activation tokens are durable in Postgres (`redeemed_tokens`). Multi-replica deployments still need shared storage for rate limiting.
+`server/src/index.mjs` prunes `admin_audit_log` at every boot to `ADMIN_AUDIT_RETENTION_DAYS` (default **365**). For financial-services compliance, set it to `2555` (7 years). The notifications feed is also pruned at boot to `NOTIFICATION_RETENTION_DAYS` (default **90**).
+
+## Operational notes
+- **Multi-replica ready**: In DB mode, sequential GST invoices are assigned atomically via `invoice_sequences`, rate limiting is synchronized via `rate_limit_buckets`, redeemed activation tokens live in Postgres (`redeemed_tokens`), and real-time SSE broadcasts fan out across nodes via Postgres `LISTEN/NOTIFY`.
+- **Auth transport (audit H-1)**: the web SPA is **cookie-first** — `mm_session` is httpOnly and the JSON body returns `token: null` for browsers. Mobile/API clients opt in to a Bearer token with `{"mobile": true}` on login/verify or the `X-MM-Mobile: 1` header; only those clients should keep a token in local storage.
+- **Registration PoW challenges are in-memory per process (audit M-6)**: if you run more than one API replica, enable sticky sessions on the challenge+register pair (or accept extra client retries — the SPA fails open and retries). Not an issue single-instance.
 - **Sessions are stateless** (signed, 7-day, versioned). Password change/reset invalidates that user's sessions instantly; global revocation = rotate `ACTIVATION_SECRET`.
 - **TLS**: remote Postgres connections require validated TLS (`rejectUnauthorized` on by default). Use `PGSSLMODE=no-verify` only behind an intentional TLS-terminating proxy.
-- Logs are JSON lines on stdout - ship them to your log platform.
+- Logs are JSON lines on stdout - ship them to your log platform. Alert on `level:"error"` webhook lines (`webhook_refund_unkeyable`) — they mean a Razorpay payload-shape change is silently skipping refunds (audit L-6).
 
 ## Astrology consultations - "introduce later" feature flag
 

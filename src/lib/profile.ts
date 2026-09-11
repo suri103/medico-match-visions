@@ -12,6 +12,14 @@ export const EMPTY_PROFILE = {
   dob: "",
   gender: "",
   heightCm: "",
+  // Matrimony kundali details (higher-fidelity matching + astro consults).
+  birthDate: "",
+  birthTime: "",
+  birthCity: "",
+  // Honest career stage — never forced "Dr./MBBS" for students.
+  careerStage: "",
+  councilName: "",
+  registrationNumber: "",
   maritalStatus: "Never Married",
   motherTongue: "Hindi",
   religion: "Hindu",
@@ -32,12 +40,14 @@ export const EMPTY_PROFILE = {
   prefDegree: [] as string[],
   excludeSameGotra: false,
   minGunas: 18,
-  councilName: "",
-  registrationNumber: "",
   registrationYear: "",
   verificationStatus: "unverified" as 'unverified' | 'pending' | 'verified' | 'rejected',
   verificationDocumentName: "",
   verificationDocumentUrl: "",
+  // Privacy (P-CONTROL): member-set visibility, synced to the server like every
+  // other profile field. Income defaults to 'private' (owner-only display).
+  profileVisibility: "public",
+  incomeVisibility: "private",
 };
 
 export type ProfileData = typeof EMPTY_PROFILE;

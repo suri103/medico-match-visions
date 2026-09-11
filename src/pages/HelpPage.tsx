@@ -45,7 +45,11 @@ const faqs: FaqItem[] = [
   },
   {
     question: "Can I control who sees my profile?",
-    answer: "Yes, you can adjust your privacy settings to control profile visibility. Options include: visible to all members, visible only to matches, or hidden from specific individuals. Premium members can browse anonymously and control their online status visibility.",
+    // P-CONTROL: this answer matches the real Privacy & Visibility section on
+    // the Edit Profile page (profile → public/verified-only/hidden, income →
+    // public/verified-only/private). Blocked members never see you, enforced
+    // server-side in browse, detail, interests, chat, video dates and contact.
+    answer: "Yes — open Edit Profile and use the Privacy & Visibility section. Who can see my profile: everyone, verified members only, or hidden (no one can find you). Who can see my income: everyone, verified members only, or only you. Your phone, email, and documents are never shown on your profile — they unlock only through a contact view. Members you block cannot message you, send interest, or view your profile.",
     category: "privacy"
   },
   {
@@ -55,7 +59,7 @@ const faqs: FaqItem[] = [
   },
   {
     question: "What subscription plans are available?",
-    answer: "We offer three plans: Basic (free), Premium ($29.99/month), and Platinum ($49.99/month). Premium includes unlimited messaging, advanced filters, and who liked you feature. Platinum adds priority matching, unlimited video dates, and relationship coaching. Annual subscriptions offer a 20% discount.",
+    answer: "We offer three plans: Basic (free), Premium (₹1,499/month), and Platinum (₹2,999/month). Premium includes unlimited messaging, advanced filters, and who liked you feature. Platinum adds priority matching, unlimited video dates, and relationship coaching. Annual subscriptions offer a 20% discount.",
     category: "billing"
   },
   {
@@ -121,16 +125,33 @@ const HelpPage = () => {
     }
   };
   
-  const handleContactSubmit = (e: React.FormEvent) => {
+  const handleContactSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!contactForm.name.trim() || !contactForm.email.trim() || !contactForm.message.trim()) {
       toast({ title: "Missing information", description: "Please fill in name, email and message.", variant: "destructive" });
       return;
     }
+    // M6: real delivery first (rate-limited server inbox); local save is the
+    // offline fallback, labelled honestly instead of masquerading as support.
+    try {
+      const { sendSupportMessage } = await import('@/services/api');
+      const r = await sendSupportMessage(contactForm);
+      if (r.ok) {
+        toast({ title: "Message sent", description: "Our support team will reply within 24 hours on business days." });
+        setContactForm({ name: '', email: '', subject: '', message: '' });
+        return;
+      }
+      if (r.error && r.error !== 'no-server') {
+        toast({ title: "Could not send", description: r.error, variant: "destructive" });
+        return;
+      }
+    } catch {
+      /* fall through to local fallback */
+    }
     const prev = JSON.parse(localStorage.getItem('mm:supportMessages') || '[]');
     prev.push({ ...contactForm, at: new Date().toISOString() });
     localStorage.setItem('mm:supportMessages', JSON.stringify(prev.slice(-50)));
-    toast({ title: "Message recorded", description: "Your message has been saved on this device. Our support team will reach out once live support launches." });
+    toast({ title: "Message recorded", description: "You appear offline — your message is saved on this device and will need resending once you're back online." });
     setContactForm({ name: '', email: '', subject: '', message: '' });
   };
   

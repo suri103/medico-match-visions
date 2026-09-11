@@ -1,8 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Header from '@/components/Header';
 import { usePersistedState } from '@/hooks/usePersistedState';
-import { hasServerSession, saveMyServerProfile, uploadMyPhoto } from '@/services/api';
+import { hasServerSession, saveMyServerProfile, uploadMyPhoto, listMyPhotos, setPrimaryPhoto as serverSetPrimaryPhoto, deletePhoto as serverDeletePhoto } from '@/services/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -17,7 +17,7 @@ import {
 import { EMPTY_PROFILE, hasCreatedProfile } from '@/lib/profile';
 import { localAvatar } from '@/lib/avatar';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
-import { religionList, casteList, subcasteSuggestions, gotraList, motherTongueList, rashiList, nakshatraList, manglikList, degreesList, specialtiesList, medicalCouncilsList } from '@/features/matches/data/constants';
+import { religionList, casteList, subcasteSuggestions, gotraList, motherTongueList, rashiList, nakshatraList, manglikList, degreesList, specialtiesList, medicalCouncilsList, careerStagesList } from '@/features/matches/data/constants';
 
 const EditProfilePage = () => {
   const { toast } = useToast();
@@ -28,7 +28,10 @@ const EditProfilePage = () => {
     ['Yoga', 'Reading', 'Traveling', 'Music', 'Cooking']
   );
   const [newInterest, setNewInterest] = useState('');
-  const [profilePhotos, setProfilePhotos] = usePersistedState(
+  // Gallery rows: local ids are numeric (dev placeholders); server rows carry
+  // string uuids once a wired session has synced. Both shapes coexist until
+  // the server sync replaces the cache below.
+  const [profilePhotos, setProfilePhotos] = usePersistedState<Array<{ id: number | string; url: string; isPrimary: boolean }>>(
     'mm:profilePhotos',
     // Audit L11: self-hosted placeholder avatars (data URIs) — no third-party
     // CDN hit for the user's own default gallery.
@@ -41,6 +44,27 @@ const EditProfilePage = () => {
   );
   const photoFileRef = React.useRef<HTMLInputElement>(null);
   const certFileRef = React.useRef<HTMLInputElement>(null);
+
+  // Server-backed gallery: when a wired session exists the SERVER gallery is
+  // the source of truth (photos must survive devices — matrimony parity).
+  // The placeholder/local rows are replaced, not merged, to avoid duplicates.
+  useEffect(() => {
+    if (!hasServerSession()) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const serverPhotos = await listMyPhotos();
+        if (cancelled || serverPhotos.length === 0) return;
+        setProfilePhotos(serverPhotos.map((p) => ({
+          id: p.id,
+          url: p.url,
+          isPrimary: p.isPrimary,
+        })));
+      } catch { /* offline — local cache remains */ }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleCertificateFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -115,7 +139,8 @@ const EditProfilePage = () => {
     const reader = new FileReader();
     reader.onload = () => {
       const dataUrl = String(reader.result);
-      const nextId = Math.max(0, ...profilePhotos.map(p => p.id)) + 1;
+      const numericIds = profilePhotos.map(p => (typeof p.id === 'number' ? p.id : 0));
+      const nextId = Math.max(0, ...numericIds) + 1;
       setProfilePhotos(prev => [
         ...prev,
         { id: nextId, url: dataUrl, isPrimary: prev.length === 0 },
@@ -154,8 +179,14 @@ const EditProfilePage = () => {
     let syncFailed = false;
     if (hasServerSession()) {
       try {
+        const stage = (profile as { careerStage?: string }).careerStage || '';
+        const degreeDeclared = (profile.degree || '').trim();
+        const isCompleted = Boolean(degreeDeclared) && !degreeDeclared.toLowerCase().includes('pursuing') && !degreeDeclared.toLowerCase().includes('student');
         const saved = await saveMyServerProfile({
-          full_name: `Dr. ${profile.name}`.replace(/^Dr\.\s*Dr\./i, 'Dr.').trim(),
+          // "Dr." prefix only for COMPLETED qualifications (see mayUseDrTitle
+          // server-side) — a student or undeclared profile is never titled.
+          full_name: `${isCompleted ? 'Dr. ' : ''}${profile.name}`.replace(/^Dr\.\s*Dr\./i, 'Dr.').trim(),
+          career_stage: stage || null,
           gender: (profile as { gender?: string }).gender || null,
           degree: profile.degree || null,
           specialty: profile.specialty || null,
@@ -175,8 +206,24 @@ const EditProfilePage = () => {
           rashi: profile.rashi || null,
           nakshatra: profile.nakshatra || null,
           manglik: profile.manglik || null,
+          // Kundali fidelity: structured birth details (server normalizes an
+          // empty birth_date to NULL; other fields are free-text).
+          birth_date: (profile as { birthDate?: string }).birthDate || null,
+          birth_time: (profile as { birthTime?: string }).birthTime || null,
+          birth_city: (profile as { birthCity?: string }).birthCity || null,
           phone: profile.phone || null,
           email: profile.email || null,
+          // P0-4 family/background depth (Shaadi parity) — whitelisted server-side.
+          family_type: (profile as unknown as Record<string, string>).familyType || null,
+          family_status: (profile as unknown as Record<string, string>).familyStatus || null,
+          income_band: (profile as unknown as Record<string, string>).incomeBand || null,
+          diet: (profile as unknown as Record<string, string>).diet || null,
+          smoking: (profile as unknown as Record<string, string>).smoking || null,
+          drinking: (profile as unknown as Record<string, string>).drinking || null,
+          expectations: (profile as unknown as Record<string, string>).expectations || null,
+          // P-CONTROL: member-set visibility (enum-validated server-side).
+          profile_visibility: (profile as unknown as Record<string, string>).profileVisibility || null,
+          income_visibility: (profile as unknown as Record<string, string>).incomeVisibility || null,
         });
         if (!saved) throw new Error('offline-or-rejected');
       } catch {
@@ -221,19 +268,28 @@ const EditProfilePage = () => {
     setInterests(interests.filter(i => i !== interest));
   };
 
-  const handleSetPrimaryPhoto = (id: number) => {
+  const handleSetPrimaryPhoto = (id: number | string) => {
     setProfilePhotos(profilePhotos.map(photo => ({
       ...photo,
       isPrimary: photo.id === id
     })));
-    
+
+    // Durable primary on the wired backend — a failed server update must be
+    // visible, not silently masked by the local success state.
+    if (hasServerSession() && typeof id === 'string') {
+      void serverSetPrimaryPhoto(id).then((r) => {
+        if (!r.ok) {
+          toast({ title: "Not synced", description: r.error || "Primary photo not updated on the server.", variant: "destructive" });
+        }
+      }).catch(() => {});
+    }
     toast({
       title: "Profile photo updated",
       description: "Your primary profile photo has been changed."
     });
   };
-  
-  const handleRemovePhoto = (id: number) => {
+
+  const handleRemovePhoto = (id: number | string) => {
     if (profilePhotos.find(p => p.id === id)?.isPrimary) {
       toast({
         title: "Cannot remove primary photo",
@@ -242,9 +298,17 @@ const EditProfilePage = () => {
       });
       return;
     }
-    
+
     setProfilePhotos(profilePhotos.filter(photo => photo.id !== id));
-    
+
+    // Delete on the wired backend too (primary reassignment is server-side).
+    if (hasServerSession() && typeof id === 'string') {
+      void serverDeletePhoto(id).then((r) => {
+        if (!r.ok) {
+          toast({ title: "Not synced", description: r.error || "Photo not deleted on the server.", variant: "destructive" });
+        }
+      }).catch(() => {});
+    }
     toast({
       title: "Photo removed",
       description: "The photo has been removed from your profile."
@@ -286,8 +350,23 @@ const EditProfilePage = () => {
                   />
                 </div>
                 <div>
+                  <Label htmlFor="create-career-stage">Career Stage</Label>
+                  <Select value={profile.careerStage || 'Medical Student'} onValueChange={(v) => updateProfile('careerStage', v)}>
+                    <SelectTrigger id="create-career-stage">
+                      <SelectValue placeholder="Select career stage" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {careerStagesList.map((stage) => (
+                        <SelectItem key={stage} value={stage}>{stage}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-[11px] text-slate-500 mt-0.5">Your stage is shown honestly — a student is fully eligible to marry; only completed qualifications use the "Dr." title.</p>
+                </div>
+
+                <div>
                   <Label htmlFor="create-degree">Medical Degree / Qualification *</Label>
-                  <Select value={profile.degree || 'MBBS'} onValueChange={(v) => updateProfile('degree', v)}>
+                  <Select value={profile.degree || ''} onValueChange={(v) => updateProfile('degree', v)}>
                     <SelectTrigger id="create-degree">
                       <SelectValue placeholder="Select degree" />
                     </SelectTrigger>
@@ -551,6 +630,38 @@ const EditProfilePage = () => {
                     </Select>
                   </div>
                 </div>
+
+                {/* Birth details: power real kundali matching (rashi/nakshatra
+                    self-declaration alone is low-fidelity) + astro consults. */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <Label htmlFor="create-birth-date">Date of Birth (for kundali)</Label>
+                    <Input
+                      id="create-birth-date"
+                      type="date"
+                      value={(profile as { birthDate?: string }).birthDate || ''}
+                      onChange={(e) => updateProfile('birthDate', e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="create-birth-time">Time of Birth</Label>
+                    <Input
+                      id="create-birth-time"
+                      type="time"
+                      value={(profile as { birthTime?: string }).birthTime || ''}
+                      onChange={(e) => updateProfile('birthTime', e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="create-birth-city">City of Birth</Label>
+                    <Input
+                      id="create-birth-city"
+                      placeholder="e.g. Mumbai"
+                      value={(profile as { birthCity?: string }).birthCity || ''}
+                      onChange={(e) => updateProfile('birthCity', e.target.value)}
+                    />
+                  </div>
+                </div>
               </div>
 
               {/* Column 2: Photos, Bio, Interests & Contact */}
@@ -657,8 +768,7 @@ const EditProfilePage = () => {
 
                   {/* Contact Info */}
                   <div className="space-y-3 pt-2 border-t border-slate-200">
-                    <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider">Matrimonial Contact Information</h3>
-                    <div>
+                    <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider">Matrimonial Contact Information</h3>                    <div>
                       <Label htmlFor="create-email">Email Address</Label>
                       <Input
                         id="create-email"
@@ -679,6 +789,87 @@ const EditProfilePage = () => {
                       />
                     </div>
                   </div>
+
+                  {/* P0-4 Family & lifestyle (Shaadi parity). Optional but filterable. */}
+                  <div className="space-y-3 pt-2 border-t border-slate-200">
+                    <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider">Family & Lifestyle</h3>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <Label>Family Type</Label>
+                        <Select value={(profile as unknown as Record<string, string>).familyType || ''} onValueChange={(v) => updateProfile('familyType' as never, v as never)}>
+                          <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
+                          <SelectContent>
+                            {['Joint', 'Nuclear', 'Extended'].map((o) => (<SelectItem key={o} value={o}>{o}</SelectItem>))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div>
+                        <Label>Family Status</Label>
+                        <Select value={(profile as unknown as Record<string, string>).familyStatus || ''} onValueChange={(v) => updateProfile('familyStatus' as never, v as never)}>
+                          <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
+                          <SelectContent>
+                            {['Middle Class', 'Upper Middle Class', 'Affluent'].map((o) => (<SelectItem key={o} value={o}>{o}</SelectItem>))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div>
+                        <Label>Annual Income</Label>
+                        <Select value={(profile as unknown as Record<string, string>).incomeBand || ''} onValueChange={(v) => updateProfile('incomeBand' as never, v as never)}>
+                          <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
+                          <SelectContent>
+                            {['Under ₹10L', '₹10–25L', '₹25–50L', '₹50L–1Cr', '₹1Cr+'].map((o) => (<SelectItem key={o} value={o}>{o}</SelectItem>))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div>
+                        <Label>Diet</Label>
+                        <Select value={(profile as unknown as Record<string, string>).diet || ''} onValueChange={(v) => updateProfile('diet' as never, v as never)}>
+                          <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
+                          <SelectContent>
+                            {['Vegetarian', 'Non-Vegetarian', 'Eggetarian', 'Vegan'].map((o) => (<SelectItem key={o} value={o}>{o}</SelectItem>))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                    <div>
+                      <Label htmlFor="create-expectations">Partner Expectations</Label>
+                      <Textarea id="create-expectations" rows={2} placeholder="What matters most to you in a partner…" value={(profile as unknown as Record<string, string>).expectations || ''} onChange={(e) => updateProfile('expectations' as never, e.target.value as never)} />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* P-CONTROL: privacy & visibility (launch-gap fix #1). The server
+                enforces these on every read; this is the member-facing control
+                the Help page promises. */}
+            <div className="space-y-3 pt-4 border-t border-slate-200">
+              <div>
+                <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider">Privacy & Visibility</h3>
+                <p className="text-[11px] text-slate-500 mt-0.5">Who can find you — and whether your income band is shown. Your phone, email, and documents are never shown here; they unlock only via a contact view.</p>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <Label>Who can see my profile</Label>
+                  <Select value={(profile as unknown as Record<string, string>).profileVisibility || 'public'} onValueChange={(v) => updateProfile('profileVisibility' as never, v as never)}>
+                    <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="public">Everyone (all members)</SelectItem>
+                      <SelectItem value="verified_only">Verified members only</SelectItem>
+                      <SelectItem value="hidden">Hidden — no one can find me</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>Who can see my income</Label>
+                  <Select value={(profile as unknown as Record<string, string>).incomeVisibility || 'private'} onValueChange={(v) => updateProfile('incomeVisibility' as never, v as never)}>
+                    <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="private">Only me</SelectItem>
+                      <SelectItem value="verified_only">Verified members only</SelectItem>
+                      <SelectItem value="public">Everyone</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
               </div>
             </div>

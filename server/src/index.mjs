@@ -6,8 +6,8 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { sendEmail } from "./email.mjs";
-import { dbEnabled, DATABASE_URL, migrate, query } from "./db.mjs";
-import { addClient, closeUser as kickSse } from "./events.mjs";
+import { dbEnabled, DATABASE_URL, migrate, query, withTx } from "./db.mjs";
+import { addClient, closeUser as kickSse, publishToUser, initEventsPubSub } from "./events.mjs";
 import * as domain from "./domain.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -20,10 +20,50 @@ app.set("trust proxy", true);
 
 // Minimal hardening headers Express can own. HSTS/TLS termination belongs to
 // the reverse proxy / hosting layer.
+//
+// Content-Security-Policy (audit M-5): pin scripts to our bundle + Razorpay's
+// hosted checkout, allow images from the seeded sample avatar host and data:
+// URIs (for inline profile photos), and forbid framing entirely. The
+// checkout.razorpay.com frame is intentionally allowed so Razorpay's iframe
+// modal can mount.
+const SECURITY_HEADERS = {
+  "X-Content-Type-Options": "nosniff",
+  "X-Frame-Options": "DENY",
+  "Referrer-Policy": "no-referrer",
+  "Permissions-Policy": "camera=(self), microphone=(self), geolocation=()",
+  "Content-Security-Policy": [
+    "default-src 'self'",
+    "img-src 'self' data: https://randomuser.me https://*.supabase.co",
+    "script-src 'self' https://checkout.razorpay.com",
+    // Razorpay's checkout uses an iframe to mount its modal — allow only that host.
+    "frame-src https://checkout.razorpay.com",
+    "style-src 'self' 'unsafe-inline'",
+    "font-src 'self' data:",
+    "connect-src 'self' https://api.razorpay.com",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "object-src 'none'",
+  ].join("; "),
+  // Item 2: ship a parallel Report-Only header so we can SEE violations
+  // without breaking the app, then tighten the enforced policy once the
+  // violation list is clean. Browsers POST violation reports to
+  // /api/csp-report which we log for the security team to review.
+  "Content-Security-Policy-Report-Only": [
+    "default-src 'self'",
+    "img-src 'self' data: https://randomuser.me https://*.supabase.co",
+    "script-src 'self' https://checkout.razorpay.com",
+    "frame-src https://checkout.razorpay.com",
+    "style-src 'self' 'unsafe-inline'",
+    "font-src 'self' data:",
+    "connect-src 'self' https://api.razorpay.com",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "object-src 'none'",
+    "report-uri /api/csp-report",
+  ].join("; "),
+};
 app.use((_req, res, next) => {
-  res.setHeader("X-Content-Type-Options", "nosniff");
-  res.setHeader("X-Frame-Options", "DENY");
-  res.setHeader("Referrer-Policy", "no-referrer");
+  for (const [k, v] of Object.entries(SECURITY_HEADERS)) res.setHeader(k, v);
   next();
 });
 
@@ -80,6 +120,20 @@ if (process.env.NODE_ENV === "production") {
   if (!process.env.RAZORPAY_WEBHOOK_SECRET) {
     bootErrors.push("RAZORPAY_WEBHOOK_SECRET is required in production - webhook-based activation and refund handling cannot work without it.");
   }
+  // SMS fail-closed: declaring a provider without its key is a misconfig that
+  // would silently strand every OTP on the email fallback in production.
+  if (process.env.SMS_PROVIDER === "msg91" && !process.env.MSG91_API_KEY) {
+    bootErrors.push("SMS_PROVIDER=msg91 requires MSG91_API_KEY in production.");
+  }
+  // Kill-switches must never be on in production: DISABLE_POW turns off the
+  // registration/forgot-password proof-of-work bot gate, DISABLE_DIGEST
+  // silences renewal + engagement digests. Both are test-only.
+  if (process.env.DISABLE_POW === "true") {
+    bootErrors.push("DISABLE_POW must not be set in production — it disables bot protection.");
+  }
+  if (process.env.DISABLE_DIGEST === "true") {
+    bootErrors.push("DISABLE_DIGEST must not be set in production — it silences billing digests.");
+  }
   if (bootErrors.length > 0) {
     console.error("Refusing to start:\n  - " + bootErrors.join("\n  - "));
     process.exit(1);
@@ -88,9 +142,149 @@ if (process.env.NODE_ENV === "production") {
 
 // Signs sessions and activation tokens. Required in production (boot-checked
 // above); the dev fallback keeps local development friction-free.
+//
+// Audit H-5: the dev fallback to a literal constant MUST NOT ship anywhere
+// that could ever serve real traffic. We refuse to boot if NODE_ENV is unset
+// or anything other than "development"/"test" AND ACTIVATION_SECRET is the
+// literal placeholder. (In production the boot-check above is the primary
+// guard; this is the belt-and-braces guard for a misconfigured staging
+// deploy where NODE_ENV wasn't set.)
+const DEV_ACTIVATION_SECRET = "dev-only-insecure-activation-secret";
 const activationSecret =
   process.env.ACTIVATION_SECRET ||
-  (razorpayKeySecret ? `razorpay:${razorpayKeySecret}` : "dev-only-insecure-activation-secret");
+  (razorpayKeySecret ? `razorpay:${razorpayKeySecret}` : DEV_ACTIVATION_SECRET);
+if (activationSecret === DEV_ACTIVATION_SECRET && process.env.NODE_ENV && process.env.NODE_ENV !== "development" && process.env.NODE_ENV !== "test") {
+  console.error(
+    `Refusing to start: ACTIVATION_SECRET is unset and the dev fallback is not safe under NODE_ENV=${process.env.NODE_ENV}. Set ACTIVATION_SECRET or run with NODE_ENV=development/test.`
+  );
+  process.exit(1);
+}
+
+// ---------------------------------------------------------------------------
+// Session cookie (audit M-12 / item 1 of the launch readiness list):
+// The web frontend stores the signed session token in an httpOnly, Secure,
+// SameSite=Strict cookie. The Authorization: Bearer path is retained for the
+// mobile app / API clients. Same signed token, same verifySessionToken code.
+//
+// CSRF (item 1 cont.): an httpOnly cookie is auto-sent by the browser, so we
+// need an explicit CSRF defense for any non-GET / non-HEAD request. We use the
+// "double-submit cookie" pattern: a separate non-httpOnly cookie (or header)
+// carrying a random token that the client must echo on every mutating call.
+// SameSite=Strict blocks the most common cross-site case; double-submit is
+// the belt-and-braces defence against same-site CSRF (e.g. an XSS in a
+// subdomain, or a logged-in user's malicious extension).
+// ---------------------------------------------------------------------------
+const SESSION_COOKIE = "mm_session";
+const CSRF_COOKIE = "mm_csrf";
+const SESSION_COOKIE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const CSRF_COOKIE_TTL_MS = 12 * 60 * 60 * 1000; // 12h — rotate more often than session
+
+const isProductionEnv = process.env.NODE_ENV === "production";
+const cookieSecure = isProductionEnv; // Secure flag OFF for loopback dev so curl/test can drive it
+
+function setSessionCookie(res, token) {
+  // C1: res.setHeader("Set-Cookie") REPLACES — login/verify set session + CSRF
+  // back-to-back, so the second call dropped the session cookie. append() keeps both.
+  res.append(
+    "Set-Cookie",
+    [
+      `${SESSION_COOKIE}=${token}`,
+      "Path=/",
+      `Max-Age=${Math.floor(SESSION_COOKIE_TTL_MS / 1000)}`,
+      "HttpOnly",
+      "SameSite=Strict",
+      cookieSecure ? "Secure" : "",
+    ]
+      .filter(Boolean)
+      .join("; ")
+  );
+}
+
+function clearSessionCookie(res) {
+  res.append(
+    "Set-Cookie",
+    [
+      `${SESSION_COOKIE}=`,
+      "Path=/",
+      "Max-Age=0",
+      "HttpOnly",
+      "SameSite=Strict",
+      cookieSecure ? "Secure" : "",
+    ]
+      .filter(Boolean)
+      .join("; ")
+  );
+}
+
+function setCsrfCookie(res, token) {
+  res.append(
+    "Set-Cookie",
+    [
+      `${CSRF_COOKIE}=${token}`,
+      "Path=/",
+      `Max-Age=${Math.floor(CSRF_COOKIE_TTL_MS / 1000)}`,
+      // NOT HttpOnly — the JS layer needs to read it to echo on mutating calls.
+      "SameSite=Strict",
+      cookieSecure ? "Secure" : "",
+    ]
+      .filter(Boolean)
+      .join("; ")
+  );
+}
+
+// Issue a fresh CSRF token (32 random bytes, hex). Mounted on every successful
+// auth response and on /api/csrf so SPAs can bootstrap one.
+const issueCsrfToken = () => crypto.randomBytes(32).toString("hex");
+
+// Read the CSRF cookie off the request (raw header parse — no cookie-parser
+// dep needed).
+const readCookie = (req, name) => {
+  const raw = req.headers.cookie || "";
+  for (const part of raw.split(/;\s*/)) {
+    const eq = part.indexOf("=");
+    if (eq > 0 && part.slice(0, eq) === name) return part.slice(eq + 1);
+  }
+  return null;
+};
+
+// CSRF check: applied to every state-changing method. Skipped when:
+//  1. The method is safe (GET/HEAD/OPTIONS).
+//  2. The caller authenticates via Authorization: Bearer (mobile / API —
+//     browsers don't auto-attach the header, so the request cannot be CSRFed).
+//  3. There is no session cookie at all (anonymous endpoint like
+//     /api/auth/register or /api/auth/login — a CSRF attack would still
+//     succeed without a token, so there's nothing to protect; the request is
+//     for a brand-new session, not a privileged operation).
+// The double-submit pattern: cookie value must equal either the X-CSRF-Token
+// header or the body's csrfToken field.
+const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+const csrfGuard = (req, res, next) => {
+  if (SAFE_METHODS.has(req.method)) return next();
+  if (/^Bearer /.test(req.headers.authorization || "")) return next();
+  const sessionCookie = readCookie(req, SESSION_COOKIE);
+  // No session cookie ⇒ not an authenticated browser session ⇒ nothing to
+  // CSRF (an unauthenticated POST to /api/auth/register can't act on the
+  // victim's behalf because the victim is not signed in).
+  if (!sessionCookie) return next();
+  const cookieToken = readCookie(req, CSRF_COOKIE);
+  if (!cookieToken) {
+    return res.status(403).json({ error: "CSRF token missing. Reload the page and try again." });
+  }
+  const headerToken = req.headers["x-csrf-token"];
+  const bodyToken =
+    req.body && typeof req.body === "object" ? (req.body.csrfToken || req.body.csrf_token) : null;
+  const presented = (typeof headerToken === "string" && headerToken) || bodyToken;
+  if (!presented) {
+    return res.status(403).json({ error: "CSRF token required." });
+  }
+  // Constant-time compare to defeat timing oracles.
+  const a = Buffer.from(cookieToken);
+  const b = Buffer.from(presented);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    return res.status(403).json({ error: "CSRF token mismatch." });
+  }
+  next();
+};
 
 // ---------------------------------------------------------------------------
 // Simple JSON-file stores (server/data/). There is no database in this stack;
@@ -111,24 +305,38 @@ const readJson = (file, fallback) => {
 const writeJson = (file, value) => {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(value, null, 2));
+  const fd = fs.openSync(tmp, "w");
+  fs.writeFileSync(fd, JSON.stringify(value, null, 2));
+  fs.fsyncSync(fd);
+  fs.closeSync(fd);
   fs.renameSync(tmp, file);
 };
 
 /** @type {Record<string, {id:string,email:string,firstName:string,lastName:string,specialty:string,degree:string,salt:string,hash:string,verified:boolean,tokenVersion:number,createdAt:string}>} */
 let users = readJson(USERS_FILE, {});
-// Accounts created before email verification shipped have no `verified` field;
-// treat them as already-verified so existing users aren't locked out.
-// Accounts created before session versioning have no tokenVersion; treat as 0.
-for (const user of Object.values(users)) {
-  if (user.verified === undefined) user.verified = true;
-  if (user.tokenVersion === undefined) user.tokenVersion = 0;
-}
 /** @type {Record<string, {sku:string,activatedAt:string,paymentId:string}>} */ // keyed by user id
 let entitlements = readJson(ENTITLEMENTS_FILE, {});
 
 const persistUsers = () => writeJson(USERS_FILE, users);
 const persistEntitlements = () => writeJson(ENTITLEMENTS_FILE, entitlements);
+
+// Audit H-6: one-shot backfill for accounts created before email verification /
+// session versioning shipped. Persisted on the first boot that finds any
+// missing field, then the loop is a no-op for every subsequent boot. Doing it
+// after persistUsers is declared and using a persisted flag keeps a
+// multi-instance fleet from racing the JSON file.
+let legacyBackfilled = false;
+for (const user of Object.values(users)) {
+  if (user.verified === undefined || user.tokenVersion === undefined) {
+    if (user.verified === undefined) user.verified = true;
+    if (user.tokenVersion === undefined) user.tokenVersion = 0;
+    legacyBackfilled = true;
+  }
+}
+if (legacyBackfilled) {
+  persistUsers();
+  console.log(JSON.stringify({ level: "info", msg: "legacy_user_fields_backfilled" }));
+}
 
 // Sequential GST invoice numbering, persisted across restarts (GST invoices
 // must carry sequential numbers — random ids are not acceptable).
@@ -137,13 +345,15 @@ let invoiceSeq = readJson(INVOICE_SEQ_FILE, { year: null, n: 0 });
 
 // Calendar date in India's business timezone. Invoice dates were previously
 // taken from UTC, so invoices issued 00:00–05:30 IST carried yesterday's date.
-const istDateString = () =>
-  new Intl.DateTimeFormat("en-CA", {
+const istDateString = (d = new Date()) => {
+  const date = d instanceof Date ? d : new Date(d);
+  return new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Kolkata",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
-  }).format(new Date());
+  }).format(Number.isNaN(date.getTime()) ? new Date() : date);
+};
 
 // ---------------------------------------------------------------------------
 // Passwords: scrypt with per-user salt, constant-time comparison.
@@ -212,7 +422,13 @@ const verifySessionToken = (token) => {
 // DB read (30s TTL), so rosters promoted via SQL or the console are honored,
 // while promotion/demotion through this process invalidates the cache for an
 // instant effect. Suspension stays synchronous on the canonical auth store.
-const ADMIN_FLAG_TTL_MS = 30_000;
+// Flag-lookup cache TTL. Default 30s; env-tunable (tests set a short TTL so
+// SQL-side roster changes are picked up quickly; a longer TTL reduces per-
+// request DB reads on hot paths).
+const ADMIN_FLAG_TTL_MS = Math.max(
+  1,
+  Number(process.env.ADMIN_FLAG_TTL_MS) || 30_000
+);
 const adminFlagCache = new Map(); // userId -> { v: [isAdmin, isRootAdmin], exp }
 
 async function resolveAdminFlags(user) {
@@ -223,7 +439,7 @@ async function resolveAdminFlags(user) {
   try {
     const r = await query(`SELECT is_admin, is_root_admin FROM app_users WHERE id = $1`, [user.id]);
     if (r.rowCount > 0) {
-      v = [Boolean(r.rows[0].is_admin) || Boolean(user.isAdmin), Boolean(r.rows[0].is_root_admin)];
+      v = [Boolean(r.rows[0].is_admin), Boolean(r.rows[0].is_root_admin)];
     } else {
       // No mirrored row (legacy edge): fall back to the JSON store only.
       v = [Boolean(user.isAdmin), Boolean(user.isRootAdmin)];
@@ -239,25 +455,76 @@ async function resolveAdminFlags(user) {
 
 const invalidateAdminFlagCache = (userId) => adminFlagCache.delete(userId);
 
-const sessionMiddleware = (req, res, next) => {
+const sessionMiddleware = async (req, res, next) => {
+  // Accept either the Authorization: Bearer header (mobile / API clients) or
+  // the httpOnly session cookie (the web SPA). Same signed token, same
+  // verifySessionToken code. The cookie path is preferred when both are
+  // present (avoids accidental header spoofing on a logged-in browser).
   const header = req.headers.authorization || "";
-  const match = /^Bearer (.+)$/.exec(header);
-  if (match) {
-    const parsed = verifySessionToken(match[1]);
+  const bearerMatch = /^Bearer (.+)$/.exec(header);
+  const cookieToken = readCookie(req, SESSION_COOKIE);
+  const token = cookieToken || (bearerMatch && bearerMatch[1]);
+  if (token) {
+    let parsed = verifySessionToken(token);
+    // Multi-replica/stateless consistency: if missing from in-memory cache, hydrate from DB
+    if (!parsed && dbEnabled && typeof token === "string") {
+      const parts = token.split(".");
+      if (parts.length === 4) {
+        const [candidateId] = parts;
+        if (!users[candidateId]) {
+          try {
+            const r = await query(
+              `SELECT id, email, first_name, last_name, specialty, degree, password_hash, salt, is_admin, is_root_admin, verified, token_version, suspended FROM app_users WHERE id = $1`,
+              [candidateId]
+            );
+            if (r.rowCount > 0) {
+              const row = r.rows[0];
+              users[row.id] = {
+                id: row.id,
+                email: row.email,
+                firstName: row.first_name || "",
+                lastName: row.last_name || "",
+                specialty: row.specialty || "",
+                degree: row.degree || "",
+                hash: row.password_hash,
+                salt: row.salt,
+                isAdmin: Boolean(row.is_admin),
+                isRootAdmin: Boolean(row.is_root_admin),
+                verified: Boolean(row.verified),
+                tokenVersion: Number(row.token_version || 0),
+                suspended: Boolean(row.suspended),
+              };
+              parsed = verifySessionToken(token);
+            }
+          } catch {}
+        }
+      }
+    }
     const u = parsed && users[parsed.userId];
     if (u) {
       if (u.suspended) {
         return res.status(403).json({ error: "This account has been suspended. Contact support." });
       }
-      resolveAdminFlags(u)
-        .then(([dbAdmin, dbRoot]) => {
-          const { id, email, firstName, lastName, specialty, degree } = u;
-          req.user = { id, email, firstName, lastName, specialty, degree };
-          req.isAdmin = Boolean(u.isAdmin) || Boolean(u.isRootAdmin) || dbAdmin;
-          req.isRootAdmin = Boolean(u.isRootAdmin) || dbRoot;
-          next();
-        })
-        .catch(() => next());
+      try {
+        const [dbAdmin, dbRoot] = await resolveAdminFlags(u);
+        const { id, email, firstName, lastName, specialty, degree } = u;
+        // H-2 FIX: surface the verification flag on the request so
+        // requireVerifiedInteract can gate interact-with-others routes when
+        // REQUIRE_VERIFIED_INTERACT=true (safe default keeps it open).
+        req.user = { id, email, firstName, lastName, specialty, degree, verified: Boolean(u.verified) };
+        if (dbEnabled) {
+          req.isAdmin = Boolean(dbAdmin) || Boolean(dbRoot);
+          req.isRootAdmin = Boolean(dbRoot);
+        } else {
+          req.isAdmin = Boolean(u.isAdmin) || Boolean(u.isRootAdmin);
+          req.isRootAdmin = Boolean(u.isRootAdmin);
+        }
+        // Presence heartbeat (throttled; is_online is derived from it).
+        touchPresenceThrottled(u.id);
+        next();
+      } catch {
+        next();
+      }
       return;
     }
   }
@@ -270,6 +537,43 @@ const requireAdmin = (req, res, next) => {
   next();
 };
 
+// H-2 FIX (safe default = OPEN with an explicit switch): email verification is
+// a trust badge, not a product gate, unless REQUIRE_VERIFIED_INTERACT is set
+// to "true". When enabled, unverified accounts can still sign in / read their
+// own profile / quota (so they can complete verification), but every
+// interact-with-others write/read is rejected with 403 + code
+// "email_unverified". Product decision is explicit in code; flip the env var,
+// no code change. NOTE: login itself stays open so the user can always reach
+// the verify-email flow.
+const REQUIRE_VERIFIED_INTERACT = process.env.REQUIRE_VERIFIED_INTERACT === "true";
+const requireVerifiedInteract = (req, res, next) => {
+  if (!req.user) return res.status(401).json({ error: "Not authenticated." });
+  if (REQUIRE_VERIFIED_INTERACT && req.user.verified === false) {
+    return res.status(403).json({ error: "Verify your email to interact with other members.", code: "email_unverified" });
+  }
+  next();
+};
+
+// ---------------------------------------------------------------------------
+// Online presence heartbeat. is_online is DERIVED (last_active_at > NOW() - 5min)
+// so no hand-set flag can go stale. Throttled to one UPDATE per user per minute
+// (in-memory; multi-replica fleets accept ±1min skew — presence is best-effort
+// UX, not a billing input).
+// ---------------------------------------------------------------------------
+const presenceLastTouch = new Map(); // userId -> last touch ms
+const PRESENCE_THROTTLE_MS = 60_000;
+setInterval(() => {
+  const cutoff = Date.now() - 10 * PRESENCE_THROTTLE_MS;
+  for (const [k, t] of presenceLastTouch) if (t < cutoff) presenceLastTouch.delete(k);
+}, 5 * 60_000).unref();
+const touchPresenceThrottled = (userId) => {
+  if (!dbEnabled || !userId) return;
+  const now = Date.now();
+  if (now - (presenceLastTouch.get(userId) || 0) < PRESENCE_THROTTLE_MS) return;
+  presenceLastTouch.set(userId, now);
+  domain.touchPresence(userId).catch(() => {});
+};
+
 // ---------------------------------------------------------------------------
 // Server-side price catalog (INR, whole rupees). The client declares WHAT it is
 // buying; the server decides what it costs.
@@ -279,7 +583,15 @@ const requireAdmin = (req, res, next) => {
 // When disabled the SKUs are simply omitted from the catalog and create-order
 // rejects them. Enabling sells the SKUs; the existing booking path, the C1
 // subscription grant and hasActiveConsultation already work unchanged.
+// Safe default: off unless explicitly enabled (matches VITE_ASTROLOGY_ENABLED
+// === "true" on the frontend and server/.env.example). Previously !== "false"
+// shipped the feature enabled when the env was unset.
 const ASTROLOGY_ENABLED = process.env.ASTROLOGY_ENABLED === "true";
+// Kundali match report (₹499, buyer-pays digital product). Behind its own
+// flag so it can ship dark and be turned on without a deploy. Same honesty
+// rules as astrology: when off, the SKU is absent from the catalog and the
+// report endpoint 503s — the product is never sellable with no reachable UI.
+const REPORTS_ENABLED = process.env.REPORTS_ENABLED === "true";
 const ASTROLOGY_SKUS = {
   // Audit M7: ONE sku per astrologer tier, each bound to exactly one price -
   // the client can no longer pay the base price for the expert tier because
@@ -297,11 +609,14 @@ const PLAN_CATALOG = {
   // the client can no longer pay the base price for the expert tier because
   // the tier sku the order is created against fixes the price server-side.
   ...(ASTROLOGY_ENABLED ? ASTROLOGY_SKUS : {}),
+  // Detailed Kundali Match Report — one SKU, one price, buyer-pays.
+  ...(REPORTS_ENABLED ? { "kundali-report": [499] } : {}),
 };
 
 const catalogAllows = (sku, amount) => {
+  if (typeof amount !== "number" || !Number.isInteger(amount)) return false;
   const allowed = PLAN_CATALOG[sku];
-  return Array.isArray(allowed) && allowed.includes(Math.round(amount));
+  return Array.isArray(allowed) && allowed.includes(amount);
 };
 
 // Memberships are ranked for idempotent upgrade; consultations are a separate
@@ -327,9 +642,9 @@ const rememberUsed = (set, token, limit = 10000) => {
   }
 };
 
-const mintActivationToken = (sku, orderId, paymentId) => {
+const mintActivationToken = (sku, orderId, paymentId, userId = "") => {
   const exp = Date.now() + ACTIVATION_TTL_MS;
-  const payload = `${sku}|${exp}|${orderId}|${paymentId}`;
+  const payload = `${sku}|${exp}|${orderId}|${paymentId}|${userId || ""}`;
   return `${Buffer.from(payload).toString("base64url")}.${hmacOf(payload)}`;
 };
 
@@ -349,10 +664,10 @@ const verifyActivationToken = (token) => {
   if (sigBuf.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(expected), sigBuf)) {
     return null;
   }
-  const [sku, expStr, orderId, paymentId] = payload.split("|");
+  const [sku, expStr, orderId, paymentId, userId] = payload.split("|");
   const exp = Number(expStr);
   if (!PLAN_CATALOG[sku] || !Number.isFinite(exp) || Date.now() > exp) return null;
-  return { sku, exp, orderId, paymentId };
+  return { sku, exp, orderId, paymentId, userId: userId || null };
 };
 
 // ---------------------------------------------------------------------------
@@ -362,10 +677,12 @@ const verifyActivationToken = (token) => {
 const EMAIL_TOKEN_TTL_MS = 60 * 60 * 1000; // 1 hour
 const usedVerifyTokens = new Set();
 const usedResetTokens = new Set();
+const generatedInvoices = new Map();
 
-const mintEmailToken = (userId, purpose) => {
+const mintEmailToken = (userId, purpose, tokenVersion = null) => {
   const exp = Date.now() + EMAIL_TOKEN_TTL_MS;
-  const payload = userId + "|" + purpose + "|" + exp;
+  const ver = tokenVersion !== null ? tokenVersion : (users[userId]?.tokenVersion ?? 0);
+  const payload = `${userId}|${purpose}|${exp}|${ver}`;
   return Buffer.from(payload).toString("base64url") + "." + hmacOf(payload);
 };
 
@@ -385,11 +702,17 @@ const verifyEmailToken = (token, purpose) => {
     return null;
   }
   const parts = payload.split("|");
-  if (parts.length !== 3) return null;
-  const [userId, tokenPurpose, expStr] = parts;
+  if (parts.length !== 3 && parts.length !== 4) return null;
+  const [userId, tokenPurpose, expStr, tokenVersionStr] = parts;
   if (tokenPurpose !== purpose) return null;
   const exp = Number(expStr);
   if (!Number.isFinite(exp) || Date.now() > exp) return null;
+  const user = users[userId];
+  if (!user) return null;
+  if (tokenVersionStr !== undefined) {
+    const expectedVer = user.tokenVersion ?? 0;
+    if (Number(tokenVersionStr) !== expectedVer) return null;
+  }
   return userId;
 };
 
@@ -423,36 +746,180 @@ const pruneLiveOrders = () => {
 // Naive in-memory rate limiter for public POST endpoints (30 requests/min/IP).
 // Per-instance only; front with a real limiter/proxy in production.
 // ---------------------------------------------------------------------------
-const RATE_LIMIT_MAX = 30;
+// Audit H-6 (defence in depth): allow test runs to opt into a higher rate
+// limit via RATE_LIMIT_MAX so the smoke suites that fire 30+ requests from
+// loopback don't have to sleep a minute between phases. Production defaults
+// stay at 30/min.
+const RATE_LIMIT_MAX = Math.max(
+  1,
+  Number(process.env.RATE_LIMIT_MAX) || 30
+);
 const RATE_WINDOW_MS = 60 * 1000;
+
+// Distributed cluster-safe rate limiting when in DB mode (MM-DEBT-01).
+// Writes an atomic row into rate_limit_buckets keyed by bucket_key and current minute.
+const checkDbRateLimit = async (bucketKey, maxHits) => {
+  if (!dbEnabled) return false;
+  try {
+    const res = await query(
+      `INSERT INTO rate_limit_buckets (bucket_key, window_start, hits)
+       VALUES ($1, date_trunc('minute', NOW()), 1)
+       ON CONFLICT (bucket_key, window_start)
+       DO UPDATE SET hits = rate_limit_buckets.hits + 1
+       RETURNING hits`,
+      [bucketKey]
+    );
+    const hits = Number(res.rows[0]?.hits || 1);
+    return hits > maxHits;
+  } catch {
+    // Fail open on transient DB glitch to prevent locking out legitimate users
+    return false;
+  }
+};
+
+// H-NEW-1: a separate per-user DAILY row budget for /api/profiles so a signed-in
+// account can't scrape the whole corpus by paging. Counts ROWS returned, not
+// requests. Admins bypass the cap (operator use case: moderation).
+// DB-backed when DATABASE_URL is set (shared across replicas via
+// rate_limit_buckets, keyed by IST calendar day); in-memory fallback otherwise.
+const BROWSE_DAILY_MAX = Math.max(
+  100,
+  Number(process.env.BROWSE_DAILY_MAX) || 1000
+);
+const BROWSE_DAILY_WINDOW_MS = 24 * 60 * 60 * 1000;
+const browseHitsByUser = new Map(); // userId -> [{t, rows}, ...] within window
+const browseOverBudgetSync = (userId, rowsRequested) => {
+  if (!userId) return false;
+  const now = Date.now();
+  const arr = (browseHitsByUser.get(userId) || []).filter((e) => now - e.t < BROWSE_DAILY_WINDOW_MS);
+  const used = arr.reduce((s, e) => s + (e.rows || 0), 0);
+  if (used + rowsRequested > BROWSE_DAILY_MAX) {
+    browseHitsByUser.set(userId, arr);
+    return true;
+  }
+  arr.push({ t: now, rows: rowsRequested });
+  browseHitsByUser.set(userId, arr);
+  if (browseHitsByUser.size > 5000) {
+    for (const [k, v] of browseHitsByUser) {
+      if (!v.length || (now - v[v.length - 1].t >= BROWSE_DAILY_WINDOW_MS)) browseHitsByUser.delete(k);
+    }
+  }
+  return false;
+};
+const browseOverBudget = async (userId, rowsRequested) => {
+  if (!userId) return false;
+  if (!dbEnabled) return browseOverBudgetSync(userId, rowsRequested);
+  try {
+    // IST calendar day partitions the budget (matches quota/invoice bucketing).
+    const istDay = istDateString();
+    const bucketKey = `browse-daily:${userId}:${istDay}`;
+    const cur = await query(
+      `SELECT hits FROM rate_limit_buckets WHERE bucket_key = $1 AND window_start = date_trunc('day', NOW())`,
+      [bucketKey]
+    );
+    const used = Number(cur.rows[0]?.hits || 0);
+    if (used + rowsRequested > BROWSE_DAILY_MAX) return true;
+    await query(
+      `INSERT INTO rate_limit_buckets (bucket_key, window_start, hits)
+       VALUES ($1, date_trunc('day', NOW()), $2)
+       ON CONFLICT (bucket_key, window_start)
+       DO UPDATE SET hits = rate_limit_buckets.hits + EXCLUDED.hits`,
+      [bucketKey, rowsRequested]
+    );
+    return false;
+  } catch {
+    return browseOverBudgetSync(userId, rowsRequested);
+  }
+};
+
 const hitsByIp = new Map();
-const rateLimited = (req) => {
-  const ip = req.ip || req.socket.remoteAddress || "unknown";
+const ipRateLimited = (ip) => {
   const now = Date.now();
   const hits = (hitsByIp.get(ip) || []).filter((t) => now - t < RATE_WINDOW_MS);
   hits.push(now);
-  // Re-insert so Map iteration order reflects recency (LRU eviction below).
   hitsByIp.delete(ip);
   hitsByIp.set(ip, hits);
-  // Bound memory by pruning IDLE entries first; never bulk-clear — a flood of
-  // spoofed/new IPs must not be able to reset other clients' counters (H6).
   if (hitsByIp.size > 1000) {
     for (const [key, val] of hitsByIp) {
       if (val[val.length - 1] <= now - RATE_WINDOW_MS) hitsByIp.delete(key);
     }
   }
   while (hitsByIp.size > 2000) {
-    hitsByIp.delete(hitsByIp.keys().next().value); // least-recently-seen
+    hitsByIp.delete(hitsByIp.keys().next().value);
   }
   return hits.length > RATE_LIMIT_MAX;
 };
 
-// Express middleware form of the limiter. The predicate above must never be
-// passed to app.METHOD directly: as middleware it would never call next() and
-// every request on that route would hang until timeout (audit Phase 2, C-1).
-const rateLimitMiddleware = (req, res, next) => {
-  if (rateLimited(req)) return res.status(429).json({ error: "Too many requests." });
-  next();
+const rateLimited = async (req) => {
+  const userId = req.user?.id;
+  if (userId) {
+    if (dbEnabled) {
+      const dbBlocked = await checkDbRateLimit(`user:${userId}`, USER_RATE_LIMIT_MAX);
+      if (dbBlocked) return true;
+    }
+    return userRateLimited(userId);
+  }
+  const ip = req.ip || req.socket.remoteAddress || "unknown";
+  if (dbEnabled) {
+    const dbBlocked = await checkDbRateLimit(`ip:${ip}`, RATE_LIMIT_MAX);
+    if (dbBlocked) return true;
+  }
+  return ipRateLimited(ip);
+};
+
+// Per-user rate limit (item 10). The per-user bucket is independent of the
+// per-IP bucket — a single user behind a corporate NAT gets 30 hits/min of
+// their own regardless of how many colleagues are on the same egress IP.
+// Higher cap (60/min) because a normal user has many more requests than a
+// single endpoint hit, and the per-IP cap is still active for anything that
+// looks like abuse.
+const USER_RATE_LIMIT_MAX = Math.max(
+  1,
+  Number(process.env.USER_RATE_LIMIT_MAX) || 60
+);
+const hitsByUser = new Map();
+const userRateLimited = (userId) => {
+  const now = Date.now();
+  const hits = (hitsByUser.get(userId) || []).filter((t) => now - t < RATE_WINDOW_MS);
+  hits.push(now);
+  hitsByUser.set(userId, hits);
+  // Bound memory.
+  if (hitsByUser.size > 5000) {
+    for (const [key, val] of hitsByUser) {
+      if (val[val.length - 1] <= now - RATE_WINDOW_MS) hitsByUser.delete(key);
+    }
+  }
+  return hits.length > USER_RATE_LIMIT_MAX;
+};
+
+const hitsByEmail = new Map();
+const emailRateLimited = async (email, max = 15) => {
+  const key = String(email || "").trim().toLowerCase();
+  if (!key) return false;
+  if (dbEnabled) {
+    const dbBlocked = await checkDbRateLimit(`email:${key}`, max);
+    if (dbBlocked) return true;
+  }
+  const now = Date.now();
+  const hits = (hitsByEmail.get(key) || []).filter((t) => now - t < RATE_WINDOW_MS);
+  hits.push(now);
+  hitsByEmail.set(key, hits);
+  if (hitsByEmail.size > 5000) {
+    for (const [k, val] of hitsByEmail) {
+      if (val[val.length - 1] <= now - RATE_WINDOW_MS) hitsByEmail.delete(k);
+    }
+  }
+  return hits.length > max;
+};
+
+// Express middleware form of the limiter. Asynchronous with fail-open safety.
+const rateLimitMiddleware = async (req, res, next) => {
+  try {
+    if (await rateLimited(req)) return res.status(429).json({ error: "Too many requests." });
+    next();
+  } catch {
+    next();
+  }
 };
 
 // Outbound email throttle per recipient (verification/reset links). Caps how
@@ -499,8 +966,14 @@ app.use((req, res, next) => {
   next();
 });
 
-const allowedOrigins = (process.env.CORS_ORIGINS || APP_URL).split(",").map((s) => s.trim());
-app.use(cors({ origin: allowedOrigins }));
+const allowedOrigins = (process.env.CORS_ORIGINS || APP_URL)
+  .split(",")
+  .map((s) => s.trim().replace(/\/+$/, ""))
+  .filter(Boolean);
+// C3: split-origin deploy (CDN + API) needs Access-Control-Allow-Credentials so
+// the browser sends mm_session with credentials:"include". Without it the
+// cookie path silently fails and only Bearer works.
+app.use(cors({ origin: allowedOrigins, credentials: true }));
 
 // ---------------------------------------------------------------------------
 // Razorpay webhook (M7) — MUST read the RAW body for signature verification,
@@ -535,8 +1008,6 @@ app.post(
     } catch {
       return res.status(400).json({ error: "Invalid JSON body." });
     }
-    // Respond fast; Razorpay retries on non-2xx. Processing is idempotent.
-    res.json({ ok: true });
 
     try {
       const type = event?.event || event?.type || "";
@@ -546,12 +1017,31 @@ app.post(
       const paymentId = paymentEntity?.id ?? null;
       const orderId = paymentEntity?.order_id ?? payload?.order?.entity?.id ?? null;
       const amountPaise = paymentEntity?.amount ?? null;
+      // Audit M-14: order-level notes echo the authenticated user id so a
+      // captured payment whose create-order call lacked a session can still
+      // land against the right account. notes lives on the order entity for
+      // order.paid events and on the payment entity for payment.captured.
+      const orderEntity = payload?.order?.entity ?? null;
+      const notesSource = orderEntity?.notes ?? paymentEntity?.notes ?? null;
+      const notesUserId =
+        notesSource && typeof notesSource.user_id === "string" && notesSource.user_id.trim()
+          ? notesSource.user_id.trim().slice(0, 64)
+          : null;
 
       if (!dbEnabled) {
         console.warn(JSON.stringify({ level: "warn", msg: "webhook_no_db_ignored", type }));
-        return;
+        return res.json({ ok: true });
       }
       const refundEntity = payload?.refund?.entity ?? null;
+      if (String(type).startsWith("refund.")) {
+        if (!refundEntity?.id || (!refundEntity.payment_id && !refundEntity.order_id)) {
+          // L-6: a refund event we cannot key on must be LOUD, not silently
+          // logged at info — an unnoticed shape change means refunds stop
+          // revoking access. Alert level so on-call dashboards catch it.
+          console.error(JSON.stringify({ level: "error", msg: "webhook_refund_unkeyable", type, hasEntity: Boolean(refundEntity?.id), hasPaymentRef: Boolean(refundEntity?.payment_id || refundEntity?.order_id) }));
+          return res.json({ ok: true });
+        }
+      }
       if (String(type).startsWith("refund.") && refundEntity?.id) {
         const out = await domain.recordRefund({
           refundId: refundEntity.id,
@@ -573,7 +1063,7 @@ app.post(
             persistEntitlements();
           }
         }
-        return;
+        return res.json({ ok: true });
       }
       if (!paymentId || !String(type).startsWith("payment.captured")) {
         // payment.failed: mark the durable order so reconciliation sees it.
@@ -590,13 +1080,14 @@ app.post(
           // Everything else is logged for observability only.
           console.log(JSON.stringify({ level: "info", msg: "webhook_event_ignored", type }));
         }
-        return;
+        return res.json({ ok: true });
       }
       const out = await domain.recordCapturedPayment({
         paymentId,
         orderId,
         amountPaise,
         source: "webhook",
+        notesUserId,
       });
       console.log(
         JSON.stringify({
@@ -624,46 +1115,205 @@ app.post(
           };
           persistEntitlements();
         }
+
+        // P0-10: consume associated coupon if applied
+        const couponCode =
+          out.couponCode ||
+          liveOrders.get(orderId)?.couponCode ||
+          simOrders.get(orderId)?.couponCode ||
+          (dbEnabled && orderId ? (await domain.getOrder(orderId).catch(() => null))?.coupon_code : null);
+        if (couponCode && dbEnabled) {
+          try {
+            await domain.consumeCoupon(couponCode, out.userId || null);
+          } catch (err) {
+            console.error(JSON.stringify({ level: "warn", msg: "webhook_coupon_consume_failed", couponCode, error: String(err) }));
+          }
+        }
       }
+      return res.json({ ok: true });
     } catch (err) {
       console.error(JSON.stringify({ level: "error", msg: "webhook_handler_failed", error: String(err) }));
+      return res.status(500).json({ error: "Internal server error" });
     }
   }
 );
 
 app.use(express.json({ limit: "100kb" }));
 app.use(sessionMiddleware);
+// Audit M-12 / item 1: CSRF guard for cookie-authenticated mutating requests.
+// Mounted after sessionMiddleware so /api/csrf and authenticated POSTs can
+// see the cookie + token. The webhook route was mounted BEFORE this so
+// Razorpay's POST (no cookie) is unaffected.
+app.use(csrfGuard);
+app.get("/api/csrf", (req, res) => {
+  // Always rotate on /api/csrf — even if the caller already has one, freshen
+  // it. Returns the token in the body for the SPA to read and cache; the
+  // cookie carries the same value.
+  const token = issueCsrfToken();
+  setCsrfCookie(res, token);
+  res.json({ csrfToken: token });
+});
 
 app.get("/health", (_req, res) => {
-  // Intentionally does not expose record counts on a public endpoint (audit L1).
-  res.json({
-    ok: true,
-    razorpayConfigured,
-    simulatePayments,
-    database: dbEnabled,
-    webhookConfigured: Boolean(process.env.RAZORPAY_WEBHOOK_SECRET),
-  });
+  // M-NEW-1: only `ok` is exposed to unauthenticated probes. The diagnostic
+  // block (payments/db config) was previously visible to any caller — a free
+  // fingerprinting aid for an attacker scanning the surface. Operators can
+  // still read the full state from structured `server_started` JSON lines.
+  res.json({ ok: true });
+});
+
+// Readiness: orchestrators poll this to know migrations + DB are healthy.
+// /health stays liveness-only (always 200 once listening); /readyz is 200
+// only after migrate() + a successful SELECT 1, 503 otherwise.
+let readyReady = false;
+export const markReady = () => { readyReady = true; };
+app.get("/readyz", async (_req, res) => {
+  if (!readyReady) return res.status(503).json({ ok: false, reason: "starting" });
+  if (!dbEnabled) return res.json({ ok: true, mode: "json-store" });
+  try {
+    await query("SELECT 1");
+    res.json({ ok: true, mode: "db" });
+  } catch {
+    res.status(503).json({ ok: false, reason: "db-unreachable" });
+  }
+});
+
+// Item 2: Content-Security-Policy violation report endpoint. Browsers POST
+// here when a page attempts to violate the Report-Only policy. We log the
+// violation (truncated) and return 204; never echo the report back.
+app.post("/api/csp-report", express.json({ type: "application/csp-report", limit: "8kb" }), (req, res) => {
+  try {
+    const v = req.body?.["csp-report"] || req.body;
+    const directive = String(v?.["violated-directive"] || v?.effectiveDirective || "").slice(0, 80);
+    const blocked = String(v?.["blocked-uri"] || "").slice(0, 200);
+    const doc = String(v?.["document-uri"] || "").slice(0, 200);
+    console.warn(JSON.stringify({
+      level: "warn",
+      msg: "csp_violation",
+      directive,
+      blocked,
+      doc,
+    }));
+  } catch {
+    /* malformed — ignore */
+  }
+  res.status(204).end();
 });
 
 // ---------------------------------------------------------------------------
 // Auth: register / login / me.
 // ---------------------------------------------------------------------------
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// Item 9: proof-of-work (Hashcash-style) bot resistance for the public
+// registration + password-reset endpoints. The client requests a challenge,
+// solves it locally (find a nonce such that SHA-256(challenge || nonce) has
+// at least `difficulty` leading zero BITS), and submits {challenge, nonce}.
+// The server re-hashes and counts — verification is microseconds, solving
+// at difficulty 18 is ~0.3s of CPU on a modern laptop and quadratically more
+// expensive at scale, neutralising bulk account creation scripts.
+//
+// The challenge is bound to the email address (so an attacker can't reuse
+// a solved challenge across many emails) and to a 5-minute TTL window.
+const POW_DIFFICULTY = 18;
+const POW_TTL_MS = 5 * 60 * 1000;
+// Test-only escape hatch — smoke and CI suites that drive register/forgot
+// from a tight loop set DISABLE_POW=true so they don't have to solve a
+// PoW per call. Production never sets this.
+const POW_DISABLED = process.env.DISABLE_POW === "true";
+const powChallenges = new Map(); // challenge -> { email, exp }
+
+const countLeadingZeroBitsHex = (hex) => {
+  // For each hex char (a 4-bit nibble), add 4 if the nibble is 0; otherwise
+  // add the number of leading zero bits in that nibble and stop. The function
+  // returns the total number of leading zero BITS in the entire hex string.
+  let bits = 0;
+  for (let i = 0; i < hex.length; i++) {
+    const nibble = parseInt(hex[i], 16);
+    if (nibble === 0) { bits += 4; continue; }
+    if (nibble < 8) bits += 1;
+    if (nibble < 4) bits += 1;
+    if (nibble < 2) bits += 1;
+    return bits;
+  }
+  return bits;
+};
+
+const MAX_POW_CHALLENGES = 2000;
+const prunePow = () => {
+  const now = Date.now();
+  for (const [c, v] of powChallenges) if (v.exp <= now) powChallenges.delete(c);
+  while (powChallenges.size >= MAX_POW_CHALLENGES) {
+    powChallenges.delete(powChallenges.keys().next().value);
+  }
+};
+
+app.get("/api/auth/pow-challenge", rateLimitMiddleware, (req, res) => {
+  prunePow();
+  const email = String(req.query.email || "").trim().toLowerCase();
+  if (!EMAIL_RE.test(email)) {
+    return res.status(400).json({ error: "A valid email is required." });
+  }
+  // Bind the challenge to the email + a server-side secret so a captcha
+  // solved for alice@x.com cannot be reused for bob@y.com.
+  const challenge = crypto
+    .createHash("sha256")
+    .update(`${email}|${Date.now()}|${crypto.randomBytes(16).toString("hex")}|${activationSecret}`)
+    .digest("hex");
+  powChallenges.set(challenge, { email, exp: Date.now() + POW_TTL_MS });
+  res.json({ challenge, difficulty: POW_DIFFICULTY, ttlMs: POW_TTL_MS });
+});
+
+const verifyPow = (email, challenge, nonce) => {
+  if (typeof challenge !== "string" || typeof nonce !== "string") return false;
+  if (challenge.length !== 64 || nonce.length < 1 || nonce.length > 64) return false;
+  const entry = powChallenges.get(challenge);
+  if (!entry) return false;
+  if (entry.exp <= Date.now()) { powChallenges.delete(challenge); return false; }
+  if (entry.email !== String(email || "").trim().toLowerCase()) return false;
+  const hash = crypto.createHash("sha256").update(challenge).update(nonce).digest("hex");
+  return countLeadingZeroBitsHex(hash) >= POW_DIFFICULTY;
+};
+
+// Drop a challenge from the store on successful use so it cannot be replayed.
+const consumePow = (email, challenge, nonce) => {
+  if (POW_DISABLED) return true;
+  if (!verifyPow(email, challenge, nonce)) return false;
+  powChallenges.delete(challenge);
+  return true;
+};
+// The "Dr." prefix is applied ONLY for completed qualifications. A medical
+// student / "Pursuing" / unspecified degree is never auto-labelled "Dr." — an
+// unlicensed registrar/user is fully eligible to marry but must not be
+// presented as an already-qualified doctor (platform-dishonest + IMC-sensitive).
+const mayUseDrTitle = (u) => {
+  const d = String(u.degree || "").trim().toLowerCase();
+  if (!d || d.includes("pursuing") || d.includes("student")) return false;
+  return true;
+};
 const publicUser = (u) => ({
   id: u.id,
   email: u.email,
   firstName: u.firstName,
   lastName: u.lastName,
-  fullName: `Dr. ${u.firstName} ${u.lastName}`.trim(),
+  fullName: `${mayUseDrTitle(u) ? "Dr. " : ""}${u.firstName} ${u.lastName}`.trim(),
   specialty: u.specialty,
   degree: u.degree,
 });
 
 app.post("/api/auth/register", async (req, res) => {
-  if (rateLimited(req)) return res.status(429).json({ error: "Too many requests." });
-  const { email, password, firstName, lastName, specialty, degree } = req.body || {};
+  if (await rateLimited(req)) return res.status(429).json({ error: "Too many requests." });
+  const { email, password, firstName, lastName, specialty, degree, careerStage, powChallenge, powNonce } = req.body || {};
   if (typeof email !== "string" || !EMAIL_RE.test(email)) {
     return res.status(400).json({ error: "A valid email is required." });
+  }
+  // Item 9: proof-of-work. The challenge is bound to the email; an
+  // attacker who wants to bulk-register must solve ~2^18 hashes per
+  // account, which makes mass creation economically unviable.
+  if (!consumePow(email, powChallenge, powNonce)) {
+    return res.status(400).json({
+      error: "Verification challenge incomplete. Reload the page and try again.",
+    });
   }
   if (typeof password !== "string" || password.length < 6) {
     return res.status(400).json({ error: "Password must be at least 6 characters." });
@@ -712,6 +1362,9 @@ app.post("/api/auth/register", async (req, res) => {
     lastName: typeof lastName === "string" ? lastName.trim().slice(0, 80) : "",
     specialty: typeof specialty === "string" ? specialty.slice(0, 120) : "",
     degree: typeof degree === "string" ? degree.slice(0, 120) : "",
+    // Optional at registration: a medical student (or anyone who prefers not
+    // to say yet) stays honest — no forced "MBBS", no forced "Dr.".
+    careerStage: typeof careerStage === "string" ? careerStage.slice(0, 120) : "",
     salt,
     hash: hashPassword(password, salt),
     verified: false,
@@ -730,8 +1383,19 @@ app.post("/api/auth/register", async (req, res) => {
         // Mirror the REAL verification state (false at registration); the
         // verify-email endpoint keeps app_users.verified in sync afterwards,
         // so the admin console reports true status (audit H-2 slice).
-        { email: user.email, firstName: user.firstName, lastName: user.lastName, specialty: user.specialty, degree: user.degree, verified: false },
-        { full_name: `Dr. ${user.firstName} ${user.lastName}`.trim(), specialty: user.specialty || null, degree: user.degree || null }
+        {
+          email: user.email,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          specialty: user.specialty,
+          degree: user.degree,
+          careerStage: user.careerStage,
+          verified: false,
+          passwordHash: user.hash,
+          salt: user.salt,
+          tokenVersion: user.tokenVersion,
+        },
+        { full_name: `${mayUseDrTitle(user) ? "Dr. " : ""}${user.firstName} ${user.lastName}`.trim(), specialty: user.specialty || null, degree: user.degree || null, career_stage: user.careerStage || null }
       );
     } catch (err) {
       console.error(JSON.stringify({ level: "error", msg: "user_mirror_failed", userId: user.id, error: String(err) }));
@@ -751,14 +1415,44 @@ app.post("/api/auth/register", async (req, res) => {
   res.status(201).json({ message, ...(process.env.NODE_ENV === "test" && sent ? { verificationToken: token } : {}) });
 });
 
-app.post("/api/auth/login", (req, res) => {
-  if (rateLimited(req)) return res.status(429).json({ error: "Too many requests." });
+app.post("/api/auth/login", async (req, res) => {
+  if (await rateLimited(req)) return res.status(429).json({ error: "Too many requests." });
   const { email, password } = req.body || {};
   if (typeof email !== "string" || typeof password !== "string") {
     return res.status(400).json({ error: "Email and password are required." });
   }
   const normalizedEmail = email.trim().toLowerCase();
-  const user = Object.values(users).find((u) => u.email === normalizedEmail);
+  if (await emailRateLimited(normalizedEmail)) {
+    return res.status(429).json({ error: "Too many login attempts. Please try again later." });
+  }
+  let user = Object.values(users).find((u) => u.email === normalizedEmail);
+  if (!user && dbEnabled) {
+    try {
+      const r = await query(
+        `SELECT id, email, first_name, last_name, specialty, degree, password_hash, salt, is_admin, is_root_admin, verified, token_version, suspended FROM app_users WHERE email = $1`,
+        [normalizedEmail]
+      );
+      if (r.rowCount > 0) {
+        const row = r.rows[0];
+        user = {
+          id: row.id,
+          email: row.email,
+          firstName: row.first_name || "",
+          lastName: row.last_name || "",
+          specialty: row.specialty || "",
+          degree: row.degree || "",
+          hash: row.password_hash,
+          salt: row.salt,
+          isAdmin: Boolean(row.is_admin),
+          isRootAdmin: Boolean(row.is_root_admin),
+          verified: Boolean(row.verified),
+          tokenVersion: Number(row.token_version || 0),
+          suspended: Boolean(row.suspended),
+        };
+        users[row.id] = user;
+      }
+    } catch {}
+  }
   // Generic error either way — no account enumeration.
   if (!user) {
     // Equalize timing for unknown emails so response latency does not reveal
@@ -769,20 +1463,48 @@ app.post("/api/auth/login", (req, res) => {
   const passwordOk = verifyPassword(password, user.salt, user.hash);
   // Unverified accounts complete sign-up via the emailed link; keep this
   // response indistinguishable from a bad password (no enumeration).
-  if (!user.verified || !passwordOk) {
+  // Suspended accounts are refused here too — the session middleware enforces
+  // the canonical flag on every authenticated call, but a suspended user must
+  // not be able to mint a FRESH session at all (smoke-db regression: login
+  // returned 200 + a live token for a suspended account). Same generic 401.
+  if (!user.verified || !passwordOk || user.suspended) {
     return res.status(401).json({ error: "Invalid email or password." });
   }
-  res.json({ token: issueSessionToken(user.id), user: publicUser(user) });
+  const sessionToken = issueSessionToken(user.id);
+  const csrfToken = issueCsrfToken();
+  setSessionCookie(res, sessionToken);
+  setCsrfCookie(res, csrfToken);
+  // H-1 FIX (login): cookie-first for the web SPA; Bearer only for explicit
+  // mobile/API opt-in. SAFE DEFAULT: browser callers get { token: null }.
+  const wantsBearerLogin = req.body?.mobile === true || req.headers["x-mm-mobile"] === "1";
+  res.json({ token: wantsBearerLogin ? sessionToken : null, csrfToken, user: publicUser(user) });
 });
 
-app.post("/api/auth/verify-email", (req, res) => {
-  if (rateLimited(req)) return res.status(429).json({ error: "Too many requests." });
+app.post("/api/auth/verify-email", async (req, res) => {
+  if (await rateLimited(req)) return res.status(429).json({ error: "Too many requests." });
   const { token } = req.body || {};
   const userId = verifyEmailToken(token, "verify");
   if (!userId || !users[userId]) {
     return res.status(400).json({ error: "Invalid or expired verification link." });
   }
-  if (usedVerifyTokens.has(token)) {
+  const tokenHash = sha256(token);
+  // M1: atomic single-use claim — INSERT .. RETURNING is the race backstop.
+  // The old SELECT-then-INSERT let concurrent double-submits both pass.
+  if (dbEnabled) {
+    try {
+      const claim = await query(
+        `INSERT INTO used_email_tokens (token_hash, purpose) VALUES ($1, 'verify') ON CONFLICT DO NOTHING RETURNING token_hash`,
+        [tokenHash]
+      );
+      if (claim.rowCount === 0) {
+        return res.status(409).json({ error: "This verification link has already been used." });
+      }
+    } catch {
+      if (usedVerifyTokens.has(token)) {
+        return res.status(409).json({ error: "This verification link has already been used." });
+      }
+    }
+  } else if (usedVerifyTokens.has(token)) {
     return res.status(409).json({ error: "This verification link has already been used." });
   }
   rememberUsed(usedVerifyTokens, token);
@@ -800,14 +1522,28 @@ app.post("/api/auth/verify-email", (req, res) => {
       });
     }
   }
-  res.json({ token: issueSessionToken(user.id), user: publicUser(user) });
+  const sessionToken = issueSessionToken(user.id);
+  const csrfToken = issueCsrfToken();
+  setSessionCookie(res, sessionToken);
+  setCsrfCookie(res, csrfToken);
+  // H-1 FIX (verify-email): same cookie-first split as login.
+  const wantsBearerVerify = req.body?.mobile === true || req.headers["x-mm-mobile"] === "1";
+  res.json({ token: wantsBearerVerify ? sessionToken : null, csrfToken, user: publicUser(user) });
 });
 
-app.post("/api/auth/forgot-password", (req, res) => {
-  if (rateLimited(req)) return res.status(429).json({ error: "Too many requests." });
-  const { email } = req.body || {};
+app.post("/api/auth/forgot-password", async (req, res) => {
+  if (await rateLimited(req)) return res.status(429).json({ error: "Too many requests." });
+  const { email, powChallenge, powNonce } = req.body || {};
   if (typeof email !== "string" || !EMAIL_RE.test(email)) {
     return res.status(400).json({ error: "A valid email is required." });
+  }
+  // Item 9: PoW gate. An attacker cannot hammer forgot-password to either
+  // discover which emails exist (no enumeration) or to flood victims with
+  // reset emails.
+  if (!consumePow(email, powChallenge, powNonce)) {
+    return res.status(400).json({
+      error: "Verification challenge incomplete. Reload the page and try again.",
+    });
   }
   const message = "If this email is registered, a password reset link has been sent.";
   const normalizedEmail = email.trim().toLowerCase();
@@ -843,18 +1579,34 @@ app.post("/api/auth/forgot-password", (req, res) => {
   res.status(200).json({ message });
 });
 
-app.post("/api/auth/reset-password", (req, res) => {
-  if (rateLimited(req)) return res.status(429).json({ error: "Too many requests." });
+app.post("/api/auth/reset-password", async (req, res) => {
+  if (await rateLimited(req)) return res.status(429).json({ error: "Too many requests." });
   const { token, password } = req.body || {};
   const userId = verifyEmailToken(token, "reset");
   if (!userId || !users[userId]) {
     return res.status(400).json({ error: "Invalid or expired reset link." });
   }
-  if (usedResetTokens.has(token)) {
-    return res.status(409).json({ error: "This reset link has already been used." });
-  }
+  const tokenHash = sha256(token);
   if (typeof password !== "string" || password.length < 6) {
     return res.status(400).json({ error: "Password must be at least 6 characters." });
+  }
+  // M1: atomic claim before mutating the password (see verify-email).
+  if (dbEnabled) {
+    try {
+      const claim = await query(
+        `INSERT INTO used_email_tokens (token_hash, purpose) VALUES ($1, 'reset') ON CONFLICT DO NOTHING RETURNING token_hash`,
+        [tokenHash]
+      );
+      if (claim.rowCount === 0) {
+        return res.status(409).json({ error: "This reset link has already been used." });
+      }
+    } catch {
+      if (usedResetTokens.has(token)) {
+        return res.status(409).json({ error: "This reset link has already been used." });
+      }
+    }
+  } else if (usedResetTokens.has(token)) {
+    return res.status(409).json({ error: "This reset link has already been used." });
   }
   rememberUsed(usedResetTokens, token);
   const user = users[userId];
@@ -863,6 +1615,16 @@ app.post("/api/auth/reset-password", (req, res) => {
   // Invalidate every session issued before this reset (audit H4).
   user.tokenVersion = (user.tokenVersion ?? 0) + 1;
   persistUsers();
+  if (dbEnabled) {
+    try {
+      await query(
+        `UPDATE app_users SET password_hash = $1, salt = $2, token_version = $3 WHERE id = $4`,
+        [user.hash, user.salt, user.tokenVersion, user.id]
+      );
+    } catch (err) {
+      console.error(JSON.stringify({ level: "error", msg: "reset_password_db_sync_failed", error: String(err) }));
+    }
+  }
   // Professional hygiene: tell the user their password changed (and where).
   sendEmail({
     to: user.email,
@@ -878,8 +1640,8 @@ app.post("/api/auth/reset-password", (req, res) => {
 // Change password for the signed-in user. Requires the CURRENT password and
 // bumps tokenVersion so all other sessions die immediately (audit H4).
 // ---------------------------------------------------------------------------
-app.post("/api/auth/change-password", (req, res) => {
-  if (rateLimited(req)) return res.status(429).json({ error: "Too many requests." });
+app.post("/api/auth/change-password", async (req, res) => {
+  if (await rateLimited(req)) return res.status(429).json({ error: "Too many requests." });
   if (!req.user) return res.status(401).json({ error: "Not authenticated." });
   const { currentPassword, newPassword } = req.body || {};
   const user = users[req.user.id];
@@ -898,6 +1660,16 @@ app.post("/api/auth/change-password", (req, res) => {
   user.hash = hashPassword(newPassword, user.salt);
   user.tokenVersion = (user.tokenVersion ?? 0) + 1;
   persistUsers();
+  if (dbEnabled) {
+    try {
+      await query(
+        `UPDATE app_users SET password_hash = $1, salt = $2, token_version = $3 WHERE id = $4`,
+        [user.hash, user.salt, user.tokenVersion, user.id]
+      );
+    } catch (err) {
+      console.error(JSON.stringify({ level: "error", msg: "change_password_db_sync_failed", error: String(err) }));
+    }
+  }
   sendEmail({
     to: user.email,
     subject: "Your MedicoMatch password was changed",
@@ -906,6 +1678,16 @@ app.post("/api/auth/change-password", (req, res) => {
       "If this wasn't you, contact support immediately.",
   });
   res.json({ message: "Password updated. Please sign in again." });
+});
+
+// Audit M-12 / item 1: sign-out endpoint that clears the session cookie and
+// rotates a fresh CSRF token. The Bearer token (mobile path) is stateless and
+// cannot be revoked here — rotation is the only way to invalidate it (the
+// client should drop the local copy on 200).
+app.post("/api/auth/sign-out", (req, res) => {
+  clearSessionCookie(res);
+  setCsrfCookie(res, issueCsrfToken());
+  res.json({ ok: true });
 });
 
 app.get("/api/auth/me", (req, res) => {
@@ -923,7 +1705,16 @@ app.get("/api/auth/me", (req, res) => {
 // Body: { sku, amount (INR rupees), currency?, receipt?, notes? }
 // ---------------------------------------------------------------------------
 app.post("/api/razorpay/create-order", async (req, res) => {
-  if (rateLimited(req)) return res.status(429).json({ error: "Too many requests." });
+  if (await rateLimited(req)) return res.status(429).json({ error: "Too many requests." });
+
+  // Audit M-7: in DB mode every order MUST be attributable to a known user —
+  // otherwise a captured payment has no row to land against and the user can
+  // never claim their plan via the webhook. The simulate path is intentionally
+  // permissive (dev/smoke tests boot without a session) but the production
+  // DB path enforces attribution.
+  if (dbEnabled && !req.user) {
+    return res.status(401).json({ error: "Sign in to start a purchase." });
+  }
 
   try {
     const {
@@ -932,6 +1723,7 @@ app.post("/api/razorpay/create-order", async (req, res) => {
       currency = "INR",
       receipt = `rcpt_${Date.now()}`,
       notes = {},
+      coupon,
     } = req.body || {};
 
     if (typeof sku !== "string" || !PLAN_CATALOG[sku]) {
@@ -940,7 +1732,34 @@ app.post("/api/razorpay/create-order", async (req, res) => {
     if (typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0) {
       return res.status(400).json({ error: "A positive amount is required." });
     }
-    if (!catalogAllows(sku, amount)) {
+    // P0-10 coupons: validated server-side; the payable amount must equal the
+    // discounted catalog price (integer rupees). Consumed at verify-time, not here.
+    let couponPct = 0;
+    let couponCode = null;
+    if (typeof coupon === "string" && coupon.trim()) {
+      if (dbEnabled) {
+        // M-1: per-user check — a redeemed once-per-user coupon is invalid.
+        const c = await domain.validateCoupon(coupon, req.user?.id ?? null);
+        if (!c) return res.status(400).json({ error: "Invalid or expired coupon." });
+        couponPct = c.percentOff;
+        couponCode = c.code;
+      } else {
+        const codeUpper = coupon.trim().toUpperCase();
+        if (codeUpper === "WELCOME10") {
+          couponPct = 10;
+          couponCode = "WELCOME10";
+        } else {
+          return res.status(400).json({ error: "Invalid or expired coupon." });
+        }
+      }
+      const base = PLAN_CATALOG[sku][0];
+      const expected = Math.round((base * (100 - couponPct)) / 100);
+      // Coupon path must also require integer rupees like catalogAllows does —
+      // otherwise 1349.49 passes (round==1349) then charges 134949 paise.
+      if (!Number.isInteger(amount) || amount !== expected) {
+        return res.status(400).json({ error: `Amount does not match the coupon price (₹${expected}).` });
+      }
+    } else if (!catalogAllows(sku, amount)) {
       return res.status(400).json({ error: "Amount does not match the price of that plan." });
     }
     if (!/^INR$/i.test(currency)) {
@@ -952,10 +1771,10 @@ app.post("/api/razorpay/create-order", async (req, res) => {
     if (simulatePayments) {
       pruneSimOrders();
       const id = `order_sim_${crypto.randomUUID()}`;
-      simOrders.set(id, { sku, amount: amountInPaise, createdAt: Date.now() });
+      simOrders.set(id, { sku, amount: amountInPaise, couponCode, userId: req.user?.id ?? null, createdAt: Date.now() });
       if (dbEnabled) {
         try {
-          await domain.recordOrder({ orderId: id, userId: req.user?.id ?? null, sku, amountPaise: amountInPaise, simulated: true });
+          await domain.recordOrder({ orderId: id, userId: req.user?.id ?? null, sku, amountPaise: amountInPaise, simulated: true, couponCode });
         } catch (err) {
           console.error(JSON.stringify({ level: "error", msg: "order_record_failed", error: String(err) }));
         }
@@ -977,13 +1796,23 @@ app.post("/api/razorpay/create-order", async (req, res) => {
     }
 
     const auth = Buffer.from(`${razorpayKeyId}:${razorpayKeySecret}`).toString("base64");
+    // Audit M-14: echo the authenticated user id into Razorpay's order notes so
+    // a webhook arriving for an anonymous/cookie-less browser can still resolve
+    // the order back to a real account (e.g. mobile webview with cookies
+    // stripped, or the post-redirect recovery path before sign-in).
+    const razorpayNotes = {
+      ...notes,
+      sku,
+      ...(req.user?.id ? { user_id: req.user.id } : {}),
+      ...(couponCode ? { coupon: couponCode } : {}),
+    };
     const response = await fetch("https://api.razorpay.com/v1/orders", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Basic ${auth}`,
       },
-      body: JSON.stringify({ amount: amountInPaise, currency, receipt, notes: { ...notes, sku } }),
+      body: JSON.stringify({ amount: amountInPaise, currency, receipt, notes: razorpayNotes }),
     });
 
     let orderData;
@@ -1000,10 +1829,10 @@ app.post("/api/razorpay/create-order", async (req, res) => {
     }
     if (orderData?.id) {
       pruneLiveOrders();
-      liveOrders.set(orderData.id, { sku, amount: amountInPaise, createdAt: Date.now() });
+      liveOrders.set(orderData.id, { sku, amount: amountInPaise, couponCode, userId: req.user?.id ?? null, createdAt: Date.now() });
       if (dbEnabled) {
         try {
-          await domain.recordOrder({ orderId: orderData.id, userId: req.user?.id ?? null, sku, amountPaise: amountInPaise, simulated: false });
+          await domain.recordOrder({ orderId: orderData.id, userId: req.user?.id ?? null, sku, amountPaise: amountInPaise, simulated: false, couponCode });
         } catch (err) {
           console.error(JSON.stringify({ level: "error", msg: "order_record_failed", error: String(err) }));
         }
@@ -1022,7 +1851,7 @@ app.post("/api/razorpay/create-order", async (req, res) => {
 // Body: { razorpay_order_id, razorpay_payment_id, razorpay_signature, sku }
 // ---------------------------------------------------------------------------
 app.post("/api/razorpay/verify-payment", async (req, res) => {
-  if (rateLimited(req)) return res.status(429).json({ error: "Too many requests." });
+  if (await rateLimited(req)) return res.status(429).json({ error: "Too many requests." });
 
   const { razorpay_order_id, razorpay_payment_id, razorpay_signature, sku } = req.body || {};
 
@@ -1035,6 +1864,8 @@ app.post("/api/razorpay/verify-payment", async (req, res) => {
   if (typeof sku !== "string" || !PLAN_CATALOG[sku]) {
     return res.status(400).json({ verified: false, error: "Unknown plan." });
   }
+
+  let boundOrder = null;
 
   if (simulatePayments) {
     // Only order ids issued by this process in this session are accepted —
@@ -1073,7 +1904,6 @@ app.post("/api/razorpay/verify-payment", async (req, res) => {
     // Bind the payment to the order THIS server issued for THIS sku (C1).
     // Without this, a replay of a legitimate ₹1,499 payment with sku
     // "platinum-annual" would mint a token for the ₹28,790 plan.
-    let boundOrder = null;
     if (dbEnabled) {
       const o = await domain.getOrder(razorpay_order_id);
       if (!o || o.sku !== sku) {
@@ -1088,11 +1918,14 @@ app.post("/api/razorpay/verify-payment", async (req, res) => {
     }
   }
 
-  const token = mintActivationToken(sku, razorpay_order_id, razorpay_payment_id);
+  const orderUserId = req.user?.id || boundOrder?.user_id || liveOrders.get(razorpay_order_id)?.userId || simOrders.get(razorpay_order_id)?.userId || "";
+  const token = mintActivationToken(sku, razorpay_order_id, razorpay_payment_id, orderUserId);
 
   // DB mode: record the captured payment immediately (source=verify) so the
   // subscription is granted server-side even if the browser never redeems the
   // token (audit M7's browser-independence). Webhooks remain the backstop.
+  // P0-10: consume the coupon exactly once — only when this payment applies
+  // for the first time (duplicate verify retries must not burn uses).
   if (dbEnabled && !simulatePayments) {
     try {
       const out = await domain.recordCapturedPayment({
@@ -1115,6 +1948,12 @@ app.post("/api/razorpay/verify-payment", async (req, res) => {
           persistEntitlements();
         }
       }
+      if (out.result === "applied") {
+        const couponCode = out.couponCode || liveOrders.get(razorpay_order_id)?.couponCode || simOrders.get(razorpay_order_id)?.couponCode || null;
+        if (couponCode) {
+          try { await domain.consumeCoupon(couponCode, out.userId || req.user?.id || null); } catch { /* honor purchase on race */ }
+        }
+      }
     } catch (err) {
       console.error(JSON.stringify({ level: "error", msg: "verify_grant_failed", error: String(err) }));
     }
@@ -1134,7 +1973,7 @@ app.post("/api/razorpay/verify-payment", async (req, res) => {
 // persisted to the user's account (server-side source of truth).
 // ---------------------------------------------------------------------------
 app.post("/api/razorpay/redeem", async (req, res) => {
-  if (rateLimited(req)) return res.status(429).json({ error: "Too many requests." });
+  if (await rateLimited(req)) return res.status(429).json({ error: "Too many requests." });
 
   const { token } = req.body || {};
   const parsed = verifyActivationToken(token);
@@ -1145,6 +1984,9 @@ app.post("/api/razorpay/redeem", async (req, res) => {
   // burned with no account to attach it to and no retry path (H4).
   if (!req.user) {
     return res.status(401).json({ error: "Sign in to activate your purchase." });
+  }
+  if (parsed.userId && parsed.userId !== req.user.id) {
+    return res.status(403).json({ error: "This activation token was issued to a different account." });
   }
   // Audit M3: single-use is DURABLE in DB mode (token hash keyed PK) so a
   // spent token stays spent across restarts and across replica instances. The
@@ -1157,12 +1999,31 @@ app.post("/api/razorpay/redeem", async (req, res) => {
       if (spent.rowCount > 0) {
         return res.status(409).json({ error: "This activation token has already been used." });
       }
-      // Reserve under the hash PK; a concurrent duplicate insert collides and
-      // is caught, treating the second redeem as a duplicate.
-      await query(
-        `INSERT INTO redeemed_tokens (token_hash, sku) VALUES ($1,$2) ON CONFLICT DO NOTHING`,
+      // Reserve under the hash PK. ON CONFLICT DO NOTHING never throws, so the
+      // rowCount check is the race backstop: the loser of a concurrent double
+      // redeem gets rowCount 0 and is rejected as a duplicate (C1).
+      const reserve = await query(
+        `INSERT INTO redeemed_tokens (token_hash, sku) VALUES ($1,$2) ON CONFLICT DO NOTHING RETURNING token_hash`,
         [tokenHash, parsed.sku]
       );
+      if (reserve.rowCount === 0) {
+        return res.status(409).json({ error: "This activation token has already been used." });
+      }
+      
+      // recordCapturedPayment is idempotent on paymentId: verify/webhook/redeem
+      // share the same gate, so only the first path gets 'applied'. Coupon
+      // consumption below is gated on that (H2) to avoid burning 3 uses.
+      const redeemGrant = await domain.recordCapturedPayment({
+        paymentId: parsed.paymentId,
+        orderId: parsed.orderId,
+        userId: req.user.id,
+        sku: parsed.sku,
+        amountPaise: null,
+        source: "redeem",
+      });
+      // Stash for the coupon step below: only consume when this redeem was the
+      // first to apply the payment.
+      req._redeemApplied = redeemGrant?.result === "applied";
     } catch (err) {
       console.error(JSON.stringify({ level: "error", msg: "redeem_token_reserve_error", error: String(err) }));
       return res.status(500).json({ error: "Internal server error." });
@@ -1216,6 +2077,26 @@ app.post("/api/razorpay/redeem", async (req, res) => {
     };
     persistEntitlements();
   }
+  // H2: consume the coupon only when this redeem applied the payment. Verify
+  // and webhook already consume on their own 'applied' path; without this gate
+  // one payment burned up to 3 coupon uses.
+  if (parsed.orderId && dbEnabled && req._redeemApplied !== false) {
+    // In JSON-store mode _redeemApplied is undefined (no DB gate) — still
+    // consume once here since verify/webhook do not run without a DB.
+    // In DB mode, skip when another path already applied (duplicate).
+    const shouldConsume = !dbEnabled || req._redeemApplied === true;
+    if (shouldConsume) {
+      const couponCode =
+        liveOrders.get(parsed.orderId)?.couponCode ||
+        simOrders.get(parsed.orderId)?.couponCode ||
+        (await domain.getOrder(parsed.orderId).catch(() => null))?.coupon_code;
+      if (couponCode) {
+        try {
+          await domain.consumeCoupon(couponCode, req.user?.id || null);
+        } catch {}
+      }
+    }
+  }
   res.json({ plan: parsed.sku });
 });
 
@@ -1224,8 +2105,8 @@ app.post("/api/razorpay/redeem", async (req, res) => {
 // integer paise so subtotal + CGST + SGST always sums exactly to the total.
 // Requires a valid (not-yet-redeemed) activation token.
 // ---------------------------------------------------------------------------
-app.post("/api/generate-invoice", (req, res) => {
-  if (rateLimited(req)) return res.status(429).json({ error: "Too many requests." });
+app.post("/api/generate-invoice", async (req, res) => {
+  if (await rateLimited(req)) return res.status(429).json({ error: "Too many requests." });
 
   const { planName, amount, doctorName, gstin, billingAddress, token } = req.body || {};
 
@@ -1235,49 +2116,204 @@ app.post("/api/generate-invoice", (req, res) => {
       .status(400)
       .json({ error: "Invoices are only generated for verified payments." });
   }
+  
+  const tokenHash = sha256(token);
+  // M-2 FIX: hoisted so both the DB and the no-DB fallback price from the
+  // captured payment, never from the request body.
+  let capturedPaise = null;
+  if (dbEnabled) {
+    try {
+      // the invoiced amount is sourced from the captured payment row,
+      // never from the request body (a caller-supplied amount can only match,
+      // never set, the GST math). SAFE DEFAULT: mismatch => 400.
+      const paymentRow = await query(
+        `SELECT amount_paise FROM payment_transactions WHERE razorpay_payment_id = $1`,
+        [parsed.paymentId]
+      );
+      capturedPaise = paymentRow.rows[0] ? Number(paymentRow.rows[0].amount_paise) : null;
+      if (capturedPaise !== null && Number.isFinite(Number(amount)) && Math.round(Number(amount) * 100) !== capturedPaise) {
+        return res.status(400).json({ error: "Invoice amount does not match the captured payment." });
+      }
+      const existing = await query(`SELECT * FROM invoices WHERE token_hash = $1`, [tokenHash]);
+      if (existing.rowCount > 0) {
+        const inv = existing.rows[0];
+        const SKU_DISPLAY_NAMES = {
+          "premium": "Premium Membership (Monthly)",
+          "premium-annual": "Premium Membership (Annual)",
+          "platinum": "Platinum Membership (Monthly)",
+          "platinum-annual": "Platinum Membership (Annual)",
+          "astrologer-consultation": "Astrology Consultation",
+          "astrologer-consultation-1499": "Astrology Consultation (Essential)",
+          "astrologer-consultation-1699": "Astrology Consultation (Classic)",
+          "astrologer-consultation-1999": "Astrology Consultation (Expert)",
+          "kundali-report": "Detailed Kundali Match Report",
+        };
+        const officialPlanName = SKU_DISPLAY_NAMES[inv.sku] || (planName ? String(planName).slice(0, 100) : "MedicoMatch Membership");
+        const bPaise = Math.round(inv.amount_paise / 1.18);
+        const gPaise = inv.amount_paise - bPaise;
+        const cPaise = Math.ceil(gPaise / 2);
+        const sPaise = gPaise - cPaise;
+        return res.json({
+          invoiceNumber: inv.invoice_number,
+          date: istDateString(new Date(inv.issued_at)),
+          planName: officialPlanName,
+          doctorName: inv.doctor_name || "Doctor User",
+          gstin: inv.gstin || "Not provided",
+          billingAddress: inv.billing_address || "India",
+          subtotal: Number((bPaise / 100).toFixed(2)),
+          cgst: Number((cPaise / 100).toFixed(2)),
+          sgst: Number((sPaise / 100).toFixed(2)),
+          total: Number((inv.amount_paise / 100).toFixed(2)),
+          status: "PAID",
+        });
+      }
+    } catch { /* proceed to generation */ }
+  } else if (generatedInvoices.has(token)) {
+    return res.json(generatedInvoices.get(token));
+  }
 
   if (typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0) {
     return res.status(400).json({ error: "A positive amount is required." });
   }
 
-  // Price the invoice from the token's sku in the server catalog; reject any
-  // amount outside that plan's allowed prices (H1). A ₹1,499 token can no
-  // longer generate a "PAID" invoice for ₹28,790.
-  const allowedAmounts = PLAN_CATALOG[parsed.sku];
-  if (!Array.isArray(allowedAmounts) || !allowedAmounts.includes(Math.round(amount))) {
+  let orderAmount = null;
+  if (parsed.orderId) {
+    if (dbEnabled) {
+      try {
+        const ord = await domain.getOrder(parsed.orderId);
+        if (ord && typeof ord.amount_paise === "number") {
+          orderAmount = Math.round(ord.amount_paise / 100);
+        }
+      } catch {}
+    }
+    if (orderAmount === null) {
+      const memOrder = liveOrders.get(parsed.orderId) || simOrders.get(parsed.orderId);
+      if (memOrder && typeof memOrder.amount === "number") {
+        orderAmount = Math.round(memOrder.amount / 100);
+      }
+    }
+  }
+
+  // Price the invoice from the token's sku in the server catalog or order record (allows valid coupon discounts).
+  // M-2 FIX (continued): when a captured payment row exists, its amount is the
+  // authority and overrides the request body — the caller can only request the
+  // invoice, never price it.
+  const allowedAmounts = PLAN_CATALOG[parsed.sku] || [];
+  const effectiveAmount = capturedPaise !== null ? capturedPaise / 100 : amount;
+  const isAllowed =
+    capturedPaise !== null ||
+    (orderAmount !== null && Math.round(amount) === orderAmount) ||
+    allowedAmounts.includes(Math.round(amount));
+
+  if (!isAllowed) {
     return res.status(400).json({ error: "Invoice amount does not match the purchased plan." });
   }
 
-  const totalPaise = Math.round(amount * 100);
+  const totalPaise = capturedPaise !== null ? capturedPaise : Math.round(effectiveAmount * 100);
   const basePaise = Math.round(totalPaise / 1.18);
   const gstPaise = totalPaise - basePaise;
   const cgstPaise = Math.ceil(gstPaise / 2);
   const sgstPaise = gstPaise - cgstPaise;
   const paiseToRupees = (p) => Number((p / 100).toFixed(2));
 
-  // Sequential invoice number, persisted across restarts; year rolls over with
-  // the IST calendar year. Random hex ids are not acceptable on GST invoices.
+  // Sequential invoice number, persisted in Postgres (audit M-2) in DB mode
+  // and in invoice_seq.json in test/dev mode. Year rolls over with the IST calendar year.
   const istToday = istDateString();
   const seqYear = Number(istToday.slice(0, 4));
-  if (invoiceSeq.year !== seqYear) {
-    invoiceSeq = { year: seqYear, n: 0 };
-  }
-  invoiceSeq.n += 1;
-  writeJson(INVOICE_SEQ_FILE, invoiceSeq);
 
-  res.json({
-    invoiceNumber: `MM-INV-${seqYear}-${String(invoiceSeq.n).padStart(6, "0")}`,
-    date: istToday,
-    planName: planName || "Premium Membership",
-    doctorName: doctorName || "Doctor User",
-    gstin: gstin || "Not provided",
-    billingAddress: billingAddress || "India",
-    subtotal: paiseToRupees(basePaise),
-    cgst: paiseToRupees(cgstPaise),
-    sgst: paiseToRupees(sgstPaise),
-    total: paiseToRupees(totalPaise),
-    status: "PAID",
-  });
+  // L1: only SKUs the catalog can actually sell get display names. Tiered
+  // astrologer SKUs map to the canonical consultation row in billing.
+  const SKU_DISPLAY_NAMES = {
+    "premium": "Premium Membership (Monthly)",
+    "premium-annual": "Premium Membership (Annual)",
+    "platinum": "Platinum Membership (Monthly)",
+    "platinum-annual": "Platinum Membership (Annual)",
+    "astrologer-consultation": "Astrology Consultation",
+    "astrologer-consultation-1499": "Astrology Consultation (Essential)",
+    "astrologer-consultation-1699": "Astrology Consultation (Classic)",
+    "astrologer-consultation-1999": "Astrology Consultation (Expert)",
+          "kundali-report": "Detailed Kundali Match Report",
+  };
+  const officialPlanName = SKU_DISPLAY_NAMES[parsed.sku] || (planName ? String(planName).slice(0, 100) : "MedicoMatch Membership");
+
+  let outInvoice = null;
+
+  if (dbEnabled) {
+    try {
+      const invRow = await withTx(async (client) => {
+        const existing = await client.query(`SELECT * FROM invoices WHERE token_hash = $1`, [tokenHash]);
+        if (existing.rowCount > 0) {
+          return existing.rows[0];
+        }
+        const seqRes = await client.query(
+          `INSERT INTO invoice_sequences (year, next_n) VALUES ($1, 2)
+           ON CONFLICT (year) DO UPDATE SET next_n = invoice_sequences.next_n + 1
+           RETURNING (invoice_sequences.next_n - 1) AS n`,
+          [seqYear]
+        );
+        const assignedSeq = Number(seqRes.rows[0]?.n || 1);
+        const invNumber = `MM-INV-${seqYear}-${String(assignedSeq).padStart(6, "0")}`;
+        const ins = await client.query(
+          `INSERT INTO invoices (invoice_number, user_id, payment_id, token_hash, sku, amount_paise, gst_paise, doctor_name, gstin, billing_address)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+           RETURNING *`,
+          [invNumber, req.user?.id || parsed.userId || null, parsed.paymentId, tokenHash, parsed.sku, totalPaise, gstPaise, doctorName || null, gstin || null, billingAddress || null]
+        );
+        return ins.rows[0];
+      });
+      if (invRow) {
+        const bPaise = Math.round(invRow.amount_paise / 1.18);
+        const gPaise = invRow.amount_paise - bPaise;
+        const cPaise = Math.ceil(gPaise / 2);
+        const sPaise = gPaise - cPaise;
+        outInvoice = {
+          invoiceNumber: invRow.invoice_number,
+          date: istDateString(new Date(invRow.issued_at || Date.now())),
+          planName: officialPlanName,
+          doctorName: invRow.doctor_name || "Doctor User",
+          gstin: invRow.gstin || "Not provided",
+          billingAddress: invRow.billing_address || "India",
+          subtotal: Number((bPaise / 100).toFixed(2)),
+          cgst: Number((cPaise / 100).toFixed(2)),
+          sgst: Number((sPaise / 100).toFixed(2)),
+          total: Number((invRow.amount_paise / 100).toFixed(2)),
+          status: "PAID",
+        };
+      }
+    } catch (err) {
+      console.error(JSON.stringify({ level: "error", msg: "invoice_db_tx_failed", error: String(err) }));
+      return res.status(500).json({ error: "Failed to allocate invoice sequence from database." });
+    }
+  }
+
+  if (!outInvoice) {
+    if (dbEnabled) {
+      return res.status(500).json({ error: "Failed to allocate invoice sequence from database." });
+    }
+    if (invoiceSeq.year !== seqYear) {
+      invoiceSeq = { year: seqYear, n: 0 };
+    }
+    invoiceSeq.n += 1;
+    writeJson(INVOICE_SEQ_FILE, invoiceSeq);
+    const seqNumber = invoiceSeq.n;
+
+    outInvoice = {
+      invoiceNumber: `MM-INV-${seqYear}-${String(seqNumber).padStart(6, "0")}`,
+      date: istToday,
+      planName: officialPlanName,
+      doctorName: doctorName ? String(doctorName).slice(0, 120) : "Doctor User",
+      gstin: gstin ? String(gstin).slice(0, 30) : "Not provided",
+      billingAddress: billingAddress ? String(billingAddress).slice(0, 200) : "India",
+      subtotal: paiseToRupees(basePaise),
+      cgst: paiseToRupees(cgstPaise),
+      sgst: paiseToRupees(sgstPaise),
+      total: paiseToRupees(totalPaise),
+      status: "PAID",
+    };
+    generatedInvoices.set(token, outInvoice);
+  }
+
+  res.json(outInvoice);
 });
 
 // ---------------------------------------------------------------------------
@@ -1304,22 +2340,111 @@ const wrap = (fn) => async (req, res) => {
   }
 };
 
+app.get("/api/invoices", requireDbUser, wrap(async (req, res) => {
+  const invs = await query(
+    `SELECT invoice_number, issued_at, sku, amount_paise, gst_paise, doctor_name, gstin, billing_address
+     FROM invoices WHERE user_id = $1 ORDER BY issued_at DESC LIMIT 50`,
+    [req.user.id]
+  );
+  res.json({
+    invoices: invs.rows.map((inv) => ({
+      invoiceNumber: inv.invoice_number,
+      date: istDateString(new Date(inv.issued_at)),
+      planName: inv.sku,
+      amount: inv.amount_paise / 100,
+      total: inv.amount_paise / 100,
+      status: "PAID",
+    })),
+  });
+}));
+
+// ---------------------------------------------------------------------------
+// Item 6: DPDP Act rights — data export + account deletion.
+//
+// Both routes require an authenticated session (cookie or Bearer). The
+// delete route additionally requires the user's CURRENT password to
+// authenticate the destructive intent.
+// ---------------------------------------------------------------------------
+app.get("/api/me/export", requireDbUser, wrap(async (req, res) => {
+  const data = await domain.exportMyData(req.user.id);
+  res.setHeader("Content-Disposition", `attachment; filename="medicomatch-export-${req.user.id}.json"`);
+  res.json(data);
+}));
+
+app.post("/api/me/delete", rateLimitMiddleware, requireDbUser, wrap(async (req, res) => {
+  const { currentPassword } = req.body || {};
+  if (typeof currentPassword !== "string" || !currentPassword) {
+    return res.status(400).json({ error: "Current password is required to confirm deletion." });
+  }
+  const u = users[req.user.id];
+  if (!u) return res.status(404).json({ error: "User not found." });
+  if (!verifyPassword(currentPassword, u.salt, u.hash)) {
+    return res.status(401).json({ error: "Current password is incorrect." });
+  }
+  const out = await domain.deleteMyAccount(req.user.id);
+  delete users[req.user.id];
+  persistUsers();
+  delete entitlements[req.user.id];
+  persistEntitlements();
+  invalidateAdminFlagCache(req.user.id);
+  clearSessionCookie(res);
+  setCsrfCookie(res, issueCsrfToken());
+  await domain.writeAudit(req.user.id, "user.delete_self", req.user.id, "");
+  console.log(JSON.stringify({ level: "info", msg: "user_deleted", userId: req.user.id, priorEmail: out.email }));
+  res.json({ ok: true, tombstoneEmail: out.tombstoneEmail });
+}));
+
 app.get("/api/quota", requireDbUser, wrap(async (req, res) => {
   res.json(await domain.getQuotaSummary(req.user.id));
 }));
 
-app.get("/api/profiles", requireDbUser, wrap(async (req, res) => {
+app.get("/api/profiles", requireDbUser, requireVerifiedInteract, wrap(async (req, res) => {
+  // H1: the route previously dropped every advanced filter the UI sends —
+  // domain.browseProfiles already supports them. Accept canonical + short
+  // aliases used by Search/Matches (rel, mt, ori, eth, gunas) so SQL filtering
+  // matches what the user picked instead of silently returning unfiltered rows.
+  const str = (v) => (typeof v === "string" && v.trim() ? v.trim().slice(0, 80) : undefined);
+  const num = (v) => (/^\d+$/.test(String(v || "")) ? Number(v) : undefined);
+  // H-NEW-1: clamp limit + offset BEFORE the budget check so the budget sees
+  // the same number of rows we'll actually return.
+  const limit = Math.min(Math.max(Number(req.query.limit) || 60, 1), 200);
+  const offset = Math.max(Number(req.query.offset) || 0, 0);
+  // Admins bypass the daily scrape budget (moderation / support flow).
+  if (!req.isAdmin && (await browseOverBudget(req.user.id, limit))) {
+    return res.status(429).json({
+      error: "Daily browse limit reached. Try again tomorrow or contact support.",
+      code: "browse_budget",
+    });
+  }
   const profiles = await domain.browseProfiles({
     viewerId: req.user.id,
-    city: typeof req.query.city === "string" ? req.query.city : undefined,
-    specialty: typeof req.query.specialty === "string" ? req.query.specialty : undefined,
+    city: str(req.query.city),
+    specialty: str(req.query.specialty),
     q: typeof req.query.q === "string" && req.query.q.trim() ? req.query.q.trim().slice(0, 100) : undefined,
-    minAge: /^\d+$/.test(req.query.min || "") ? Number(req.query.min) : undefined,
-    maxAge: /^\d+$/.test(req.query.max || "") ? Number(req.query.max) : undefined,
+    minAge: num(req.query.min),
+    maxAge: num(req.query.max),
     verifiedOnly: req.query.verified === "1",
-    limit: Number(req.query.limit) || 60,
+    religion: str(req.query.religion ?? req.query.rel),
+    caste: str(req.query.caste ?? req.query.cast),
+    motherTongue: str(req.query.motherTongue ?? req.query.mt),
+    gotra: str(req.query.gotra),
+    orientation: str(req.query.orientation ?? req.query.ori),
+    ethnicity: str(req.query.ethnicity ?? req.query.eth),
+    minGunas: num(req.query.minGunas ?? req.query.gunas),
+    familyType: str(req.query.familyType),
+    familyStatus: str(req.query.familyStatus),
+    incomeBand: str(req.query.incomeBand),
+    diet: str(req.query.diet),
+    limit,
+    offset,
   });
   res.json({ profiles });
+}));
+
+app.get("/api/profiles/:id", requireDbUser, requireVerifiedInteract, wrap(async (req, res) => {
+  const profile = await domain.getProfile(req.params.id, req.user?.id);
+  if (!profile) return res.status(404).json({ error: "Profile not found." });
+  res.json({ profile });
 }));
 
 app.get("/api/me/profile", requireDbUser, wrap(async (req, res) => {
@@ -1335,7 +2460,7 @@ app.get("/api/interests", requireDbUser, wrap(async (req, res) => {
   res.json(await domain.listMyInterests(req.user.id));
 }));
 
-app.post("/api/interests", rateLimitMiddleware, requireDbUser, wrap(async (req, res) => {
+app.post("/api/interests", rateLimitMiddleware, requireDbUser, requireVerifiedInteract, wrap(async (req, res) => {
   const { profileId, note } = req.body || {};
   if (typeof profileId !== "string" || !profileId) {
     return res.status(400).json({ error: "profileId is required." });
@@ -1370,15 +2495,30 @@ app.delete("/api/favorites/:profileId", rateLimitMiddleware, requireDbUser, wrap
   res.json(await domain.removeFavorite(req.user.id, req.params.profileId));
 }));
 
+app.get("/api/shortlists", requireDbUser, wrap(async (req, res) => {
+  res.json({ shortlists: await domain.listShortlists(req.user.id) });
+}));
+
+app.post("/api/shortlists", rateLimitMiddleware, requireDbUser, wrap(async (req, res) => {
+  const { profileId } = req.body || {};
+  if (typeof profileId !== "string" || !profileId) return res.status(400).json({ error: "profileId is required." });
+  res.json(await domain.addShortlist(req.user.id, profileId));
+}));
+
+app.delete("/api/shortlists/:profileId", rateLimitMiddleware, requireDbUser, wrap(async (req, res) => {
+  res.json(await domain.removeShortlist(req.user.id, req.params.profileId));
+}));
+
 app.get("/api/channels", requireDbUser, wrap(async (req, res) => {
   res.json({ channels: await domain.listChannels(req.user.id) });
 }));
 
 app.get("/api/channels/:id/messages", requireDbUser, wrap(async (req, res) => {
-  res.json({ messages: await domain.listMessages(req.user.id, req.params.id) });
+  // M7: forward the caller's limit instead of always using the 100 default.
+  res.json({ messages: await domain.listMessages(req.user.id, req.params.id, req.query.limit) });
 }));
 
-app.post("/api/channels/:id/messages", rateLimitMiddleware, requireDbUser, wrap(async (req, res) => {
+app.post("/api/channels/:id/messages", rateLimitMiddleware, requireDbUser, requireVerifiedInteract, wrap(async (req, res) => {
   res.status(201).json(await domain.sendMessage(req.user.id, req.params.id, req.body?.body));
 }));
 
@@ -1386,7 +2526,7 @@ app.get("/api/video-dates", requireDbUser, wrap(async (req, res) => {
   res.json({ videoDates: await domain.listVideoDates(req.user.id) });
 }));
 
-app.post("/api/video-dates", rateLimitMiddleware, requireDbUser, wrap(async (req, res) => {
+app.post("/api/video-dates", rateLimitMiddleware, requireDbUser, requireVerifiedInteract, wrap(async (req, res) => {
   const { profileId, scheduledFor, durationMinutes } = req.body || {};
   if (typeof profileId !== "string" || !profileId || !scheduledFor) {
     return res.status(400).json({ error: "profileId and scheduledFor are required." });
@@ -1396,6 +2536,14 @@ app.post("/api/video-dates", rateLimitMiddleware, requireDbUser, wrap(async (req
 
 app.post("/api/video-dates/:id/cancel", rateLimitMiddleware, requireDbUser, wrap(async (req, res) => {
   res.json(await domain.cancelVideoDate(req.user.id, req.params.id));
+}));
+
+app.post("/api/video-dates/:id/respond", rateLimitMiddleware, requireDbUser, wrap(async (req, res) => {
+  const action = String(req.body?.action || "");
+  if (!["accept", "decline"].includes(action)) {
+    return res.status(400).json({ error: "action must be accept or decline." });
+  }
+  res.json(await domain.respondVideoDate(req.user.id, req.params.id, action));
 }));
 
 app.get("/api/blocks", requireDbUser, wrap(async (req, res) => {
@@ -1420,10 +2568,285 @@ app.post("/api/reports", rateLimitMiddleware, requireDbUser, wrap(async (req, re
   res.status(201).json(await domain.reportUser(req.user.id, profileId, reason, details));
 }));
 
-app.post("/api/contact-reveal", rateLimitMiddleware, requireDbUser, wrap(async (req, res) => {
+app.post("/api/contact-reveal", rateLimitMiddleware, requireDbUser, requireVerifiedInteract, wrap(async (req, res) => {
   const { profileId } = req.body || {};
   if (typeof profileId !== "string" || !profileId) return res.status(400).json({ error: "profileId is required." });
   res.json(await domain.revealContact(req.user.id, profileId));
+}));
+
+// ---------------------------------------------------------------------------
+// Support inbox (M6): the Help contact form previously saved to localStorage
+// only — nobody read it. Anonymous, rate-limited, and delivered via the same
+// Resend transport as verify/reset mail so prod has a real support path.
+// ---------------------------------------------------------------------------
+app.post("/api/support", rateLimitMiddleware, wrap(async (req, res) => {
+  const { name, email, subject, message } = req.body || {};
+  if (typeof name !== "string" || !name.trim() || typeof email !== "string" || !EMAIL_RE.test(email)) {
+    return res.status(400).json({ error: "A valid name and email are required." });
+  }
+  if (typeof message !== "string" || !message.trim() || message.trim().length < 10) {
+    return res.status(400).json({ error: "Please describe your issue (min 10 characters)." });
+  }
+  const to = process.env.SUPPORT_EMAIL || process.env.EMAIL_FROM || "MedicoMatch <no-reply@medicomatch.in>";
+  try {
+    await sendEmail({
+      to,
+      subject: `[Support] ${String(subject || "Help request").slice(0, 120)} — ${name.trim().slice(0, 80)}`,
+      text: `From: ${name.trim().slice(0, 80)} <${email.trim().toLowerCase()}>\nUser: ${req.user?.id ?? "guest"}\n\n${message.trim().slice(0, 4000)}`,
+    });
+  } catch (err) {
+    return res.status(503).json({ error: "Support is unavailable right now. Please email us directly." });
+  }
+  res.json({ ok: true });
+}));
+
+// ---------------------------------------------------------------------------
+// Launch-gap fix #5: member-facing refund request. Delivered to SUPPORT_EMAIL
+// (defaults to the sender address). SAFE DEFAULT: this is an ADVISORY ticket —
+// approval & execution still flow through the admin refund endpoints / Razorpay
+// dashboard webhook revocation. Never auto-refunds.
+// ---------------------------------------------------------------------------
+app.post("/api/refund-request", rateLimitMiddleware, requireDbUser, wrap(async (req, res) => {
+  const reason = String(req.body?.reason || "").trim();
+  if (!reason) return res.status(400).json({ error: "Please tell us why you are requesting a refund." });
+  if (reason.length < 10) {
+    return res.status(400).json({ error: "Please describe the reason (min 10 characters)." });
+  }
+  let ctx;
+  try {
+    ctx = await domain.requestRefund(req.user.id, reason);
+  } catch (err) {
+    return res.status(503).json({ error: "Refund requests are unavailable right now. Email us directly." });
+  }
+  if (!ctx?.ok) return res.status(404).json({ error: "Account not found." });
+  const to = process.env.SUPPORT_EMAIL || process.env.EMAIL_FROM || "MedicoMatch <no-reply@medicomatch.in>";
+  try {
+    await sendEmail({
+      to,
+      subject: `[Refund request] ${ctx.name || ctx.email || req.user.id}`,
+      text:
+        `Refund request from ${ctx.name || "Member"} <${ctx.email}>` +
+        `\nUser id: ${req.user.id}` +
+        `\nLast plan: ${ctx.lastSku || "none"}` +
+        (ctx.periodEnd ? `\nPeriod end: ${new Date(ctx.periodEnd).toISOString()}` : "") +
+        `\nPayments on account: ${ctx.paymentsCount}` +
+        `\n\nReason: ${ctx.reason}`,
+    });
+  } catch (err) {
+    return res.status(503).json({ error: "Refund requests are unavailable right now. Email us directly." });
+  }
+  res.json({ ok: true, message: "Your refund request has been sent. Our billing team will reach out within 2 business days." });
+}));
+
+// ---------------------------------------------------------------------------
+// Parity increment (rival Shaadi): trust (OTP + verification queue), daily
+// matches, events/stories, boost/coupons, read receipts, renewal reminders.
+// All DB-mode; 503 without DATABASE_URL so the SPA falls back to demo.
+// ---------------------------------------------------------------------------
+
+// P0-1 phone OTP. Delivery: MSG91/Twilio hook when configured, else the code
+// is emailed to the account address (documented fallback for launch; set an
+// SMS provider for true mobile possession). Test mode returns the code.
+// ---------------------------------------------------------------------------
+// Kundali match report (REPORTS_ENABLED). Buyer-pays: purchase via the normal
+// create-order -> verify -> redeem path with sku 'kundali-report', then the
+// report is generated server-side and stored per (buyer, profile).
+// ---------------------------------------------------------------------------
+app.post("/api/kundali/report", rateLimitMiddleware, requireDbUser, requireVerifiedInteract, wrap(async (req, res) => {
+  if (!REPORTS_ENABLED) return res.status(503).json({ error: "Kundali reports are not enabled on this server." });
+  const { profileId } = req.body || {};
+  if (typeof profileId !== "string" || !profileId) return res.status(400).json({ error: "profileId is required." });
+  res.json(await domain.getKundaliReport(req.user.id, profileId));
+}));
+
+app.get("/api/kundali/report/:profileId", requireDbUser, requireVerifiedInteract, wrap(async (req, res) => {
+  if (!REPORTS_ENABLED) return res.status(503).json({ error: "Kundali reports are not enabled on this server." });
+  res.json(await domain.getKundaliReport(req.user.id, req.params.profileId));
+}));
+
+// ---------------------------------------------------------------------------
+// SMS delivery (MSG91). Wired to the real provider API when SMS_PROVIDER and
+// the key are configured; otherwise the existing EMAIL fallback carries the
+// code. The OTP model is unchanged: hashed at rest, 10-min TTL, 5 attempts.
+// ---------------------------------------------------------------------------
+const MSG91_ENDPOINT = "https://api.msg91.com/api/v5/otp";
+async function sendOtpSms(phone, code) {
+  const provider = String(process.env.SMS_PROVIDER || "").trim().toLowerCase();
+  const key = process.env.MSG91_API_KEY || "";
+  if (provider !== "msg91" || !key) return { sent: false, provider: "none" };
+  // MSG91 expects the country code without '+'; Indian numbers default to 91.
+  const mobile = String(phone).replace(/[^\\d]/g, "");
+  const withCc = mobile.length === 10 ? `91${mobile}` : mobile;
+  try {
+    const res = await fetch(`${MSG91_ENDPOINT}?otp=${encodeURIComponent(code)}&mobile=${encodeURIComponent(withCc)}`, {
+      method: "POST",
+      headers: { authkey: key, "Content-Type": "application/json" },
+      body: JSON.stringify({ otp: code, mobile: withCc }),
+    });
+    if (!res.ok) {
+      console.error(JSON.stringify({ level: "error", msg: "sms_send_failed", provider: "msg91", status: res.status }));
+      return { sent: false, provider: "msg91" };
+    }
+    return { sent: true, provider: "msg91" };
+  } catch (err) {
+    console.error(JSON.stringify({ level: "error", msg: "sms_send_failed", provider: "msg91", error: String(err) }));
+    return { sent: false, provider: "msg91" };
+  }
+}
+
+app.post("/api/phone/request", rateLimitMiddleware, requireDbUser, wrap(async (req, res) => {
+  const { phone } = req.body || {};
+  const out = await domain.requestPhoneOtp(req.user.id, phone);
+  // SMS first (when configured); on provider miss the EMAIL fallback carries
+  // the code so the member is never stranded. Both paths are structured-logged.
+  const sms = await sendOtpSms(phone, out.code);
+  const email = req.user?.email || users[req.user.id]?.email || (await query(`SELECT email FROM app_users WHERE id=$1`, [req.user.id])).rows[0]?.email;
+  if (!sms.sent && email) {
+    sendEmail({
+      to: email,
+      subject: "Your MedicoMatch verification code",
+      text: `Your verification code is ${out.code}. It expires in 10 minutes. Enter it in the app to verify your number.`,
+    }).catch(() => {});
+  }
+  console.log(JSON.stringify({ level: "info", msg: "otp_delivery", provider: sms.sent ? "msg91" : "email_fallback", userId: req.user.id }));
+  const returnCode = process.env.NODE_ENV === "test" || process.env.NODE_ENV === "development";
+  res.json({ ok: true, expiresAt: out.expiresAt, channel: sms.sent ? "sms" : "email", ...(returnCode ? { code: out.code } : {}) });
+}));
+
+app.post("/api/phone/verify", rateLimitMiddleware, requireDbUser, wrap(async (req, res) => {
+  res.json(await domain.verifyPhoneOtp(req.user.id, req.body?.code));
+}));
+
+app.get("/api/phone/status", requireDbUser, wrap(async (req, res) => {
+  const r = await query(`SELECT phone, phone_verified FROM app_users WHERE id=$1`, [req.user.id]);
+  res.json({ phone: r.rows[0]?.phone ?? null, verified: Boolean(r.rows[0]?.phone_verified) });
+}));
+
+// P0-2 verification documents.
+app.post("/api/verification/documents", rateLimitMiddleware, requireDbUser, wrap(async (req, res) => {
+  const { docType, url } = req.body || {};
+  res.status(201).json(await domain.submitVerificationDoc(req.user.id, docType, url));
+}));
+
+app.get("/api/verification/me", requireDbUser, wrap(async (req, res) => {
+  res.json({ documents: await domain.listMyVerificationDocs(req.user.id) });
+}));
+
+// P0-5 daily matches for the signed-in member.
+app.get("/api/matches/daily", requireDbUser, wrap(async (req, res) => {
+  res.json({ matches: await domain.getDailyMatches(req.user.id, req.query.limit) });
+}));
+
+// P0-6 events (public list) + RSVP + admin create.
+// If a ticket parameter is present, pass through to the SSE stream handler below.
+app.get("/api/events", (req, res, next) => {
+  if (req.query.ticket) return next();
+  return wrap(async (req, res) => {
+    if (!dbEnabled) return res.status(503).json({ error: "Database not configured on this server." });
+    res.json({ events: await domain.listEvents() });
+  })(req, res, next);
+});
+
+app.post("/api/events", rateLimitMiddleware, requireDbUser, requireAdmin, wrap(async (req, res) => {
+  res.status(201).json(await domain.createEvent(req.user.id, req.body || {}));
+}));
+
+app.post("/api/events/:id/rsvp", rateLimitMiddleware, requireDbUser, wrap(async (req, res) => {
+  res.json(await domain.rsvpEvent(req.user.id, req.params.id));
+}));
+
+// P0-6 success stories (public approved list) + submit + admin approve.
+app.get("/api/stories", wrap(async (req, res) => {
+  if (!dbEnabled) return res.status(503).json({ error: "Database not configured on this server." });
+  res.json({ stories: await domain.listStories(true) });
+}));
+
+app.post("/api/stories", rateLimitMiddleware, requireDbUser, wrap(async (req, res) => {
+  res.status(201).json(await domain.submitStory(req.user.id, req.body || {}));
+}));
+
+// P0-10 Spotlight boost: paid-member perk (7-day window, rate-limited).
+app.post("/api/boost", rateLimitMiddleware, requireDbUser, wrap(async (req, res) => {
+  const sku = await domain.getActiveMembershipSku(req.user.id);
+  if (!sku) return res.status(402).json({ error: "Spotlight is a paid-member perk. Upgrade to boost your profile." });
+  res.json(await domain.grantBoost(req.user.id, 7));
+}));
+
+app.get("/api/boost", requireDbUser, wrap(async (req, res) => {
+  res.json(await domain.getBoost(req.user.id));
+}));
+
+// P0-10 coupon preview (applied for real at create-order).
+app.get("/api/coupons/validate", requireDbUser, wrap(async (req, res) => {
+  if (dbEnabled) {
+    const c = await domain.validateCoupon(String(req.query.code || ""));
+    if (!c) return res.status(404).json({ error: "Invalid or expired coupon." });
+    return res.json(c);
+  }
+  const code = String(req.query.code || "").trim().toUpperCase();
+  if (code === "WELCOME10") {
+    return res.json({ code: "WELCOME10", percentOff: 10 });
+  }
+  return res.status(404).json({ error: "Invalid or expired coupon." });
+}));
+
+// P0-7 read receipts.
+app.post("/api/channels/:id/read", rateLimitMiddleware, requireDbUser, wrap(async (req, res) => {
+  res.json(await domain.markMessagesRead(req.user.id, req.params.id));
+}));
+
+// P0-3 renewal reminders: admin-triggered + daily auto-run (see boot block).
+// Sends to subscriptions expiring within `days` (default 3).
+app.post("/api/admin/reminders/renewals", rateLimitMiddleware, requireDbUser, requireAdmin, wrap(async (req, res) => {
+  const rows = await domain.subscriptionsExpiring(req.body?.days ?? req.query.days ?? 3);
+  let sent = 0;
+  for (const s of rows) {
+    try {
+      await sendEmail({
+        to: s.email,
+        subject: "Your MedicoMatch membership renews soon",
+        text: `Your ${s.sku} membership ends on ${new Date(s.expiresAt).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" })}. Renew from your Account page to keep unlimited benefits.`,
+      });
+      await domain.markRenewalNotified(s.userId, s.sku);
+      sent++;
+    } catch { /* per-recipient failure must not abort the batch */ }
+  }
+  await domain.writeAudit(req.user.id, "reminders.renewals", "*", `sent=${sent} of ${rows.length}`);
+  res.json({ sent, total: rows.length });
+}));
+
+// P0-2/P0-8 admin moderation: verification queue + warn/strike ladder.
+app.get("/api/admin/verifications", requireDbUser, requireAdmin, wrap(async (req, res) => {
+  res.json({ documents: await domain.listPendingVerifications(String(req.query.status || "pending"), req.query.limit) });
+}));
+
+app.post("/api/admin/verifications/:id/review", rateLimitMiddleware, requireDbUser, requireAdmin, wrap(async (req, res) => {
+  res.json(await domain.reviewVerification(
+    req.user.id, req.params.id, req.body?.outcome, req.body?.note,
+    req.body?.registryChecked === true, req.body?.registryReference,
+  ));
+}));
+
+app.post("/api/admin/users/:id/warn", rateLimitMiddleware, requireDbUser, requireAdmin, wrap(async (req, res) => {
+  const out = await domain.warnUser(req.user.id, req.params.id, req.body?.reason);
+  if (out.autoSuspend) {
+    // 3rd strike: suspend canonically (same path as manual suspend).
+    const target = users[req.params.id];
+    if (target && !target.suspended) {
+      target.suspended = true;
+      target.tokenVersion = (target.tokenVersion ?? 0) + 1;
+      persistUsers();
+      if (dbEnabled) {
+        try { await query(`UPDATE app_users SET suspended = TRUE, token_version = token_version + 1 WHERE id=$1`, [target.id]); } catch {}
+      }
+      kickSse(target.id);
+    }
+  }
+  res.json(out);
+}));
+
+app.post("/api/admin/stories/:id/approve", rateLimitMiddleware, requireDbUser, requireAdmin, wrap(async (req, res) => {
+  res.json(await domain.approveStory(req.user.id, req.params.id, req.body?.approved !== false));
 }));
 
 // ---------------------------------------------------------------------------
@@ -1504,18 +2927,50 @@ app.post("/api/webrtc/signal", rateLimitMiddleware, requireDbUser, wrap(async (r
   if (!payload || typeof payload !== "object") {
     return res.status(400).json({ error: "A signal payload is required." });
   }
-  const ch = await domain.query(
-    `SELECT id FROM channels
-     WHERE ($1 IN (user_a, user_b)) AND ($2 IN (user_a, user_b))`,
+  // C2: domain.query / domain.publishToUser never existed (domain.mjs does not
+  // re-export them) — every signal 500'd. Use the db query + events hub directly.
+  const ch = await query(
+    `SELECT c.id FROM channels c
+     WHERE ($1 IN (c.user_a, c.user_b)) AND ($2 IN (c.user_a, c.user_b))
+       AND NOT EXISTS (
+         SELECT 1 FROM blocks b
+         WHERE (b.blocker_id = $1 AND b.blocked_id = $2)
+            OR (b.blocker_id = $2 AND b.blocked_id = $1)
+       )`,
     [req.user.id, toUserId]
   );
   if (ch.rowCount === 0) {
     return res.status(403).json({ error: "You are not connected to this user." });
   }
-  domain.publishToUser(toUserId, "webrtc", {
+  publishToUser(toUserId, "webrtc", {
     from: req.user.id,
     fromName: `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim(),
     payload,
+  });
+  res.json({ sent: true });
+}));
+
+// Chat typing indicator: same channel gate as messages; ephemeral SSE-only
+// (never persisted — a typing state has no durable value and would bloat the
+// notifications table). Rate-limited to keep a chatty client from flooding.
+app.post("/api/channels/:id/typing", rateLimitMiddleware, requireDbUser, wrap(async (req, res) => {
+  const ch = await query(
+    `SELECT CASE WHEN c.user_a = $2 THEN c.user_b ELSE c.user_a END AS other
+     FROM channels c WHERE c.id = $1 AND $2 IN (c.user_a, c.user_b)
+       AND NOT EXISTS (
+         SELECT 1 FROM blocks b
+         WHERE (b.blocker_id = c.user_a AND b.blocked_id = c.user_b)
+            OR (b.blocker_id = c.user_b AND b.blocked_id = c.user_a)
+       )`,
+    [req.params.id, req.user.id]
+  );
+  if (ch.rowCount === 0) {
+    return res.status(403).json({ error: "You are not connected to this user." });
+  }
+  publishToUser(ch.rows[0].other, "typing", {
+    channelId: req.params.id,
+    from: req.user.id,
+    fromName: `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim(),
   });
   res.json({ sent: true });
 }));
@@ -1545,6 +3000,51 @@ app.post("/api/notifications/read-all", rateLimitMiddleware, requireDbUser, wrap
 const SUPABASE_URL = (process.env.SUPABASE_URL || "").replace(/\/$/, "");
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || "";
 
+// Audit M-6: minimal JPEG EXIF/XMP stripper. EXIF (APP1 0xFFE1), XMP (APP1
+// 0xFFE1 with a different signature), and JFIF-thumbnail segments live in the
+// JPEG header; stripping them is enough to drop the GPS / camera serial /
+// timestamp metadata that phone-camera JPEGs carry by default. PNG and WebP
+// metadata isn't stripped here (the legacy data-URL path stores the bytes as
+// uploaded); for production, prefer Supabase object storage + a Worker-side
+// re-encode, which is what SUPABASE_URL is for.
+function stripJpegExif(bytes) {
+  // JPEG SOI is FF D8; we only operate on a buffer that starts that way.
+  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return bytes;
+  const out = [bytes.subarray(0, 2)];
+  let i = 2;
+  while (i < bytes.length) {
+    if (bytes[i] !== 0xff) break; // malformed; bail and return original
+    // Skip any fill bytes between markers (legal in JPEG).
+    while (i < bytes.length && bytes[i] === 0xff) i++;
+    if (i >= bytes.length) break;
+    const marker = bytes[i];
+    i++;
+    // Standalone markers without a length field.
+    if (marker === 0xd8 /* SOI */ || marker === 0xd9 /* EOI */ || (marker >= 0xd0 && marker <= 0xd7) /* RSTn */) {
+      out.push(bytes.subarray(i - 2, marker === 0xd8 ? i : i));
+      if (marker === 0xd9) break;
+      continue;
+    }
+    if (i + 2 > bytes.length) break;
+    const segLen = (bytes[i] << 8) | bytes[i + 1];
+    // APP1 (0xE1) is where EXIF + XMP live. Drop every APP segment to be safe
+    // — none of them are needed to render the image.
+    if (marker >= 0xe0 && marker <= 0xef) {
+      i += segLen;
+      continue;
+    }
+    // Keep the segment. Write the marker byte back then copy its payload.
+    out.push(bytes.subarray(i - 2, i + segLen));
+    i += segLen;
+    if (marker === 0xda) {
+      // SOS: the rest is compressed image data. Copy verbatim.
+      out.push(bytes.subarray(i));
+      break;
+    }
+  }
+  return Buffer.concat(out);
+}
+
 app.post("/api/me/photo", rateLimitMiddleware, requireDbUser, wrap(async (req, res) => {
   const dataUrl = String(req.body?.dataUrl || "");
   const m = /^data:(image\/(?:png|jpe?g|webp));base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl);
@@ -1552,7 +3052,13 @@ app.post("/api/me/photo", rateLimitMiddleware, requireDbUser, wrap(async (req, r
   if (dataUrl.length > 2 * 1024 * 1024) {
     return res.status(413).json({ error: "Image too large (max ~1.5 MB)." });
   }
-  let url = dataUrl;
+  let payload = Buffer.from(m[2], "base64");
+  // Audit M-6: drop EXIF/XMP/JFIF-thumbnail segments from JPEG uploads.
+  if (m[1] === "image/jpeg" || m[1] === "image/jpg") {
+    payload = stripJpegExif(payload);
+  }
+  const cleanDataUrl = `data:${m[1]};base64,${payload.toString("base64")}`;
+  let url = cleanDataUrl;
   if (SUPABASE_URL && SUPABASE_SERVICE_KEY) {
     const ext = m[1] === "image/png" ? "png" : m[1] === "image/webp" ? "webp" : "jpg";
     const objectPath = `${req.user.id}/${crypto.randomBytes(8).toString("hex")}.${ext}`;
@@ -1563,7 +3069,7 @@ app.post("/api/me/photo", rateLimitMiddleware, requireDbUser, wrap(async (req, r
         "Content-Type": m[1],
         "x-upsert": "true",
       },
-      body: Buffer.from(m[2], "base64"),
+      body: payload,
     });
     if (!up.ok) {
       console.error(JSON.stringify({ level: "error", msg: "photo_upload_failed", status: up.status }));
@@ -1571,7 +3077,31 @@ app.post("/api/me/photo", rateLimitMiddleware, requireDbUser, wrap(async (req, r
     }
     url = `${SUPABASE_URL}/storage/v1/object/public/profile-photos/${objectPath}`;
   }
-  res.json(await domain.setPrimaryPhoto(req.user.id, url));
+  res.json(await domain.addGalleryPhoto(req.user.id, url));
+}));
+
+// ---------------------------------------------------------------------------
+// Photo gallery (matrimony parity: multi-photo, orderable, cap + daily limit).
+// The first upload becomes primary automatically; set-primary/delete below.
+// ---------------------------------------------------------------------------
+app.get("/api/me/photos", requireDbUser, wrap(async (req, res) => {
+  res.json({ photos: await domain.listMyPhotos(req.user.id) });
+}));
+
+app.post("/api/me/photos/:id/primary", rateLimitMiddleware, requireDbUser, wrap(async (req, res) => {
+  // set-primary now UPDATES the existing row (id), not re-insert a duplicate.
+  res.json(await domain.setPrimaryPhoto(req.user.id, req.params.id));
+}));
+
+app.delete("/api/me/photos/:id", rateLimitMiddleware, requireDbUser, wrap(async (req, res) => {
+  res.json(await domain.deleteGalleryPhoto(req.user.id, req.params.id));
+}));
+
+// ---------------------------------------------------------------------------
+// "Who viewed my profile" — owner-only feed of distinct viewers.
+// ---------------------------------------------------------------------------
+app.get("/api/me/profile-views", requireDbUser, wrap(async (req, res) => {
+  res.json(await domain.listProfileViewers(req.user.id, req.query.limit));
 }));
 
 // ---------------------------------------------------------------------------
@@ -1617,10 +3147,11 @@ app.post("/api/admin/users/:id/demote-admin", requireAdmin, wrap(async (req, res
   if (!target) return res.status(404).json({ error: "User not found." });
   if (target.isRootAdmin) return res.status(400).json({ error: "Root admins are managed via ADMIN_EMAILS." });
   target.isAdmin = false;
+  target.tokenVersion = (target.tokenVersion || 0) + 1;
   persistUsers();
   invalidateAdminFlagCache(target.id);
   if (dbEnabled) {
-    await query(`UPDATE app_users SET is_admin = FALSE WHERE id = $1`, [target.id]).catch(() => {});
+    await query(`UPDATE app_users SET is_admin = FALSE, token_version = COALESCE(token_version, 0) + 1 WHERE id = $1`, [target.id]).catch(() => {});
   }
   await domain.writeAudit(req.user.id, "admin.demote", target.id);
   res.json({ isAdmin: false });
@@ -1651,12 +3182,33 @@ app.post("/api/admin/users/:id/suspend", requireAdmin, wrap(async (req, res) => 
   if (target.id === req.user.id) return res.status(400).json({ error: "You cannot suspend yourself." });
   // Role hierarchy: root accounts are env-managed and untouchable here;
   // regular admins need ROOT to suspend another admin.
-  if (target.isRootAdmin) return res.status(403).json({ error: "Root admins are managed via ADMIN_EMAILS." });
-  if ((target.isAdmin || target.isRootAdmin) && !req.isRootAdmin) {
+  const [targetIsAdmin, targetIsRootAdmin] = await resolveAdminFlags(target);
+  if (targetIsRootAdmin) return res.status(403).json({ error: "Root admins are managed via ADMIN_EMAILS." });
+  if ((targetIsAdmin || targetIsRootAdmin) && !req.isRootAdmin) {
     return res.status(403).json({ error: "Only root admins can suspend other admins." });
   }
   target.suspended = true;
+  // Audit H-10: bump the user's tokenVersion so EVERY session issued before
+  // this suspension dies immediately at verifySessionToken (defence in depth —
+  // the in-process check below is the fast path; tokenVersion is the durable
+  // backstop that survives a process restart).
+  target.tokenVersion = (target.tokenVersion ?? 0) + 1;
   persistUsers();
+  // Mirror to the DB so DB-backed admin suspensions revoke sessions too.
+  // M3: awaited — a fire-and-forget bump could be lost on shutdown and leave
+  // the DB mirror version behind the JSON canonical store.
+  if (dbEnabled) {
+    try {
+      await query(
+        `UPDATE app_users SET token_version = token_version + 1, suspended = TRUE WHERE id = $1`,
+        [target.id]
+      );
+    } catch (err) {
+      console.error(
+        JSON.stringify({ level: "error", msg: "suspend_token_version_failed", userId: target.id, error: String(err) })
+      );
+    }
+  }
   await domain.writeAudit(req.user.id, "user.suspend", target.id, String(req.body?.reason || "").slice(0, 300));
   kickSse(target.id); // drop their live stream immediately
   res.json({ suspended: true });
@@ -1667,12 +3219,26 @@ app.post("/api/admin/users/:id/unsuspend", requireAdmin, wrap(async (req, res) =
   if (!target) return res.status(404).json({ error: "User not found." });
   target.suspended = false;
   persistUsers();
+  if (dbEnabled) {
+    try {
+      await query(
+        `UPDATE app_users SET suspended = FALSE WHERE id = $1`,
+        [target.id]
+      );
+    } catch (err) {
+      console.error(
+        JSON.stringify({ level: "error", msg: "unsuspend_db_failed", userId: target.id, error: String(err) })
+      );
+    }
+  }
   await domain.writeAudit(req.user.id, "user.unsuspend", target.id);
   res.json({ suspended: false });
 }));
 
 app.get("/api/admin/profiles", requireDbUser, requireAdmin, wrap(async (req, res) => {
-  res.json({ profiles: await domain.adminListProfiles(req.query.q, Number(req.query.limit) || 50) });
+  const profiles = await domain.adminListProfiles(req.query.q, Number(req.query.limit) || 50);
+  await domain.writeAudit(req.user.id, "profiles.read", "*", `query=${req.query.q || ""} count=${profiles.length}`);
+  res.json({ profiles });
 }));
 
 app.patch("/api/admin/profiles/:id", rateLimitMiddleware, requireDbUser, requireAdmin, wrap(async (req, res) => {
@@ -1685,6 +3251,11 @@ app.get("/api/admin/payments", requireDbUser, requireAdmin, wrap(async (req, res
 
 app.get("/api/admin/audit", requireDbUser, requireAdmin, wrap(async (req, res) => {
   res.json({ audit: await domain.listAudit(Number(req.query.limit) || 100) });
+}));
+
+// Launch-gap fix #3: admin dashboard counts. One round-trip scalar-query.
+app.get("/api/admin/stats", requireDbUser, requireAdmin, wrap(async (req, res) => {
+  res.json({ stats: await domain.adminStats() });
 }));
 
 app.post("/api/admin/samples/hide-all", requireDbUser, requireAdmin, wrap(async (req, res) => {
@@ -1756,11 +3327,94 @@ async function main() {
     try {
       await migrate();
       console.log(JSON.stringify({ level: "info", msg: "migrations_applied" }));
+      await initEventsPubSub();
+      // Prune minute buckets after 15m but keep daily browse buckets (midnight)
+      // for 2 days: the browse-daily keys share this table.
+      query("DELETE FROM rate_limit_buckets WHERE window_start < NOW() - INTERVAL '2 days'").catch(() => {});
+      query("DELETE FROM rate_limit_buckets WHERE bucket_key NOT LIKE 'browse-daily:%' AND window_start < NOW() - INTERVAL '15 minutes'").catch(() => {});
+      setInterval(() => {
+        query("DELETE FROM rate_limit_buckets WHERE window_start < NOW() - INTERVAL '2 days'").catch(() => {});
+      }, 10 * 60 * 1000).unref();
     } catch (err) {
       console.error(
         JSON.stringify({ level: "error", msg: "migrations_failed", error: String(err) })
       );
       process.exit(1);
+    }
+    try {
+      const dbUsers = await query(
+        `SELECT id, email, first_name, last_name, specialty, degree, password_hash, salt, verified, token_version, created_at, is_admin, is_root_admin, suspended
+         FROM app_users`
+      );
+      for (const r of dbUsers.rows) {
+        users[r.id] = {
+          id: r.id,
+          email: r.email,
+          firstName: r.first_name || "",
+          lastName: r.last_name || "",
+          specialty: r.specialty || "",
+          degree: r.degree || "",
+          salt: r.salt || "",
+          hash: r.password_hash || "",
+          verified: Boolean(r.verified),
+          tokenVersion: r.token_version ?? 0,
+          createdAt: r.created_at ? new Date(r.created_at).toISOString() : new Date().toISOString(),
+          isAdmin: Boolean(r.is_admin),
+          isRootAdmin: Boolean(r.is_root_admin),
+          suspended: Boolean(r.suspended),
+        };
+      }
+      if (dbUsers.rowCount > 0) {
+        console.log(JSON.stringify({ level: "info", msg: "users_hydrated_from_db", count: dbUsers.rowCount }));
+      }
+    } catch (err) {
+      console.error(JSON.stringify({ level: "error", msg: "users_db_hydrate_failed", error: String(err) }));
+    }
+    // Item 13: bound the admin_audit_log table. The default cap is 12 months;
+    // override with ADMIN_AUDIT_RETENTION_DAYS for compliance (e.g. 7 years for
+    // financial services). Runs once at boot; not a hot loop.
+    const retentionDays = Math.max(
+      1,
+      Number(process.env.ADMIN_AUDIT_RETENTION_DAYS) || 365
+    );
+    try {
+      const r = await query(
+        `DELETE FROM admin_audit_log WHERE created_at < NOW() - make_interval(days => $1::int)`,
+        [retentionDays]
+      );
+      if (r.rowCount > 0) {
+        console.log(JSON.stringify({
+          level: "info",
+          msg: "audit_log_pruned",
+          rows: r.rowCount,
+          retentionDays,
+        }));
+      }
+    } catch (err) {
+      console.error(JSON.stringify({ level: "error", msg: "audit_prune_failed", error: String(err) }));
+    }
+    // M-NEW-3: bound the notifications table. Defaults to 90 days; override
+    // with NOTIFICATION_RETENTION_DAYS. Read receipts stay forever (audit log);
+    // the transient feed is what's pruned. Runs once at boot.
+    const notifRetentionDays = Math.max(
+      1,
+      Number(process.env.NOTIFICATION_RETENTION_DAYS) || 90
+    );
+    try {
+      const r = await query(
+        `DELETE FROM notifications WHERE created_at < NOW() - make_interval(days => $1::int)`,
+        [notifRetentionDays]
+      );
+      if (r.rowCount > 0) {
+        console.log(JSON.stringify({
+          level: "info",
+          msg: "notifications_pruned",
+          rows: r.rowCount,
+          retentionDays: notifRetentionDays,
+        }));
+      }
+    } catch (err) {
+      console.error(JSON.stringify({ level: "error", msg: "notifications_prune_failed", error: String(err) }));
     }
   }
 
@@ -1798,7 +3452,69 @@ async function main() {
     console.log(JSON.stringify({ level: "info", msg: "root_admins_promoted", count: adminEmails.length }));
   }
 
+  // P0-3/P0-5 background digest (single-instance): daily renewal reminders.
+  // Best practice: best-effort, unref'd, DB-mode only; failures never crash boot.
+  // Operators needing multi-replica fanout should move this to a job runner.
+  if (dbEnabled && process.env.DISABLE_DIGEST !== "true") {
+    const runRenewalDigest = async () => {
+      try {
+        const rows = await domain.subscriptionsExpiring(3);
+        for (const s of rows.slice(0, 200)) {
+          try {
+            await sendEmail({
+              to: s.email,
+              subject: "Your MedicoMatch membership ends soon",
+              text: `Your ${s.sku} membership ends on ${new Date(s.expiresAt).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" })}. Renew from your Account page to keep your benefits.`,
+            });
+            await domain.markRenewalNotified(s.userId, s.sku);
+          } catch { /* per-recipient failure is non-fatal */ }
+        }
+        if (rows.length > 0) console.log(JSON.stringify({ level: "info", msg: "renewal_digest_sent", total: rows.length }));
+      } catch (err) {
+        console.error(JSON.stringify({ level: "error", msg: "renewal_digest_failed", error: String(err) }));
+      }
+    };
+    setImmediate(runRenewalDigest);
+    setInterval(runRenewalDigest, 24 * 60 * 60 * 1000).unref();
+
+    // Engagement digest (matrimony conversion lever): users who haven't logged
+    // in for 24h+ get ONE daily email with their unread social signals (new
+    // views, interests, messages). Capped; per-recipient failure is non-fatal.
+    const runEngagementDigest = async () => {
+      try {
+        const r = await query(
+          `SELECT u.id, u.email,
+                  (SELECT COUNT(*)::int FROM notifications n WHERE n.user_id = u.id AND n.read_at IS NULL AND n.created_at > NOW() - INTERVAL '2 days') AS unread,
+                  (SELECT COUNT(*)::int FROM profile_views v JOIN profiles p ON p.id = v.profile_id WHERE p.user_id = u.id AND v.viewed_on > CURRENT_DATE - 2) AS views
+           FROM app_users u
+           WHERE u.verified = TRUE
+             AND u.suspended = FALSE
+             AND EXISTS (SELECT 1 FROM profiles p WHERE p.user_id = u.id AND p.last_active_at < NOW() - INTERVAL '24 hours')
+             AND (u.digest_sent_at IS NULL OR u.digest_sent_at < NOW() - INTERVAL '20 hours')
+           LIMIT 200`
+        );
+        for (const row of r.rows) {
+          try {
+            if ((row.unread ?? 0) + (row.views ?? 0) === 0) continue;
+            await sendEmail({
+              to: row.email,
+              subject: "You have new activity on MedicoMatch",
+              text: `Namaste! Since your last visit: ${row.views ?? 0} new profile view(s) and ${row.unread ?? 0} unread notification(s) (interests, messages, matches). Sign in to see who's waiting: ${APP_URL}/matches`,
+            });
+            await query(`UPDATE app_users SET digest_sent_at = NOW() WHERE id = $1`, [row.id]);
+          } catch { /* per-recipient failure is non-fatal */ }
+        }
+        if (r.rows.length > 0) console.log(JSON.stringify({ level: "info", msg: "engagement_digest_sent", total: r.rows.length }));
+      } catch (err) {
+        console.error(JSON.stringify({ level: "error", msg: "engagement_digest_failed", error: String(err) }));
+      }
+    };
+    setImmediate(runEngagementDigest);
+    setInterval(runEngagementDigest, 24 * 60 * 60 * 1000).unref();
+  }
+
   app.listen(PORT, () => {
+    markReady();
     console.log(
       JSON.stringify({
         level: "info",

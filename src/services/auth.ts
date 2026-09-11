@@ -3,6 +3,7 @@
 // app falls back to the local demo session (clearly a demo build).
 
 import { isCheckoutServerConfigured, getApiBaseUrl as getBaseUrl } from '@/services/checkout';
+import { obtainPowSolution } from '@/lib/pow';
 
 export interface ServerUser {
   id: string;
@@ -17,13 +18,20 @@ export interface ServerUser {
 export interface AuthResult {
   ok: boolean;
   status: number;
-  token?: string;
+  /** Bearer for explicit mobile/API opt-in; null/undefined for cookie-first browsers. */
+  token?: string | null;
+  csrfToken?: string;
   user?: ServerUser;
   message?: string;
   error?: string;
 }
 
 export const isAuthServerConfigured = isCheckoutServerConfigured;
+
+// Audit M-12 / item 1: every fetch the web SPA makes must carry credentials
+// so the httpOnly session cookie is attached. The Bearer path is preserved
+// for the mobile app / API clients.
+const credentials = 'include';
 
 const json = async (res: Response) => {
   try {
@@ -33,9 +41,27 @@ const json = async (res: Response) => {
   }
 };
 
+// Audit M-12: read the CSRF cookie set by /api/csrf. Returns null on
+// non-cookie contexts (the cookie is non-httpOnly so this works in the SPA).
+const readCsrfCookie = (): string | null => {
+  if (typeof document === 'undefined') return null;
+  const raw = document.cookie || '';
+  for (const part of raw.split(/;\s*/)) {
+    const eq = part.indexOf('=');
+    if (eq > 0 && part.slice(0, eq) === 'mm_csrf') return part.slice(eq + 1);
+  }
+  return null;
+};
+
+const csrfHeaders = (): Record<string, string> => {
+  const t = readCsrfCookie();
+  return t ? { 'X-CSRF-Token': t } : {};
+};
+
 const baseHeaders = (token?: string): Record<string, string> => ({
   'Content-Type': 'application/json',
   ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  ...csrfHeaders(),
 });
 
 /** Register a real account on the server. */
@@ -48,11 +74,13 @@ export const registerWithServer = async (payload: {
   degree?: string;
 }): Promise<AuthResult> => {
   let res: Response;
+  const pow = await obtainPowSolution(getBaseUrl(), payload.email);
   try {
     res = await fetch(`${getBaseUrl()}/api/auth/register`, {
       method: 'POST',
+      credentials,
       headers: baseHeaders(),
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ ...payload, ...pow, csrfToken: readCsrfCookie() }),
     });
   } catch {
     return { ok: false, status: 0, error: 'Could not reach the server.' };
@@ -68,15 +96,16 @@ export const loginWithServer = async (email: string, password: string): Promise<
   try {
     res = await fetch(`${getBaseUrl()}/api/auth/login`, {
       method: 'POST',
+      credentials,
       headers: baseHeaders(),
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify({ email, password, csrfToken: readCsrfCookie() }),
     });
   } catch {
     return { ok: false, status: 0, error: 'Could not reach the server.' };
   }
   const body = await json(res);
   if (!res.ok) return { ok: false, status: res.status, error: body?.error || 'Invalid email or password.' };
-  return { ok: true, status: res.status, token: body.token, user: body.user };
+  return { ok: true, status: res.status, token: body.token, csrfToken: body.csrfToken, user: body.user };
 };
 
 export interface MeResult {
@@ -88,19 +117,17 @@ export interface MeResult {
 }
 
 /**
- * Validate a session token; also returns the server-side active plan.
- *
- * Audit L7: a network failure (server unreachable / offline) is intentionally
- * fail-open — we keep the session rather than logging the user out on a
- * transient blip. That is safe because every real API request is re-checked
- * server-side anyway (suspension/revocation is enforced on each call, not just
- * this load-time check). A definitive server rejection (4xx) still returns
- * `valid:false`. The `source` field makes the distinction explicit.
+ * Validate the current session. With no token argument, the httpOnly cookie
+ * (set by the server on login) carries the authentication. Audit M-12 / item 1:
+ * the SPA no longer needs a Bearer token in localStorage.
  */
-export const serverMe = async (token: string): Promise<MeResult> => {
+export const serverMe = async (token?: string): Promise<MeResult> => {
   let res: Response;
   try {
-    res = await fetch(`${getBaseUrl()}/api/auth/me`, { headers: baseHeaders(token) });
+    res = await fetch(`${getBaseUrl()}/api/auth/me`, {
+      credentials,
+      headers: token ? baseHeaders(token) : { ...csrfHeaders() },
+    });
   } catch {
     // Network failure: cannot verify — keep the session (offline grace window),
     // but be explicit that this is an offline opinion, not a server verdict.
@@ -117,25 +144,28 @@ export const verifyEmail = async (token: string): Promise<AuthResult> => {
   try {
     res = await fetch(getBaseUrl() + "/api/auth/verify-email", {
       method: 'POST',
+      credentials,
       headers: baseHeaders(),
-      body: JSON.stringify({ token }),
+      body: JSON.stringify({ token, csrfToken: readCsrfCookie() }),
     });
   } catch {
     return { ok: false, status: 0, error: 'Could not reach the server.' };
   }
   const body = await json(res);
   if (!res.ok) return { ok: false, status: res.status, error: body?.error || 'Verification failed.' };
-  return { ok: true, status: res.status, token: body.token, user: body.user };
+  return { ok: true, status: res.status, token: body.token, csrfToken: body.csrfToken, user: body.user };
 };
 
 /** Request a password reset link (generic response — no enumeration). */
 export const forgotPassword = async (email: string): Promise<AuthResult> => {
   let res: Response;
+  const pow = await obtainPowSolution(getBaseUrl(), email);
   try {
     res = await fetch(getBaseUrl() + "/api/auth/forgot-password", {
       method: 'POST',
+      credentials,
       headers: baseHeaders(),
-      body: JSON.stringify({ email }),
+      body: JSON.stringify({ email, ...pow, csrfToken: readCsrfCookie() }),
     });
   } catch {
     return { ok: false, status: 0, error: 'Could not reach the server.' };
@@ -151,8 +181,9 @@ export const resetPassword = async (token: string, password: string): Promise<Au
   try {
     res = await fetch(getBaseUrl() + "/api/auth/reset-password", {
       method: 'POST',
+      credentials,
       headers: baseHeaders(),
-      body: JSON.stringify({ token, password }),
+      body: JSON.stringify({ token, password, csrfToken: readCsrfCookie() }),
     });
   } catch {
     return { ok: false, status: 0, error: 'Could not reach the server.' };
@@ -167,6 +198,9 @@ export const resetPassword = async (token: string, password: string): Promise<Au
  * and invalidates every existing session). Requires a real server session.
  */
 export const changePassword = async (currentPassword: string, newPassword: string): Promise<AuthResult> => {
+  // Cookie-first: the web SPA authenticates via httpOnly mm_session (token
+  // typically absent from localStorage). Fall back to Bearer when present for
+  // mobile/API clients. Never 401 here — let the server decide.
   let token: string | undefined;
   try {
     const raw = localStorage.getItem('mm:authSession');
@@ -175,14 +209,14 @@ export const changePassword = async (currentPassword: string, newPassword: strin
   } catch {
     token = undefined;
   }
-  if (!token) return { ok: false, status: 401, error: 'Sign in first.' };
 
   let res: Response;
   try {
     res = await fetch(`${getBaseUrl()}/api/auth/change-password`, {
       method: 'POST',
+      credentials,
       headers: baseHeaders(token),
-      body: JSON.stringify({ currentPassword, newPassword }),
+      body: JSON.stringify({ currentPassword, newPassword, csrfToken: readCsrfCookie() }),
     });
   } catch {
     return { ok: false, status: 0, error: 'Could not reach the server.' };

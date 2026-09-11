@@ -37,6 +37,11 @@ export interface MatchSearchCriteria {
   excludeSameGotra?: boolean;
   minGunas?: number;
   color?: string;
+  // P0-4 family depth.
+  familyType?: string;
+  familyStatus?: string;
+  incomeBand?: string;
+  diet?: string;
 }
 
 export const useMatches = (initialSearch?: MatchSearchCriteria) => {
@@ -93,7 +98,7 @@ export const useMatches = (initialSearch?: MatchSearchCriteria) => {
         name: p.name.replace(/^Dr\.\s*/i, ''),
         age: p.age ?? 30,
         specialty: p.specialty || 'Physician',
-        degree: p.degree || 'MBBS',
+        degree: p.degree || '',
         hospital: p.hospital || '',
         city: p.city || '',
         state: p.state || '',
@@ -115,11 +120,38 @@ export const useMatches = (initialSearch?: MatchSearchCriteria) => {
         manglik: p.manglik || undefined,
         kundaliGunas: p.kundaliGunas ?? undefined,
         isVerified: p.isVerified,
+        // P0-4 family depth (extra props tolerated via cast).
+        familyType: (p as unknown as Record<string, string>).familyType,
+        familyStatus: (p as unknown as Record<string, string>).familyStatus,
+        incomeBand: (p as unknown as Record<string, string>).incomeBand,
+        diet: (p as unknown as Record<string, string>).diet,
       } as Doctor)));
     }).catch(() => {});
     return () => { cancelled = true; };
     // Refetch for whichever user is signed in; reset serverPool on identity
     // change via the wired branch above (audit H6/M18).
+  }, [sessionKey]);
+  // P0-5 daily picks: server-ranked (boosted + verified first).
+  useEffect(() => {
+    if (!hasServerSession()) { setDailyPicks([]); return; }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { dailyMatches } = await import('@/services/api');
+        const rows = await dailyMatches(6);
+        if (!rows || cancelled) return;
+        setDailyPicks(rows.map((p) => ({
+          id: p.id, name: p.name.replace(/^Dr\.\s*/i, ''), age: p.age ?? 30,
+          specialty: p.specialty || 'Physician', degree: p.degree || '',
+          hospital: p.hospital || '', city: p.city || '', state: p.state || '',
+          country: p.country || 'India', imageUrl: p.imageUrl || localAvatar(p.name),
+          matchPercentage: p.kundaliGunas ?? 75, interests: p.interests || [],
+          isOnline: p.isOnline, sexualOrientation: p.sexualOrientation || 'Straight',
+          isVerified: p.isVerified,
+        } as Doctor)));
+      } catch { /* daily rail is optional */ }
+    })();
+    return () => { cancelled = true; };
   }, [sessionKey]);
   const [searchTerm, setSearchTerm] = useState('');
   const [minAge, setMinAge] = useState<number[]>([25]);
@@ -152,6 +184,13 @@ export const useMatches = (initialSearch?: MatchSearchCriteria) => {
   const [excludeSameGotra, setExcludeSameGotra] = useState<boolean>(false);
   const [minGunas, setMinGunas] = useState<number>(0);
   const [selectedColor, setSelectedColor] = useState<string>('');
+  // P0-4 family depth filters.
+  const [selectedFamilyType, setSelectedFamilyType] = useState<string>('No preference');
+  const [selectedFamilyStatus, setSelectedFamilyStatus] = useState<string>('No preference');
+  const [selectedIncomeBand, setSelectedIncomeBand] = useState<string>('No preference');
+  const [selectedDiet, setSelectedDiet] = useState<string>('No preference');
+  // P0-5 daily picks (server-ranked) shown above the grid when wired.
+  const [dailyPicks, setDailyPicks] = useState<Doctor[]>([]);
   const [availableStates, setAvailableStates] = useState<{value: string, label: string}[]>([]);
   const [availableCities, setAvailableCities] = useState<{value: string, label: string}[]>([]);
 
@@ -213,6 +252,11 @@ export const useMatches = (initialSearch?: MatchSearchCriteria) => {
     setExcludeSameGotra(initialSearch.excludeSameGotra ?? false);
     setMinGunas(initialSearch.minGunas ?? 0);
     setSelectedColor(initialSearch.color ?? '');
+    // P0-4 family depth from Search redirect.
+    setSelectedFamilyType(initialSearch.familyType ?? 'No preference');
+    setSelectedFamilyStatus(initialSearch.familyStatus ?? 'No preference');
+    setSelectedIncomeBand(initialSearch.incomeBand ?? 'No preference');
+    setSelectedDiet(initialSearch.diet ?? 'No preference');
     applyFilters(initialSearch, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -250,6 +294,10 @@ export const useMatches = (initialSearch?: MatchSearchCriteria) => {
       excludeSameGotra,
       minGunas,
       color: selectedColor,
+      familyType: selectedFamilyType,
+      familyStatus: selectedFamilyStatus,
+      incomeBand: selectedIncomeBand,
+      diet: selectedDiet,
       ...overrides,
     };
 
@@ -276,7 +324,7 @@ export const useMatches = (initialSearch?: MatchSearchCriteria) => {
           name: p.name,
           age: 30,
           specialty: p.specialty,
-          degree: p.degree || 'MBBS',
+          degree: p.degree || '',
           hospital: p.hospital || '—',
           city: parts[0] || '—',
           state: parts[1] || '',
@@ -350,12 +398,19 @@ export const useMatches = (initialSearch?: MatchSearchCriteria) => {
         ? true
         : ((doctor.kundaliGunas ?? 0) >= criteria.minGunas);
       const matchesColor = !criteria.color || (doctor.skinTone !== undefined && doctor.skinTone === criteria.color);
+      // P0-4 family second pass (server already filtered single-selects).
+      const fam = (doctor as unknown as Record<string, string | undefined>);
+      const matchesFamilyType = !criteria.familyType || criteria.familyType === 'No preference' || (fam.familyType !== undefined && fam.familyType.toLowerCase() === criteria.familyType.toLowerCase());
+      const matchesFamilyStatus = !criteria.familyStatus || criteria.familyStatus === 'No preference' || (fam.familyStatus !== undefined && fam.familyStatus.toLowerCase() === criteria.familyStatus.toLowerCase());
+      const matchesIncome = !criteria.incomeBand || criteria.incomeBand === 'No preference' || (fam.incomeBand !== undefined && fam.incomeBand.toLowerCase() === criteria.incomeBand.toLowerCase());
+      const matchesDiet = !criteria.diet || criteria.diet === 'No preference' || (fam.diet !== undefined && fam.diet.toLowerCase() === criteria.diet.toLowerCase());
 
       return matchesSearch && matchesUsername && matchesKeyword && matchesAge &&
              matchesSpecialty && matchesDegree && matchesOnlineStatus && matchesCountry &&
              matchesState && matchesCity && matchesOrientation &&
              matchesEthnicity && matchesReligion && matchesCaste && matchesSubcaste && matchesGotra &&
-             matchesGotraExclusion && matchesMotherTongue && matchesGunas && matchesColor;
+             matchesGotraExclusion && matchesMotherTongue && matchesGunas && matchesColor &&
+             matchesFamilyType && matchesFamilyStatus && matchesIncome && matchesDiet;
     });
 
     setFilteredDoctors(filtered);
@@ -380,12 +435,33 @@ export const useMatches = (initialSearch?: MatchSearchCriteria) => {
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
     if (hasServerSession()) {
+      // H1: push Shaadi-style criteria to SQL instead of fetching 200
+      // unfiltered rows. Single-select/ scalar filters go server-side;
+      // multi-select + derived rules (degrees, orientation[], exclusion)
+      // stay client-side in applyFilters() below.
+      const singleReligion = selectedReligion && selectedReligion !== 'No preference' ? selectedReligion : undefined;
+      const singleCaste = selectedCaste && selectedCaste !== 'No preference' ? selectedCaste : undefined;
+      const singleGotra = selectedGotra && selectedGotra !== 'No preference' ? selectedGotra : undefined;
+      const singleMotherTongue = selectedMotherTongue.length === 1 ? selectedMotherTongue[0] : undefined;
+      const singleOrientation = selectedOrientation.length === 1 ? selectedOrientation[0] : undefined;
+      const singleEthnicity = selectedEthnicity.length === 1 ? selectedEthnicity[0] : undefined;
       const criteria = {
         q: searchTerm || usernameSearch || keywordSearch || undefined,
         city: selectedCity && selectedCity !== 'All India' ? selectedCity : undefined,
         specialty: specialties[0],
         minAge: minAge[0],
         maxAge: maxAge[0],
+        religion: singleReligion,
+        caste: singleCaste,
+        gotra: singleGotra,
+        motherTongue: singleMotherTongue,
+        orientation: singleOrientation,
+        ethnicity: singleEthnicity,
+        minGunas: minGunas || undefined,
+        familyType: selectedFamilyType !== 'No preference' ? selectedFamilyType : undefined,
+        familyStatus: selectedFamilyStatus !== 'No preference' ? selectedFamilyStatus : undefined,
+        incomeBand: selectedIncomeBand !== 'No preference' ? selectedIncomeBand : undefined,
+        diet: selectedDiet !== 'No preference' ? selectedDiet : undefined,
         limit: 200,
       };
       void browseProfiles(criteria).then((rows) => {
@@ -395,7 +471,7 @@ export const useMatches = (initialSearch?: MatchSearchCriteria) => {
           name: p.name.replace(/^Dr\.\s*/i, ''),
           age: p.age ?? 30,
           specialty: p.specialty || 'Physician',
-          degree: p.degree || 'MBBS',
+          degree: p.degree || '',
           hospital: p.hospital || '',
           city: p.city || '',
           state: p.state || '',
@@ -417,6 +493,10 @@ export const useMatches = (initialSearch?: MatchSearchCriteria) => {
           manglik: p.manglik || undefined,
           kundaliGunas: p.kundaliGunas ?? undefined,
           isVerified: p.isVerified,
+          familyType: (p as unknown as Record<string, string>).familyType,
+          familyStatus: (p as unknown as Record<string, string>).familyStatus,
+          incomeBand: (p as unknown as Record<string, string>).incomeBand,
+          diet: (p as unknown as Record<string, string>).diet,
         } as Doctor)));
       }).catch(() => {});
     }
@@ -425,6 +505,10 @@ export const useMatches = (initialSearch?: MatchSearchCriteria) => {
 
   const handleReset = () => {
     setSearchTerm('');
+    setSelectedFamilyType('No preference');
+    setSelectedFamilyStatus('No preference');
+    setSelectedIncomeBand('No preference');
+    setSelectedDiet('No preference');
     setMinAge([25]);
     setMaxAge([45]);
     setSpecialties([]);
@@ -572,6 +656,10 @@ export const useMatches = (initialSearch?: MatchSearchCriteria) => {
       color: selectedColor,
       usernameSearch,
       keywordSearch,
+      familyType: selectedFamilyType,
+      familyStatus: selectedFamilyStatus,
+      incomeBand: selectedIncomeBand,
+      diet: selectedDiet,
     };
 
     if (editingSavedSearchId) {
@@ -616,6 +704,10 @@ export const useMatches = (initialSearch?: MatchSearchCriteria) => {
     setSelectedColor((search as SavedSearch).color ?? '');
     setUsernameSearch((search as SavedSearch).usernameSearch ?? '');
     setKeywordSearch((search as SavedSearch).keywordSearch ?? '');
+    setSelectedFamilyType((search as SavedSearch).familyType ?? 'No preference');
+    setSelectedFamilyStatus((search as SavedSearch).familyStatus ?? 'No preference');
+    setSelectedIncomeBand((search as SavedSearch).incomeBand ?? 'No preference');
+    setSelectedDiet((search as SavedSearch).diet ?? 'No preference');
     setSelectedSavedSearch(searchId);
 
     applyFilters(
@@ -642,6 +734,10 @@ export const useMatches = (initialSearch?: MatchSearchCriteria) => {
         excludeSameGotra: (search as SavedSearch).excludeSameGotra ?? false,
         minGunas: (search as SavedSearch).minGunas ?? 0,
         color: (search as SavedSearch).color ?? '',
+        familyType: (search as SavedSearch).familyType ?? 'No preference',
+        familyStatus: (search as SavedSearch).familyStatus ?? 'No preference',
+        incomeBand: (search as SavedSearch).incomeBand ?? 'No preference',
+        diet: (search as SavedSearch).diet ?? 'No preference',
       },
       true
     );
@@ -679,6 +775,10 @@ export const useMatches = (initialSearch?: MatchSearchCriteria) => {
     setSelectedColor((search as SavedSearch).color ?? '');
     setUsernameSearch((search as SavedSearch).usernameSearch ?? '');
     setKeywordSearch((search as SavedSearch).keywordSearch ?? '');
+    setSelectedFamilyType((search as SavedSearch).familyType ?? 'No preference');
+    setSelectedFamilyStatus((search as SavedSearch).familyStatus ?? 'No preference');
+    setSelectedIncomeBand((search as SavedSearch).incomeBand ?? 'No preference');
+    setSelectedDiet((search as SavedSearch).diet ?? 'No preference');
     
     toast({
       title: "Edit saved search",
@@ -822,6 +922,15 @@ export const useMatches = (initialSearch?: MatchSearchCriteria) => {
     setMinGunas,
     selectedColor,
     setSelectedColor,
+    selectedFamilyType,
+    setSelectedFamilyType,
+    selectedFamilyStatus,
+    setSelectedFamilyStatus,
+    selectedIncomeBand,
+    setSelectedIncomeBand,
+    selectedDiet,
+    setSelectedDiet,
+    dailyPicks,
     availableStates,
     availableCities,
     handleSearch,

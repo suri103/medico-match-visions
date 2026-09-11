@@ -3,8 +3,9 @@ import React from 'react';
 import NavItem from './NavItem';
 import { 
   Heart, User, Star, Video, MessageSquare, LogOut,
-  CreditCard, HelpCircle, Calendar, Users, Settings, UsersRound, Bookmark
+  CreditCard, HelpCircle, Calendar, Users, Settings, UsersRound, Bookmark, Sparkles
 } from 'lucide-react';
+import { astrologyEnabled } from '@/lib/features';
 import { useLocation } from 'react-router-dom';
 
 interface MobileNavProps {
@@ -155,13 +156,24 @@ const MobileNav: React.FC<MobileNavProps> = ({ isOpen, onItemClick, onSignOut })
               className="flex items-center justify-start space-x-2 text-xs sm:text-sm h-10 px-3 rounded-xl"
               iconSize={16}
             />
+            {astrologyEnabled && (
+              <NavItem 
+                path="/astrology" 
+                icon={Sparkles} 
+                label="Astrology" 
+                isActive={isActive('/astrology')} 
+                onClick={onItemClick}
+                className="flex items-center justify-start space-x-2 text-xs sm:text-sm h-10 px-3 rounded-xl"
+                iconSize={16}
+              />
+            )}
             <NavItem 
               path="/plan" 
               icon={CreditCard} 
               label="Membership Plan" 
               isActive={isActive('/plan')} 
               onClick={onItemClick}
-              className="flex items-center justify-start space-x-2 text-xs sm:text-sm h-10 px-3 rounded-xl col-span-2"
+              className={`flex items-center justify-start space-x-2 text-xs sm:text-sm h-10 px-3 rounded-xl ${astrologyEnabled ? '' : 'col-span-2'}`}
               iconSize={16}
             />
           </div>

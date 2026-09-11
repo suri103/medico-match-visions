@@ -82,6 +82,11 @@ export interface SavedSearch {
   color: string;
   usernameSearch: string;
   keywordSearch: string;
+  // P0-4 family depth.
+  familyType?: string;
+  familyStatus?: string;
+  incomeBand?: string;
+  diet?: string;
 }
 
 export interface LocationOption {

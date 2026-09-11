@@ -71,6 +71,11 @@ const Search = () => {
   const [excludeSameGotra, setExcludeSameGotra] = useState<boolean>(false);
   const [minGunas, setMinGunas] = useState<number>(0);
   const [selectedColor, setSelectedColor] = useState<string>('');
+  // P0-4 family depth.
+  const [selectedFamilyType, setSelectedFamilyType] = useState<string>('No preference');
+  const [selectedFamilyStatus, setSelectedFamilyStatus] = useState<string>('No preference');
+  const [selectedIncomeBand, setSelectedIncomeBand] = useState<string>('No preference');
+  const [selectedDiet, setSelectedDiet] = useState<string>('No preference');
 
   const handleMotherTongueChange = (lang: string) => {
     setSelectedMotherTongue(prev =>
@@ -111,6 +116,11 @@ const Search = () => {
     if (excludeSameGotra) params.set('nosamegotra', '1');
     if (minGunas) params.set('gunas', String(minGunas));
     if (selectedColor) params.set('color', selectedColor);
+    // P0-4 family depth.
+    if (selectedFamilyType !== 'No preference') params.set('familyType', selectedFamilyType);
+    if (selectedFamilyStatus !== 'No preference') params.set('familyStatus', selectedFamilyStatus);
+    if (selectedIncomeBand !== 'No preference') params.set('incomeBand', selectedIncomeBand);
+    if (selectedDiet !== 'No preference') params.set('diet', selectedDiet);
     toast({ title: "Search criteria applied", description: "Navigating to matches with your search criteria" });
     navigate(`/matches?${params.toString()}`, {
       state: {
@@ -121,6 +131,8 @@ const Search = () => {
           religion: selectedReligion, caste: selectedCaste, cast: selectedCaste,
           subcaste: selectedSubcaste, gotra: selectedGotra, motherTongue: selectedMotherTongue,
           excludeSameGotra, minGunas, color: selectedColor,
+          familyType: selectedFamilyType, familyStatus: selectedFamilyStatus,
+          incomeBand: selectedIncomeBand, diet: selectedDiet,
         },
       },
     });
@@ -146,6 +158,10 @@ const Search = () => {
     setExcludeSameGotra(false);
     setMinGunas(0);
     setSelectedColor('');
+    setSelectedFamilyType('No preference');
+    setSelectedFamilyStatus('No preference');
+    setSelectedIncomeBand('No preference');
+    setSelectedDiet('No preference');
     setUsernameSearch('');
     setKeywordSearch('');
     
@@ -199,6 +215,10 @@ const Search = () => {
       color: selectedColor,
       usernameSearch,
       keywordSearch,
+      familyType: selectedFamilyType,
+      familyStatus: selectedFamilyStatus,
+      incomeBand: selectedIncomeBand,
+      diet: selectedDiet,
     };
 
     if (editingSavedSearchId) {
@@ -241,6 +261,10 @@ const Search = () => {
     setExcludeSameGotra(search.excludeSameGotra ?? false);
     setMinGunas(search.minGunas ?? 0);
     setSelectedColor(search.color ?? '');
+    setSelectedFamilyType(search.familyType ?? 'No preference');
+    setSelectedFamilyStatus(search.familyStatus ?? 'No preference');
+    setSelectedIncomeBand(search.incomeBand ?? 'No preference');
+    setSelectedDiet(search.diet ?? 'No preference');
     setUsernameSearch(search.usernameSearch ?? '');
     setKeywordSearch(search.keywordSearch ?? '');
     setSelectedSavedSearch(searchId);
@@ -276,6 +300,10 @@ const Search = () => {
     setExcludeSameGotra(search.excludeSameGotra ?? false);
     setMinGunas(search.minGunas ?? 0);
     setSelectedColor(search.color ?? '');
+    setSelectedFamilyType(search.familyType ?? 'No preference');
+    setSelectedFamilyStatus(search.familyStatus ?? 'No preference');
+    setSelectedIncomeBand(search.incomeBand ?? 'No preference');
+    setSelectedDiet(search.diet ?? 'No preference');
     setUsernameSearch(search.usernameSearch ?? '');
     setKeywordSearch(search.keywordSearch ?? '');
     
@@ -755,8 +783,8 @@ const Search = () => {
                           
                           <div>
                             <Label className="mb-2 block">Skin Tone</Label>
-                            <Select 
-                              value={selectedColor || "any_color"} 
+                            <Select
+                              value={selectedColor || "any_color"}
                               onValueChange={(value) => setSelectedColor(value === "any_color" ? "" : value)}
                             >
                               <SelectTrigger id="color">
@@ -771,6 +799,26 @@ const Search = () => {
                                 ))}
                               </SelectContent>
                             </Select>
+                          </div>
+                          {/* P0-4 family depth filters. */}
+                          <div className="grid grid-cols-2 gap-3 pt-1">
+                            {[
+                              { label: 'Family Type', value: selectedFamilyType, set: setSelectedFamilyType, opts: ['Joint', 'Nuclear', 'Extended'] },
+                              { label: 'Family Status', value: selectedFamilyStatus, set: setSelectedFamilyStatus, opts: ['Middle Class', 'Upper Middle Class', 'Affluent'] },
+                              { label: 'Income', value: selectedIncomeBand, set: setSelectedIncomeBand, opts: ['Under ₹10L', '₹10–25L', '₹25–50L', '₹50L–1Cr', '₹1Cr+'] },
+                              { label: 'Diet', value: selectedDiet, set: setSelectedDiet, opts: ['Vegetarian', 'Non-Vegetarian', 'Eggetarian', 'Vegan'] },
+                            ].map((f) => (
+                              <div key={f.label}>
+                                <Label className="mb-2 block">{f.label}</Label>
+                                <Select value={f.value} onValueChange={f.set}>
+                                  <SelectTrigger><SelectValue placeholder="No preference" /></SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="No preference">No preference</SelectItem>
+                                    {f.opts.map((o) => (<SelectItem key={o} value={o}>{o}</SelectItem>))}
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                            ))}
                           </div>
                         </div>
                       </div>

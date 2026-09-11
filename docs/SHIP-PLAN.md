@@ -98,7 +98,7 @@ Prod cutover:
 4. First boot promotes ROOT admins via `ADMIN_EMAILS` (idempotent, logged as `root_admins_promoted`).
 5. Deploy SPA with prod `VITE_*` baked at build time.
 6. Post-deploy smoke (~10 min):
-   - GET `<api>/health` → ok:true, database:true, webhookConfigured:true
+   - GET `<api>/health` -> `{"ok":true}` (liveness only). Confirm `database:true` in the `server_started` boot log line, then verify a wired route rejects anonymous calls: `GET <api>/api/quota` -> 401.
    - Real signup with an inbox you control; verification link works
    - ₹1 live UPI transaction with founder's card/UPI validates the full money loop (live keys cannot use simulation)
    - Two matched accounts exchange a chat message; SSE realtime confirmed

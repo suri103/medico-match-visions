@@ -19,6 +19,11 @@ import { refreshLocalPlanFromServer } from "@/services/api";
  * the in-flight redemption is never cancelled by effect cleanup — a discarded
  * effect previously consumed the token and silently dropped the redemption.
  */
+// Launch-gap fix #4: explicit checkout result states (success/failed/pending/
+// cancelled). The redirect appends ?checkout=<status> when returning into the
+// app; plan activation still ONLY happens through the server-issued token
+// (audit L6) — a bare ?checkout=success grants nothing. Unknown values are
+// cleared silently so crafted URLs can never toast a fake outcome.
 export const useCheckoutResult = (onSuccess?: (plan?: string) => void) => {
   const [searchParams, setSearchParams] = useSearchParams();
   // Latest callback, readable from the effect without re-subscribing on every
@@ -92,7 +97,31 @@ export const useCheckoutResult = (onSuccess?: (plan?: string) => void) => {
         title: "Payment cancelled",
         description: "You cancelled the payment — no charges were made.",
       });
+      clearParams();
+      return;
     }
+
+    if (status === "failed") {
+      toast({
+        title: "Payment failed",
+        description: "Your payment did not complete and no charges were made. Check your payment method and try again — your free plan is unaffected.",
+        variant: "destructive",
+      });
+      clearParams();
+      return;
+    }
+
+    if (status === "pending") {
+      toast({
+        title: "Payment is being verified",
+        description: "Your payment is processing. If your membership is not active within a few minutes, reopen this page or contact support with your payment id.",
+      });
+      clearParams();
+      return;
+    }
+
+    // Unknown ?checkout= value (e.g. a crafted URL): never toast an outcome,
+    // just clear the params.
     clearParams();
   }, [searchParams, clearParams]);
 };

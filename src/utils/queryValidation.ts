@@ -186,6 +186,10 @@ export function parseQueryToSearchCriteria(
       excludeSameGotra: excludeSameGotraValue,
       minGunas: minGunasValue,
       color: sanitizeStringParam(qs.get('color')),
+      familyType: sanitizeStringParam(qs.get('familyType')),
+      familyStatus: sanitizeStringParam(qs.get('familyStatus')),
+      incomeBand: sanitizeStringParam(qs.get('incomeBand')),
+      diet: sanitizeStringParam(qs.get('diet')),
     };
   }
 
@@ -213,5 +217,9 @@ export function parseQueryToSearchCriteria(
     excludeSameGotra: excludeSameGotraValue,
     minGunas: minGunasValue,
     color: sanitizeStringParam(qs.get('color')),
+    familyType: sanitizeStringParam(qs.get('familyType')),
+    familyStatus: sanitizeStringParam(qs.get('familyStatus')),
+    incomeBand: sanitizeStringParam(qs.get('incomeBand')),
+    diet: sanitizeStringParam(qs.get('diet')),
   };
 }

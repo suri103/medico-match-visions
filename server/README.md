@@ -10,7 +10,7 @@ payment.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/health` | Liveness + config status (no record counts) |
+| GET | `/health` | Liveness only — `{ok:true}` (no config fingerprint on the public wire) |
 | POST | `/api/auth/register` | Create an account (email verification flow; generic responses) |
 | POST | `/api/auth/login` | Password sign-in (scrypt, timing-equalized) |
 | POST | `/api/auth/verify-email` | Consume an emailed verification link → session |
@@ -104,7 +104,7 @@ Verify it's up:
 
 ```sh
 curl http://localhost:3001/health
-# -> {"ok":true,"razorpayConfigured":false,"simulatePayments":true}
+# -> {"ok":true}
 ```
 
 ## Frontend wiring
@@ -120,5 +120,8 @@ curl http://localhost:3001/health
 - Set `NODE_ENV=production`, `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`,
   `APP_URL` (allowed CORS origin), and optionally `CORS_ORIGINS` (comma
   separated) and `ACTIVATION_SECRET`.
-- Token redemption state is in-memory per instance; running multiple replicas
-  requires shared storage (e.g. Redis) for the redeemed-token set.
+- Token redemption is durable in Postgres (`redeemed_tokens`, `used_email_tokens`,
+  `webhook_events`) in DB mode — multi-replica safe with no Redis. The in-memory
+  Set is only the no-DB dev fallback. Production requires `DATABASE_URL`
+  (fail-closed boot) plus `RESEND_API_KEY`, `RAZORPAY_WEBHOOK_SECRET`, and must
+  leave `DISABLE_POW`/`DISABLE_DIGEST` unset.

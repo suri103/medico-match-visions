@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Lock, ShieldCheck, Zap } from 'lucide-react';
 import { toast } from '@/hooks/use-toast';
 import { isRazorpayConfigured, razorpayKeyId, openRazorpayCheckout } from '@/lib/razorpay';
@@ -38,7 +40,17 @@ const PaymentModal: React.FC<PaymentModalProps> = ({
 }) => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<'upi' | 'card'>('upi');
+  // P0-10 coupon (server-validated; WELCOME10 seeded).
+  const [coupon, setCoupon] = useState('');
+  const [couponOff, setCouponOff] = useState<number | null>(null);
+  // Launch-gap fix #4: inline result state (failed/cancelled) with a "Try
+  // again" path. The success path redirects out via ?checkout=success and is
+  // handled by useCheckoutResult (token redemption), so this state never
+  // claims a payment succeeded — it only surfaces the recoverable failures.
+  const [notice, setNotice] = useState<{ kind: 'failed' | 'cancelled'; message: string } | null>(null);
+  const retryPayment = () => setNotice(null);
   const razorpayConfigured = isRazorpayConfigured();
+  const payableAmount = couponOff ? Math.round((amount * (100 - couponOff)) / 100) : amount;
 
   const redirectWithSuccess = () => {
     const origin = window.location.origin;
@@ -80,8 +92,9 @@ const PaymentModal: React.FC<PaymentModalProps> = ({
       const order = await createRazorpayOrder({
         sku,
         serviceName: `${serviceName} (SANDBOX)`,
-        amount,
+        amount: payableAmount,
         currency: 'INR',
+        ...(coupon.trim() ? { coupon: coupon.trim().toUpperCase() } : {}),
       });
       const verification = await verifyRazorpayPayment({
         orderId: order.id,
@@ -145,8 +158,9 @@ const PaymentModal: React.FC<PaymentModalProps> = ({
       const order = await createRazorpayOrder({
         sku,
         serviceName: `${serviceName} (${paymentMethod.toUpperCase()})`,
-        amount,
+        amount: payableAmount,
         currency: 'INR',
+        ...(coupon.trim() ? { coupon: coupon.trim().toUpperCase() } : {}),
       });
 
       if (!order.id) {
@@ -165,12 +179,10 @@ const PaymentModal: React.FC<PaymentModalProps> = ({
       });
 
       if (!payment) {
-        // User dismissed the modal — treat as cancelled, no charge.
-        toast({
-          title: "Payment cancelled",
-          description: "You closed the payment window — no charges were made.",
-        });
+        // User dismissed the modal — treat as cancelled, no charge. Launch-gap
+        // fix #4: also surface an inline cancelled state with a retry path.
         setIsProcessing(false);
+        setNotice({ kind: 'cancelled', message: 'You closed the payment window before completing it. No charges were made — you can safely try again.' });
         return;
       }
 
@@ -183,12 +195,10 @@ const PaymentModal: React.FC<PaymentModalProps> = ({
       });
 
       if (!verification.verified) {
-        toast({
-          title: "Payment could not be verified",
-          description: "We couldn't confirm your payment. If you were charged, contact support.",
-          variant: "destructive",
-        });
+        // Launch-gap fix #4: explicit failed state with retry + support path
+        // (replaces the toast-only handling).
         setIsProcessing(false);
+        setNotice({ kind: 'failed', message: 'We couldn\u2019t confirm your payment. If you were charged, contact support with your order id — your free plan is unaffected.' });
         return;
       }
 
@@ -240,14 +250,9 @@ const PaymentModal: React.FC<PaymentModalProps> = ({
       }
     } catch (err) {
       console.error("Payment start failed:", err);
-      toast({
-        title: "Payment could not be completed",
-        description:
-          err instanceof CheckoutError
-            ? err.message
-            : "Something went wrong. Please try again.",
-        variant: "destructive",
-      });
+      // Launch-gap fix #4: keep the toast for out-of-band visibility, and pin
+      // the retry affordance inside the modal where the user is looking.
+      setNotice({ kind: 'failed', message: err instanceof CheckoutError ? err.message : 'Something went wrong. Please try again.' });
       setIsProcessing(false);
     }
   };
@@ -260,9 +265,37 @@ return (
           <DialogDescription>
             You're paying for: {serviceName} (₹{amount.toFixed(2)})
             <br />
-            <span className="font-semibold text-slate-700">Total (incl. GST): ₹{amount.toFixed(2)}</span>
+            {couponOff ? (
+              <span className="font-semibold text-emerald-700">
+                Discounted Total (incl. GST): ₹{payableAmount.toFixed(2)}{' '}
+                <span className="text-slate-400 line-through">₹{amount.toFixed(2)}</span>
+              </span>
+            ) : (
+              <span className="font-semibold text-slate-700">Total (incl. GST): ₹{amount.toFixed(2)}</span>
+            )}
           </DialogDescription>
         </DialogHeader>
+
+        {/* Launch-gap fix #4: explicit failed/cancelled result state with a
+            retry affordance + support path. Success never renders here —
+            verified payments redirect through ?checkout=success and activate
+            only by redeeming the server-issued token. */}
+        {notice && (
+          <div role="status" className={`rounded-xl border p-3 text-left ${notice.kind === 'failed' ? 'border-red-200 bg-red-50' : 'border-amber-200 bg-amber-50'}`}>
+            <p className={`text-xs font-semibold ${notice.kind === 'failed' ? 'text-red-800' : 'text-amber-800'}`}>
+              {notice.kind === 'failed' ? 'Payment did not complete' : 'Payment cancelled'}
+            </p>
+            <p className={`text-[11px] mt-0.5 ${notice.kind === 'failed' ? 'text-red-700' : 'text-amber-700'}`}>{notice.message}</p>
+            <div className="mt-2 flex gap-2">
+              <Button type="button" size="sm" className="bg-mediblue-600 hover:bg-mediblue-700 text-white" onClick={retryPayment} disabled={isProcessing}>
+                Try again
+              </Button>
+              <Link to="/help" className="text-[11px] font-semibold text-mediblue-700 hover:underline self-center">
+                Contact support
+              </Link>
+            </div>
+          </div>
+        )}
 
         <form onSubmit={handleSubmit}>
           <div className="space-y-4 py-4">
@@ -283,6 +316,43 @@ return (
                 </span>
               </div>
             )}
+
+            <div className="space-y-2">
+              <label className="text-xs font-semibold text-slate-700 block">Coupon (optional)</label>
+              <div className="flex gap-2">
+                <Input
+                  placeholder="WELCOME10"
+                  value={coupon}
+                  onChange={(e) => setCoupon(e.target.value.toUpperCase())}
+                  className="flex-1"
+                  maxLength={32}
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void (async () => {
+                    if (!coupon.trim()) return;
+                    try {
+                      const { validateCoupon } = await import('@/services/api');
+                      const c = await validateCoupon(coupon.trim());
+                      if (!c) {
+                        toast({ title: "Invalid coupon", description: "This code is not valid.", variant: "destructive" });
+                        setCouponOff(null);
+                        return;
+                      }
+                      setCouponOff(c.percentOff);
+                      toast({ title: "Coupon applied", description: `${c.percentOff}% off at checkout.` });
+                    } catch {
+                      toast({ title: "Coupon check failed", description: "Try again.", variant: "destructive" });
+                    }
+                  })()}
+                >
+                  Apply
+                </Button>
+              </div>
+              {couponOff ? <p className="text-[11px] text-emerald-700">{couponOff}% off — the server re-validates the discounted total.</p> : null}
+            </div>
 
             <div className="space-y-2">
               <label className="text-xs font-semibold text-slate-700 block">Select Payment Method</label>
@@ -340,7 +410,7 @@ return (
                   Processing...
                 </>
               ) : (
-                `Pay ₹${amount.toFixed(2)}`
+                `Pay ₹${payableAmount.toFixed(2)}`
               )}
             </Button>
           </DialogFooter>

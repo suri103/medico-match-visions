@@ -35,6 +35,17 @@ const SavedMatchesPage = lazy(() => import("./pages/SavedMatchesPage"));
 const PublicProfilePage = lazy(() => import("./pages/PublicProfilePage"));
 const AdminPage = lazy(() => import("./pages/AdminPage"));
 const NotificationsPage = lazy(() => import("./pages/NotificationsPage"));
+const PrivacyPage = lazy(() => import("./pages/PrivacyPage"));
+const TermsPage = lazy(() => import("./pages/TermsPage"));
+const DeleteAccountPage = lazy(() => import("./pages/DeleteAccountPage"));
+// Launch-gap fix #2: legal pages. Static, content-checked-in, lawyer-reviewed
+// before launch. Each is independent (no shared layout coupling) so the legal
+// owner can edit one without touching the product shell.
+const RefundPolicyPage = lazy(() => import("./pages/RefundPolicyPage"));
+const CookiePolicyPage = lazy(() => import("./pages/CookiePolicyPage"));
+const CommunityGuidelinesPage = lazy(() => import("./pages/CommunityGuidelinesPage"));
+const SecurityPage = lazy(() => import("./pages/SecurityPage"));
+const AccessibilityPage = lazy(() => import("./pages/AccessibilityPage"));
 
 // Protected route component
 const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
@@ -50,7 +61,16 @@ const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
   }
 
   if (!isSignedIn) {
-    return <Navigate to="/sign-in" replace />;
+    // Launch-gap fix #6: name the expired-session case. If the browser holds a
+    // persisted session that no longer validates, tell the member their session
+    // expired (vs having never signed in) — silent redirects confuse people
+    // into thinking the site is broken.
+    let reason = 'signin';
+    try {
+      const raw = localStorage.getItem('mm:authSession');
+      if (raw && JSON.parse(raw)?.user) reason = 'expired';
+    } catch { /* ignore */ }
+    return <Navigate to={reason === 'expired' ? '/sign-in?reason=expired' : '/sign-in'} replace />;
   }
 
   return <>{children}</>;
@@ -68,6 +88,8 @@ const App = () => {
         <div className="flex min-h-screen flex-col bg-background">
           <Toaster />
           <FavoritesProvider>
+            {/* react-router v7: the v6 `future` opt-in flags (v7_startTransition,
+                v7_relativeSplatPath) are the v7 defaults — the prop is gone. */}
             <BrowserRouter>
               <Suspense fallback={<PageLoader />}>
               <Routes>
@@ -82,6 +104,16 @@ const App = () => {
                 <Route path="/success-stories" element={<SuccessStoriesPage />} />
                 <Route path="/plan" element={<PlanPage />} />
                 <Route path="/help" element={<HelpPage />} />
+                {/* Item 5: DPDP Act / legal pages — public so search engines and
+                    lawyers can read them; they explain the data practices and the
+                    user's right-to-erasure flow. */}
+                <Route path="/privacy" element={<PrivacyPage />} />
+                <Route path="/terms" element={<TermsPage />} />
+                <Route path="/refunds" element={<RefundPolicyPage />} />
+                <Route path="/cookies" element={<CookiePolicyPage />} />
+                <Route path="/community" element={<CommunityGuidelinesPage />} />
+                <Route path="/security" element={<SecurityPage />} />
+                <Route path="/accessibility" element={<AccessibilityPage />} />
 
                 {/* Protected routes (require authentication) */}
                 <Route path="/matches" element={<ProtectedRoute><Matches /></ProtectedRoute>} />
@@ -103,6 +135,7 @@ const App = () => {
                 <Route path="/profile/edit" element={<ProtectedRoute><EditProfilePage /></ProtectedRoute>} />
                 <Route path="/doctor/:id" element={<ProtectedRoute><PublicProfilePage /></ProtectedRoute>} />
                 <Route path="/account" element={<ProtectedRoute><AccountPage /></ProtectedRoute>} />
+                <Route path="/delete-account" element={<ProtectedRoute><DeleteAccountPage /></ProtectedRoute>} />
                 <Route path="/admin" element={<ProtectedRoute><AdminPage /></ProtectedRoute>} />
                 <Route path="/notifications" element={<ProtectedRoute><NotificationsPage /></ProtectedRoute>} />
 

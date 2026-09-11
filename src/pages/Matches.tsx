@@ -71,6 +71,15 @@ const Matches = () => {
     setMinGunas,
     selectedColor,
     setSelectedColor,
+    selectedFamilyType,
+    setSelectedFamilyType,
+    selectedFamilyStatus,
+    setSelectedFamilyStatus,
+    selectedIncomeBand,
+    setSelectedIncomeBand,
+    selectedDiet,
+    setSelectedDiet,
+    dailyPicks,
     availableStates,
     availableCities,
     handleSearch,
@@ -118,6 +127,10 @@ const Matches = () => {
     if (excludeSameGotra) params.set('nosamegotra', '1');
     if (minGunas) params.set('gunas', String(minGunas));
     if (selectedColor) params.set('color', selectedColor);
+    if (selectedFamilyType && selectedFamilyType !== 'No preference') params.set('familyType', selectedFamilyType);
+    if (selectedFamilyStatus && selectedFamilyStatus !== 'No preference') params.set('familyStatus', selectedFamilyStatus);
+    if (selectedIncomeBand && selectedIncomeBand !== 'No preference') params.set('incomeBand', selectedIncomeBand);
+    if (selectedDiet && selectedDiet !== 'No preference') params.set('diet', selectedDiet);
     const queryStr = params.toString();
     window.history.replaceState({}, '', queryStr ? `?${queryStr}` : window.location.pathname);
   };
@@ -188,6 +201,14 @@ const Matches = () => {
               setMinGunas={setMinGunas}
               selectedColor={selectedColor}
               setSelectedColor={setSelectedColor}
+              selectedFamilyType={selectedFamilyType}
+              setSelectedFamilyType={setSelectedFamilyType}
+              selectedFamilyStatus={selectedFamilyStatus}
+              setSelectedFamilyStatus={setSelectedFamilyStatus}
+              selectedIncomeBand={selectedIncomeBand}
+              setSelectedIncomeBand={setSelectedIncomeBand}
+              selectedDiet={selectedDiet}
+              setSelectedDiet={setSelectedDiet}
               handleSearch={handleCustomSearch}
               handleReset={handleCustomReset}
               specialtiesList={specialtiesList}
@@ -211,6 +232,29 @@ const Matches = () => {
                   setShowSavedSearches={setShowSavedSearches}
                   onSortChange={handleSortChange}
                 />
+
+                {/* P0-5 Today's picks: server-ranked daily matches. */}
+                {dailyPicks.length > 0 && (
+                  <Card className="mt-4 bg-gradient-to-r from-rose-50 to-amber-50 border-rose-200">
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-base">✨ Today's picks for you</CardTitle>
+                    </CardHeader>
+                    <CardContent className="flex gap-3 overflow-x-auto pb-3">
+                      {dailyPicks.map((d) => (
+                        <button
+                          key={d.id}
+                          onClick={() => handleChat(d.id)}
+                          className="min-w-[140px] text-left bg-white rounded-xl border p-2 hover:shadow"
+                          title={`Chat with Dr. ${d.name}`}
+                        >
+                          <div className="text-sm font-semibold truncate">Dr. {d.name}</div>
+                          <div className="text-xs text-slate-500 truncate">{d.specialty} · {d.city}</div>
+                          <div className="text-xs text-emerald-700">{d.matchPercentage}% match{d.isVerified ? ' · ✓' : ''}</div>
+                        </button>
+                      ))}
+                    </CardContent>
+                  </Card>
+                )}
                 
                 {showSavedSearches && (
                   <SavedSearchesList

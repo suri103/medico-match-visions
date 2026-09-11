@@ -7,6 +7,8 @@
 // revealContact(), which is metered by the server-side quota.
 
 import { getApiBaseUrl } from "@/services/checkout";
+import type { Doctor } from "@/features/matches/types";
+import { localAvatar } from "@/lib/avatar";
 
 export interface ServerProfile {
   id: string;
@@ -43,6 +45,24 @@ export interface ServerProfile {
   prefLocation?: string | null;
   isVerified: boolean;
   isOnline: boolean;
+  // P-CONTROL: member-set privacy. incomeBand is nulled server-side unless the
+  // viewer may see it (owner, public, or verified-only + verified viewer).
+  profileVisibility?: string | null;
+  incomeVisibility?: string | null;
+  // Birth details (matrimony kundali fidelity + shareable chart).
+  birthDate?: string | null;
+  birthTime?: string | null;
+  birthCity?: string | null;
+  chartImageUrl?: string | null;
+  // P0-4 family/background depth.
+  familyType?: string | null;
+  familyStatus?: string | null;
+  incomeBand?: string | null;
+  diet?: string | null;
+  smoking?: string | null;
+  drinking?: string | null;
+  disability?: string | null;
+  expectations?: string | null;
 }
 
 export interface QuotaSummary {
@@ -70,27 +90,58 @@ export interface InterestRecord {
 
 const base = () => getApiBaseUrl();
 
+// Audit M-12 / item 1: every wired API call must include credentials so the
+// httpOnly session cookie is attached, and must echo the CSRF token on every
+// mutating request (the server rejects 403 without it).
+const credentials = "include";
+
+const readCsrfCookie = (): string | null => {
+  if (typeof document === "undefined") return null;
+  const raw = document.cookie || "";
+  for (const part of raw.split(/;\s*/)) {
+    const eq = part.indexOf("=");
+    if (eq > 0 && part.slice(0, eq) === "mm_csrf") return part.slice(eq + 1);
+  }
+  return null;
+};
+
 function authHeaders(): Record<string, string> {
   try {
     const raw = localStorage.getItem("mm:authSession");
     const session = raw ? JSON.parse(raw) : null;
-    return session?.token
-      ? { Authorization: `Bearer ${session.token}`, "Content-Type": "application/json" }
-      : { "Content-Type": "application/json" };
+    const bearer: Record<string, string> = session?.token
+      ? { Authorization: `Bearer ${session.token}` }
+      : {};
+    return {
+      ...bearer,
+      "Content-Type": "application/json",
+      ...csrfHeader(),
+    };
   } catch {
-    return { "Content-Type": "application/json" };
+    return { "Content-Type": "application/json", ...csrfHeader() };
   }
 }
 
-/** True when a real server session exists AND an API base URL is configured. */
+function csrfHeader(): Record<string, string> {
+  const t = readCsrfCookie();
+  return t ? { "X-CSRF-Token": t } : {};
+}
+
+/** True when a real server session exists AND an API base URL is configured.
+ * Audit M-12 / item 1: also true when the httpOnly session cookie is present
+ * even if the legacy `mm:authSession` Bearer token isn't (e.g. fresh login
+ * where the SPA picked up the cookie but the local persisted state is still
+ * hydrating). */
 export function hasServerSession(): boolean {
+  if (!base()) return false;
   try {
     const raw = localStorage.getItem("mm:authSession");
     const session = raw ? JSON.parse(raw) : null;
-    return Boolean(session?.token) && Boolean(base());
+    if (session?.token) return true;
   } catch {
-    return false;
+    /* fall through to cookie check */
   }
+  return Boolean(readCsrfCookie() || (typeof document !== "undefined" && /mm_session=/.test(document.cookie || "")));
 }
 
 async function call<T>(path: string, init?: RequestInit): Promise<T | null> {
@@ -98,6 +149,7 @@ async function call<T>(path: string, init?: RequestInit): Promise<T | null> {
   try {
     const res = await fetch(`${base()}${path}`, {
       ...init,
+      credentials,
       headers: { ...authHeaders(), ...(init?.headers as Record<string, string> | undefined) },
     });
     if (!res.ok) return null;
@@ -116,6 +168,7 @@ async function callOrError<T>(
   try {
     const res = await fetch(`${base()}${path}`, {
       ...init,
+      credentials,
       headers: { ...authHeaders(), ...(init?.headers as Record<string, string> | undefined) },
     });
     const body = await res.json().catch(() => null);
@@ -137,7 +190,10 @@ async function callOrError<T>(
 export async function browseProfiles(
   params: {
     city?: string; specialty?: string; q?: string;
-    minAge?: number; maxAge?: number; verifiedOnly?: boolean; limit?: number;
+    minAge?: number; maxAge?: number; verifiedOnly?: boolean; limit?: number; offset?: number;
+    religion?: string; caste?: string; motherTongue?: string; gotra?: string;
+    orientation?: string; ethnicity?: string; minGunas?: number;
+    familyType?: string; familyStatus?: string; incomeBand?: string; diet?: string;
   } = {}
 ): Promise<ServerProfile[] | null> {
   const qs = new URLSearchParams();
@@ -148,6 +204,22 @@ export async function browseProfiles(
   if (params.maxAge) qs.set("max", String(params.maxAge));
   if (params.verifiedOnly) qs.set("verified", "1");
   if (params.limit) qs.set("limit", String(params.limit));
+  if (params.offset) qs.set("offset", String(params.offset));
+  // H1: forward Shaadi-style advanced filters to SQL (backend /api/profiles
+  // now honors them). Client-side applyFilters remains as the second pass for
+  // multi-select/derived rules the SQL layer does not model.
+  if (params.religion) qs.set("religion", params.religion);
+  if (params.caste) qs.set("caste", params.caste);
+  if (params.motherTongue) qs.set("motherTongue", params.motherTongue);
+  if (params.gotra) qs.set("gotra", params.gotra);
+  if (params.orientation) qs.set("orientation", params.orientation);
+  if (params.ethnicity) qs.set("ethnicity", params.ethnicity);
+  if (params.minGunas) qs.set("minGunas", String(params.minGunas));
+  // P0-4 family depth filters.
+  if (params.familyType) qs.set("familyType", params.familyType);
+  if (params.familyStatus) qs.set("familyStatus", params.familyStatus);
+  if (params.incomeBand) qs.set("incomeBand", params.incomeBand);
+  if (params.diet) qs.set("diet", params.diet);
   const out = await call<{ profiles: ServerProfile[] }>(`/api/profiles?${qs.toString()}`);
   return out?.profiles ?? null;
 }
@@ -165,6 +237,48 @@ export async function saveMyServerProfile(
     body: JSON.stringify(patch),
   });
   return out?.profile ?? null;
+}
+
+export async function fetchProfile(id: string): Promise<ServerProfile | null> {
+  const out = await call<{ profile: ServerProfile }>(`/api/profiles/${encodeURIComponent(id)}`);
+  return out?.profile ?? null;
+}
+
+export function serverProfileToDoctor(p: ServerProfile): Doctor {
+  // Never fabricate credentials: missing degree/specialty must render empty,
+  // not MBBS/Physician (a null degree must never appear credentialed).
+  return {
+    id: p.id,
+    name: p.name.replace(/^Dr\.\s*/i, ""),
+    age: p.age ?? 30,
+    specialty: p.specialty || "",
+    degree: p.degree || "",
+    hospital: p.hospital || "",
+    city: p.city || "",
+    state: p.state || "",
+    country: p.country || "India",
+    imageUrl: p.imageUrl || localAvatar(p.name),
+    matchPercentage: p.kundaliGunas ?? 0,
+    interests: p.interests || [],
+    isOnline: p.isOnline,
+    sexualOrientation: p.sexualOrientation || undefined,
+    ethnicity: p.ethnicity || undefined,
+    religion: p.religion || undefined,
+    caste: p.caste || undefined,
+    cast: p.caste || undefined,
+    subcaste: p.subcaste || undefined,
+    gotra: p.gotra || undefined,
+    motherTongue: p.motherTongue || undefined,
+    rashi: p.rashi || undefined,
+    nakshatra: p.nakshatra || undefined,
+    manglik: p.manglik || undefined,
+    kundaliGunas: p.kundaliGunas ?? undefined,
+    isVerified: p.isVerified,
+    familyType: (p as unknown as Record<string, string>).familyType,
+    familyStatus: (p as unknown as Record<string, string>).familyStatus,
+    incomeBand: (p as unknown as Record<string, string>).incomeBand,
+    diet: (p as unknown as Record<string, string>).diet,
+  } as Doctor;
 }
 
 export async function getQuota(): Promise<QuotaSummary | null> {
@@ -260,6 +374,26 @@ export async function removeFavoriteRemote(profileId: string): Promise<boolean> 
   });
   return out.error === null;
 }
+
+export async function listShortlistIds(): Promise<string[] | null> {
+  const out = await call<{ shortlists: string[] }>("/api/shortlists");
+  return out?.shortlists ?? null;
+}
+
+export async function addShortlistRemote(profileId: string): Promise<boolean> {
+  const out = await callOrError("/api/shortlists", {
+    method: "POST",
+    body: JSON.stringify({ profileId }),
+  });
+  return out.error === null;
+}
+
+export async function removeShortlistRemote(profileId: string): Promise<boolean> {
+  const out = await callOrError(`/api/shortlists/${encodeURIComponent(profileId)}`, {
+    method: "DELETE",
+  });
+  return out.error === null;
+}
 export async function listBlockedUsers(): Promise<{ id: string; name: string; imageUrl?: string | null }[] | null> {
   const out = await call<{ blocked: { id: string; name: string; imageUrl?: string | null }[] }>("/api/blocks");
   return out?.blocked ?? null;
@@ -309,8 +443,9 @@ export async function listChannels(): Promise<ServerChannel[] | null> {
   return out?.channels ?? null;
 }
 
-export async function listMessages(channelId: string): Promise<ServerMessage[] | null> {
-  const out = await call<{ messages: ServerMessage[] }>(`/api/channels/${encodeURIComponent(channelId)}/messages`);
+export async function listMessages(channelId: string, limit?: number): Promise<ServerMessage[] | null> {
+  const qs = limit ? `?limit=${encodeURIComponent(String(limit))}` : "";
+  const out = await call<{ messages: ServerMessage[] }>(`/api/channels/${encodeURIComponent(channelId)}/messages${qs}`);
   return out?.messages ?? null;
 }
 
@@ -354,6 +489,17 @@ export async function createVideoDate(
 export async function cancelVideoDate(videoDateId: string): Promise<boolean> {
   const out = await callOrError(`/api/video-dates/${encodeURIComponent(videoDateId)}/cancel`, { method: "POST" });
   return out.error === null;
+}
+
+export async function respondVideoDate(
+  videoDateId: string,
+  action: "accept" | "decline"
+): Promise<{ ok: boolean; error: string | null }> {
+  const out = await callOrError(`/api/video-dates/${encodeURIComponent(videoDateId)}/respond`, {
+    method: "POST",
+    body: JSON.stringify({ action }),
+  });
+  return { ok: out.error === null, error: out.error };
 }
 
 // ---------------------------------------------------------------------------
@@ -529,12 +675,188 @@ export async function listAuditLog(): Promise<{ id: string; adminEmail: string; 
   return out?.audit ?? null;
 }
 
+// Launch-gap fix #3: admin dashboard counts (single round-trip).
+export interface AdminStats {
+  total_users: number;
+  new_users_30d: number;
+  verified_doctors: number;
+  pending_verifications: number;
+  active_memberships: number;
+  open_reports: number;
+  interests_sent: number;
+  failed_payments: number;
+  refunds: number;
+}
+
+export async function adminStats(): Promise<AdminStats | null> {
+  const out = await call<{ stats: AdminStats }>("/api/admin/stats");
+  return out?.stats ?? null;
+}
+
+// Launch-gap fix #5: member-facing refund request (advisory ticket; approval
+// stays with the admin refund path + webhook revocation).
+export async function requestRefund(reason: string): Promise<{ ok: boolean; message?: string | null; error: string | null }> {
+  const out = await callOrError<{ ok?: boolean; message?: string }>("/api/refund-request", {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
+  return { ok: out.error === null, message: out.data?.message ?? null, error: out.error };
+}
+
 export async function setSamplesHidden(hidden: boolean): Promise<{ ok: boolean; affected?: number; error: string | null }> {
   const out = await callOrError<{ affected: number }>("/api/admin/samples/hide-all", {
     method: "POST",
     body: JSON.stringify({ hidden }),
   });
   return { ok: out.error === null, affected: out.data?.affected, error: out.error };
+}
+
+// P0-2/P0-8 admin trust queue + warn ladder.
+export interface VerificationDocRow { id: string; userId: string; userEmail: string; docType: string; url: string; status: string; createdAt: string }
+
+export async function listVerifications(status = "pending"): Promise<VerificationDocRow[] | null> {
+  const out = await call<{ documents: VerificationDocRow[] }>(`/api/admin/verifications?status=${encodeURIComponent(status)}`);
+  return out?.documents ?? null;
+}
+
+export async function reviewVerification(
+  id: string,
+  outcome: "approved" | "rejected",
+  note = "",
+  registryChecked = false,
+  registryReference = ""
+): Promise<{ ok: boolean; error: string | null }> {
+  const out = await callOrError(`/api/admin/verifications/${encodeURIComponent(id)}/review`, {
+    method: "POST", body: JSON.stringify({ outcome, note, registryChecked, registryReference }),
+  });
+  return { ok: out.error === null, error: out.error };
+}
+
+export async function warnAdminUser(id: string, reason = ""): Promise<{ ok: boolean; strikes?: number; autoSuspend?: boolean; error: string | null }> {
+  const out = await callOrError<{ strikes: number; autoSuspend: boolean }>(`/api/admin/users/${encodeURIComponent(id)}/warn`, {
+    method: "POST", body: JSON.stringify({ reason }),
+  });
+  return { ok: out.error === null, strikes: out.data?.strikes, autoSuspend: out.data?.autoSuspend, error: out.error };
+}
+
+export async function createServerEvent(payload: { title: string; date: string; time: string; location: string; description: string }): Promise<{ ok: boolean; error: string | null }> {
+  const out = await callOrError("/api/events", { method: "POST", body: JSON.stringify(payload) });
+  return { ok: out.error === null, error: out.error };
+}
+
+export async function approveStory(id: string, approved: boolean): Promise<{ ok: boolean; error: string | null }> {
+  const out = await callOrError(`/api/admin/stories/${encodeURIComponent(id)}/approve`, { method: "POST", body: JSON.stringify({ approved }) });
+  return { ok: out.error === null, error: out.error };
+}
+
+export async function triggerRenewalReminders(): Promise<{ sent: number; total: number } | null> {
+  const out = await call<{ sent: number; total: number }>("/api/admin/reminders/renewals", { method: "POST" });
+  return out ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Support inbox (M6): real server delivery with local fallback.
+// ---------------------------------------------------------------------------
+
+export async function sendSupportMessage(payload: {
+  name: string; email: string; subject: string; message: string;
+}): Promise<{ ok: boolean; error: string | null }> {
+  const out = await callOrError<{ ok: boolean }>("/api/support", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  // No server configured (dev/offline): caller falls back to local save.
+  if (out.status === 0 && out.error === "no-server") return { ok: false, error: "no-server" };
+  return { ok: out.error === null, error: out.error };
+}
+
+// ---------------------------------------------------------------------------
+// Parity increment: trust, engagement, monetization client.
+// ---------------------------------------------------------------------------
+
+export async function requestPhoneOtp(phone: string): Promise<{ ok: boolean; error: string | null; code?: string }> {
+  const out = await callOrError<{ expiresAt: string; code?: string }>("/api/phone/request", {
+    method: "POST", body: JSON.stringify({ phone }),
+  });
+  if (out.error) return { ok: false, error: out.error };
+  return { ok: true, error: null, code: out.data?.code };
+}
+
+export async function verifyPhoneOtp(code: string): Promise<{ ok: boolean; error: string | null }> {
+  const out = await callOrError("/api/phone/verify", { method: "POST", body: JSON.stringify({ code }) });
+  return { ok: out.error === null, error: out.error };
+}
+
+export async function phoneStatus(): Promise<{ phone: string | null; verified: boolean } | null> {
+  return call("/api/phone/status");
+}
+
+export async function submitVerificationDoc(docType: string, url: string): Promise<{ ok: boolean; error: string | null }> {
+  const out = await callOrError("/api/verification/documents", { method: "POST", body: JSON.stringify({ docType, url }) });
+  return { ok: out.error === null, error: out.error };
+}
+
+export async function myVerificationDocs(): Promise<{ id: string; docType: string; status: string; note: string; createdAt: string }[] | null> {
+  const out = await call<{ documents: { id: string; docType: string; status: string; note: string; createdAt: string }[] }>("/api/verification/me");
+  return out?.documents ?? null;
+}
+
+export async function dailyMatches(limit = 10): Promise<ServerProfile[] | null> {
+  const out = await call<{ matches: ServerProfile[] }>(`/api/matches/daily?limit=${encodeURIComponent(String(limit))}`);
+  return out?.matches ?? null;
+}
+
+export interface ServerEvent { id: string; title: string; date: string; time: string; location: string; description: string; createdAt: string }
+
+export async function listServerEvents(): Promise<ServerEvent[] | null> {
+  if (!getApiBaseUrl()) return null;
+  try {
+    const res = await fetch(`${getApiBaseUrl()}/api/events`, { credentials });
+    if (!res.ok) return null;
+    const body = await res.json();
+    return body?.events ?? null;
+  } catch { return null; }
+}
+
+export async function rsvpEvent(eventId: string): Promise<boolean> {
+  const out = await callOrError(`/api/events/${encodeURIComponent(eventId)}/rsvp`, { method: "POST" });
+  return out.error === null;
+}
+
+export interface ServerStory { id: string; partnerName: string; story: string; photoUrl: string; createdAt: string }
+
+export async function listServerStories(): Promise<ServerStory[] | null> {
+  if (!getApiBaseUrl()) return null;
+  try {
+    const res = await fetch(`${getApiBaseUrl()}/api/stories`, { credentials });
+    if (!res.ok) return null;
+    const body = await res.json();
+    return body?.stories ?? null;
+  } catch { return null; }
+}
+
+export async function submitStory(payload: { partnerName: string; story: string; photoUrl?: string }): Promise<{ ok: boolean; error: string | null }> {
+  const out = await callOrError("/api/stories", { method: "POST", body: JSON.stringify(payload) });
+  return { ok: out.error === null, error: out.error };
+}
+
+export async function getBoost(): Promise<{ active: boolean; expiresAt: string | null } | null> {
+  return call("/api/boost");
+}
+
+export async function activateBoost(): Promise<{ ok: boolean; error: string | null }> {
+  const out = await callOrError("/api/boost", { method: "POST" });
+  return { ok: out.error === null, error: out.error };
+}
+
+export async function validateCoupon(code: string): Promise<{ code: string; percentOff: number } | null> {
+  const out = await call<{ code: string; percentOff: number }>(`/api/coupons/validate?code=${encodeURIComponent(code)}`);
+  return out ?? null;
+}
+
+export async function markMessagesRead(channelId: string): Promise<boolean> {
+  const out = await callOrError(`/api/channels/${encodeURIComponent(channelId)}/read`, { method: "POST" });
+  return out.error === null;
 }
 
 // ---------------------------------------------------------------------------
@@ -595,8 +917,43 @@ export async function createConsultation(scheduledFor: string, durationMinutes =
 }
 
 // ---------------------------------------------------------------------------
-// Realtime WebRTC signaling relay (1:1 calls between matched users)
+// Account deletion + data export (item 6 — DPDP Act 2023 rights).
 // ---------------------------------------------------------------------------
+
+export interface DataExportResponse {
+  exportedAt: string;
+  requester: { id: string };
+  appUser: Record<string, unknown> | null;
+  profile: unknown[];
+  interestsSent: unknown[];
+  interestsReceived: unknown[];
+  interestsMatched: unknown[];
+  channels: unknown[];
+  messages: unknown[];
+  videoDates: unknown[];
+  subscriptions: unknown[];
+  paymentTransactions: unknown[];
+  refunds: unknown[];
+  notifications: unknown[];
+  reports: unknown[];
+  blocks: unknown[];
+  favorites: unknown[];
+  shortlists: unknown[];
+  photos: unknown[];
+}
+
+export async function exportMyData(): Promise<DataExportResponse | null> {
+  const out = await call<DataExportResponse>("/api/me/export");
+  return out ?? null;
+}
+
+export async function deleteMyAccount(currentPassword: string): Promise<{ ok: boolean; error: string | null; tombstoneEmail?: string }> {
+  const out = await callOrError<{ tombstoneEmail: string }>("/api/me/delete", {
+    method: "POST",
+    body: JSON.stringify({ currentPassword }),
+  });
+  return { ok: out.error === null, error: out.error, tombstoneEmail: out.data?.tombstoneEmail };
+}
 
 export async function sendWebRtcSignal(
   toUserId: string,
@@ -631,6 +988,100 @@ export async function resumeBilling(): Promise<{ ok: boolean; error: string | nu
 }
 
 // ---------------------------------------------------------------------------
+// Photo gallery, "who viewed me", and typing indicator (matrimony parity).
+// ---------------------------------------------------------------------------
+
+export interface GalleryPhoto {
+  id: string;
+  url: string;
+  isPrimary: boolean;
+  displayOrder: number;
+  createdAt: string;
+}
+
+export async function listMyPhotos(): Promise<GalleryPhoto[]> {
+  const out = await call<{ photos: GalleryPhoto[] }>("/api/me/photos");
+  return out?.photos ?? [];
+}
+
+/** Make an existing gallery photo the primary (also updates the profile card). */
+export async function setPrimaryPhoto(photoId: string): Promise<{ ok: boolean; error: string | null }> {
+  const out = await callOrError(`/api/me/photos/${encodeURIComponent(photoId)}/primary`, { method: "POST" });
+  return { ok: out.error === null, error: out.error };
+}
+
+export async function deletePhoto(photoId: string): Promise<{ ok: boolean; error: string | null }> {
+  const out = await callOrError(`/api/me/photos/${encodeURIComponent(photoId)}`, { method: "DELETE" });
+  return { ok: out.error === null, error: out.error };
+}
+
+export interface ProfileViewRow {
+  viewerUserId: string;
+  name: string;
+  imageUrl?: string | null;
+  isVerified: boolean;
+  city?: string | null;
+  specialty?: string | null;
+  lastViewedAt: string;
+  totalViews: number;
+}
+
+/** "Who viewed my profile" — the owner's distinct-viewer feed. */
+export async function listProfileViewers(limit = 50): Promise<ProfileViewRow[]> {
+  const out = await call<{ views: ProfileViewRow[] }>(`/api/me/profile-views?limit=${encodeURIComponent(String(limit))}`);
+  return out?.views ?? [];
+}
+
+/** Ephemeral typing signal for an open channel (SSE-relayed, never stored). */
+export async function sendTyping(channelId: string): Promise<boolean> {
+  const out = await callOrError(`/api/channels/${encodeURIComponent(channelId)}/typing`, { method: "POST" });
+  return out.error === null;
+}
+
+// ---------------------------------------------------------------------------
+// Kundali match report (paid digital product; REPORTS_ENABLED server-side).
+// ---------------------------------------------------------------------------
+
+export interface KootaRow {
+  id: string;
+  name: string;
+  max: number;
+  obtainedPoints: number;
+  description: string;
+  status: string;
+}
+
+export interface KundaliReport {
+  totalPoints: number;
+  maxPoints: number;
+  isAuspicious: boolean;
+  grade: string;
+  manglikCompatibility: string;
+  nadiDosha: boolean;
+  bhakootDosha: boolean;
+  kootas: KootaRow[];
+  summary: string;
+  partnerA: { name: string };
+  partnerB: { name: string; profileId: string };
+  generatedAt: string;
+  disclaimer: string;
+}
+
+export type KundaliReportResult =
+  | { ok: true; report: KundaliReport; alreadyOwned: boolean }
+  | { ok: false; error: string; purchaseRequired: boolean };
+
+/** Fetch (or first-generate) the detailed report for a profile pair. 402 means
+ *  the buyer must purchase the `kundali-report` SKU first. */
+export async function getKundaliReport(profileId: string): Promise<KundaliReportResult> {
+  const out = await callOrError<{ report: KundaliReport; alreadyOwned: boolean }>(`/api/kundali/report/${encodeURIComponent(profileId)}`);
+  if (out.error) {
+    return { ok: false, error: out.error, purchaseRequired: out.status === 402 };
+  }
+  return { ok: true, report: out.data!.report, alreadyOwned: Boolean(out.data!.alreadyOwned) };
+}
+
+// ---------------------------------------------------------------------------
 // Realtime event stream (SSE) — professional push with one-time tickets,
 // auto-reconnect + backoff, and graceful degradation for callers.
 // ---------------------------------------------------------------------------
@@ -646,6 +1097,8 @@ export interface EventStreamHandlers {
   onInterestResponded?: (payload: { interestId: string; status: string }) => void;
   /** WebRTC signaling relay (offers/answers/ICE candidates). */
   onWebRtc?: (payload: { from: string; fromName?: string; payload: Record<string, unknown> }) => void;
+  /** Chat typing indicator (ephemeral; never persisted server-side). */
+  onTyping?: (payload: { channelId: string; from: string; fromName?: string }) => void;
   onOpen?: () => void;
   onError?: () => void;
 }
@@ -708,6 +1161,11 @@ export function openEventStream(handlers: EventStreamHandlers): () => void {
           handlers.onWebRtc?.(JSON.parse((e as MessageEvent).data));
         } catch { /* ignore */ }
       });
+      es.addEventListener("typing", (e) => {
+        try {
+          handlers.onTyping?.(JSON.parse((e as MessageEvent).data));
+        } catch { /* ignore */ }
+      });
       // (listeners continue to fire; the disposer removes them on teardown)
       es.onerror = () => {
         handlers.onError?.();
@@ -727,4 +1185,22 @@ export function openEventStream(handlers: EventStreamHandlers): () => void {
     es?.close();
     es = null;
   };
+}
+
+// ---------------------------------------------------------------------------
+// Invoices
+// ---------------------------------------------------------------------------
+
+export interface ServerInvoice {
+  invoiceNumber: string;
+  date: string;
+  planName: string;
+  amount: number;
+  total: number;
+  status: string;
+}
+
+export async function listInvoices(): Promise<ServerInvoice[] | null> {
+  const out = await call<{ invoices: ServerInvoice[] }>("/api/invoices");
+  return out?.invoices ?? null;
 }
