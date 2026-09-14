@@ -39,7 +39,7 @@
 | `RAZORPAY_SIMULATE` | no | Must be unset/false in prod (server refuses to start otherwise) |
 | `APP_URL` | **prod: yes** | Allowed CORS origin AND base URL of emailed links; must be https |
 | `ACTIVATION_SECRET` | **prod: yes** | Signs sessions + entitlement tokens; boot fails if unset |
-| `DATABASE_URL` | **prod: yes** | Postgres/Supabase. Profiles, quotas, interests, chat, billing live here; schema.sql runs at boot, failure aborts startup |
+| `DATABASE_URL` | **prod: yes** | Supabase **session pooler** URI (port **5432**, host `*.pooler.supabase.com`, user `postgres.<project-ref>`). Profiles, quotas, interests, chat, billing live here; schema.sql runs at boot, failure aborts startup. ⚠️ Do NOT use the direct `db.*.supabase.co` host (IPv6-only — fails with `connect ENETUNREACH` when the host has no IPv6 route) and do NOT use the transaction pooler (port 6543 — drops LISTEN/NOTIFY + advisory locks). |
 | `RAZORPAY_WEBHOOK_SECRET` | prod: recommended | Verifies payment.captured AND refund.processed webhooks |
 | `RESEND_API_KEY` | **prod: yes** | Emails carry verify/reset tokens; the server fails closed if unset (never logs tokens) |
 | `ADMIN_EMAILS` | no | Comma-separated emails promoted to **ROOT admin** at boot (root manages the admin roster) |

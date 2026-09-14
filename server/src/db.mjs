@@ -33,9 +33,24 @@ export function getPool() {
     // publicly-trusted certs, so strict verification succeeds out of the box.
     // PGSSLMODE=no-verify explicitly opts out (insecure — for proxies that
     // terminate TLS with self-signed certs only); PGSSLMODE=disable turns it off.
+    // NOTE: some Railway egress paths hit a Supavisor hop whose chain the Node
+    // trust store rejects ("self-signed certificate in certificate chain").
+    // In that case the ONLY supported fallback is PGSSLMODE=no-verify, and it
+    // must be understood as transport-encryption-only: it stops passive
+    // sniffing but no longer authenticates the server.
     const wantSsl =
       process.env.PGSSLMODE !== "disable" &&
       (isRemoteHost() || /sslmode=require/.test(DATABASE_URL));
+    const insecure = process.env.PGSSLMODE === "no-verify";
+    if (insecure) {
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          msg: "tls_verification_disabled",
+          hint: "PGSSLMODE=no-verify: transport is encrypted but the server is NOT authenticated. Fix the chain (proper pooler cert) instead of living on this.",
+        })
+      );
+    }
     pool = new pg.Pool({
       connectionString: DATABASE_URL,
       // Supabase pooler-friendly defaults; small on purpose (single process).
