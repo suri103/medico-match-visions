@@ -83,7 +83,19 @@ export async function migrate() {
     // Advisory lock (namespace) held for the duration of the migration run.
     await client.query("SELECT pg_advisory_lock(791234567)");
     try {
-      const sql = fs.readFileSync(path.join(__dirname, "..", "migrations", "schema.sql"), "utf8");
+      let sql = fs.readFileSync(path.join(__dirname, "..", "migrations", "schema.sql"), "utf8");
+      // SEED_SAMPLE_DATA=false: the fabricated fixtures (17 sample doctor
+      // profiles + 4 organiser-less events) are DROPPED from the DDL so a fresh
+      // database never receives them, and any rows seeded by an earlier boot are
+      // purged below. Plans and coupons are NOT fixtures — they stay (they are
+      // real pricing config, not deceptive content).
+      const suppressFixtures = process.env.SEED_SAMPLE_DATA === "false";
+      if (suppressFixtures) {
+        sql = sql.replace(
+          /-- @seed-sample-data:start[\s\S]*?-- @seed-sample-data:end[^\n]*/g,
+          "-- (sample-data seed suppressed: SEED_SAMPLE_DATA=false)"
+        );
+      }
       await client.query(
         `CREATE TABLE IF NOT EXISTS schema_version (
            version INT PRIMARY KEY,
@@ -94,6 +106,27 @@ export async function migrate() {
       await client.query(
         `INSERT INTO schema_version (version) VALUES (1) ON CONFLICT (version) DO NOTHING`
       );
+      if (suppressFixtures) {
+        // Purge fixtures left by an earlier boot. Dependents (favorites,
+        // shortlists, contact_views, profile_views, profile_photos,
+        // kundali_reports, video_dates.other_profile_id) are ON DELETE CASCADE,
+        // so no orphans remain. Events are matched by their seeded ids AND a
+        // NULL organiser so a real member's event can never be swept up.
+        const profiles = await client.query("DELETE FROM profiles WHERE is_sample = TRUE");
+        const events = await client.query(
+          `DELETE FROM events WHERE created_by IS NULL AND id IN ('e1','e2','e3','e4')`
+        );
+        if (profiles.rowCount > 0 || events.rowCount > 0) {
+          console.log(
+            JSON.stringify({
+              level: "info",
+              msg: "sample_data_purged",
+              profiles: profiles.rowCount,
+              events: events.rowCount,
+            })
+          );
+        }
+      }
     } finally {
       await client.query("SELECT pg_advisory_unlock(791234567)");
     }

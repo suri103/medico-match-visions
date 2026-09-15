@@ -444,12 +444,17 @@ CREATE TABLE IF NOT EXISTS event_rsvps (
   PRIMARY KEY (event_id, user_id)
 );
 
+-- @seed-sample-data:start events
+-- Fabricated events with no organizer (created_by NULL). Suppressed entirely
+-- when SEED_SAMPLE_DATA=false — see db.mjs migrate(), which strips this block
+-- and deletes already-seeded rows at boot.
 INSERT INTO events (id, title, event_date, event_time, location, description) VALUES
   ('e1', 'Medical Professionals Mixer', 'May 15', '7:00 PM', 'Boston, MA', 'Join us for an evening of networking with fellow medical professionals. Refreshments and dinner will be served.'),
   ('e2', 'Healthcare Innovation Summit & Gala', 'May 28', '9:00 AM', 'New York, NY', 'A full-day summit focusing on the latest innovations in healthcare technology, clinical trials, and practice management.'),
   ('e3', 'Wellness & Mindfulness Retreat for Doctors', 'Jun 10', '10:00 AM', 'San Francisco, CA', 'A weekend retreat focused on mental wellbeing, burnout prevention, and social connection for healthcare practitioners.'),
   ('e4', 'Delhi Medico Evening & Networking Dinner', 'Jun 22', '6:30 PM', 'Delhi, India', 'An exclusive networking evening in New Delhi for physicians, residents, and specialists across major hospitals.')
 ON CONFLICT (id) DO NOTHING;
+-- @seed-sample-data:end events
 
 -- P0-6 Success stories
 CREATE TABLE IF NOT EXISTS success_stories (
@@ -584,6 +589,7 @@ END $$;
 -- Seed: browsable profiles (the former in-app "sample data", now real rows).
 -- Contact fields deliberately NULL â€” nothing is fabricated.
 -- ----------------------------------------------------------------------------
+-- @seed-sample-data:start profiles
 INSERT INTO profiles (id, is_sample, full_name, gender, age, specialty, degree,
   hospital, city, state, country, interests, photo_url, sexual_orientation,
   ethnicity, religion, caste, subcaste, gotra, mother_tongue, rashi, nakshatra,
@@ -679,6 +685,7 @@ ON CONFLICT (id) DO NOTHING;
 UPDATE profiles SET about_me = 'Dedicated medical professional passionate about healthcare excellence and balanced living.',
   looking_for = 'Seeking a thoughtful partner who values family and mutual respect.'
 WHERE about_me IS NULL AND is_sample;
+-- @seed-sample-data:end profiles
 
 
 -- ============================================================================
