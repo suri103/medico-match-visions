@@ -122,6 +122,15 @@ export const useAuth = () => {
         setServerSignedIn(false);
         return;
       }
+      // FIX (navbar-for-anonymous bug): only trust the "offline grace window"
+      // (valid=true from a network-failure fallback) when we actually HAVE a
+      // session to preserve. An anonymous visitor (no cookie, no localStorage
+      // session) must stay anonymous even if the API is unreachable — the old
+      // code flipped them to signed-in whenever serverMe() hit a network
+      // error, showing the authenticated navbar to logged-out visitors.
+      if (me.source === 'network' && !session?.user && !hasCookie) {
+        return;
+      }
       setServerSignedIn(true);
       const plan = planFromSku(me.activePlan);
       try {
