@@ -95,15 +95,16 @@ const base = () => getApiBaseUrl();
 // mutating request (the server rejects 403 without it).
 const credentials = "include";
 
-const readCsrfCookie = (): string | null => {
-  if (typeof document === "undefined") return null;
-  const raw = document.cookie || "";
-  for (const part of raw.split(/;\s*/)) {
-    const eq = part.indexOf("=");
-    if (eq > 0 && part.slice(0, eq) === "mm_csrf") return part.slice(eq + 1);
-  }
-  return null;
-};
+// CSRF token: shared cache in src/lib/csrf.ts. On a split-origin deploy the
+// SPA cannot read the API domain's mm_csrf cookie via document.cookie, so the
+// cache (populated from the login/verify JSON body and GET /api/csrf) is the
+// only reliable source. The cookie fallback covers same-origin dev.
+import { getCsrfToken as sharedGetCsrfToken } from "@/lib/csrf";
+
+function csrfHeader(): Record<string, string> {
+  const t = sharedGetCsrfToken();
+  return t ? { "X-CSRF-Token": t } : {};
+}
 
 function authHeaders(): Record<string, string> {
   try {
@@ -122,26 +123,34 @@ function authHeaders(): Record<string, string> {
   }
 }
 
-function csrfHeader(): Record<string, string> {
-  const t = readCsrfCookie();
-  return t ? { "X-CSRF-Token": t } : {};
-}
-
 /** True when a real server session exists AND an API base URL is configured.
  * Audit M-12 / item 1: also true when the httpOnly session cookie is present
  * even if the legacy `mm:authSession` Bearer token isn't (e.g. fresh login
  * where the SPA picked up the cookie but the local persisted state is still
- * hydrating). */
+ * hydrating).
+ * SPLIT-ORIGIN ADDITION: on a Vercel-SPA + Railway-API deploy the cookies live
+ * on the API's domain and are invisible to document.cookie on the SPA origin,
+ * so the cookie probes below always miss. A session that the SERVER just
+ * issued (login / verify-email mint it and signIn() persists it) is therefore
+ * also trusted here, within its 7-day TTL. This only gates which UI the SPA
+ * renders — the server remains the authority and 401s genuinely dead
+ * sessions, at which point signOut()/session-clear runs. */
 export function hasServerSession(): boolean {
   if (!base()) return false;
+  const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
   try {
     const raw = localStorage.getItem("mm:authSession");
     const session = raw ? JSON.parse(raw) : null;
     if (session?.token) return true;
+    // Cookie-first sessions (token absent) — trust a recently-issued one.
+    if (session?.user && session?.signedInAt) {
+      const age = Date.now() - Date.parse(session.signedInAt);
+      if (Number.isFinite(age) && age >= 0 && age < SESSION_TTL_MS) return true;
+    }
   } catch {
     /* fall through to cookie check */
   }
-  return Boolean(readCsrfCookie() || (typeof document !== "undefined" && /mm_session=/.test(document.cookie || "")));
+  return Boolean(sharedGetCsrfToken() || (typeof document !== "undefined" && /mm_session=/.test(document.cookie || "")));
 }
 
 async function call<T>(path: string, init?: RequestInit): Promise<T | null> {

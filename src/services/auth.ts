@@ -41,20 +41,14 @@ const json = async (res: Response) => {
   }
 };
 
-// Audit M-12: read the CSRF cookie set by /api/csrf. Returns null on
-// non-cookie contexts (the cookie is non-httpOnly so this works in the SPA).
-const readCsrfCookie = (): string | null => {
-  if (typeof document === 'undefined') return null;
-  const raw = document.cookie || '';
-  for (const part of raw.split(/;\s*/)) {
-    const eq = part.indexOf('=');
-    if (eq > 0 && part.slice(0, eq) === 'mm_csrf') return part.slice(eq + 1);
-  }
-  return null;
-};
+// Audit M-12: CSRF token handling lives in src/lib/csrf.ts (shared with
+// api.ts/useAuth). On a split-origin deploy the SPA cannot read the API
+// domain's cookie, so the cache (populated from the login/verify JSON body)
+// is the reliable source; the cookie fallback covers same-origin dev.
+import { getCsrfToken as getCsrfTokenCached, setCsrfToken } from '@/lib/csrf';
 
 const csrfHeaders = (): Record<string, string> => {
-  const t = readCsrfCookie();
+  const t = getCsrfTokenCached();
   return t ? { 'X-CSRF-Token': t } : {};
 };
 
@@ -80,7 +74,7 @@ export const registerWithServer = async (payload: {
       method: 'POST',
       credentials,
       headers: baseHeaders(),
-      body: JSON.stringify({ ...payload, ...pow, csrfToken: readCsrfCookie() }),
+      body: JSON.stringify({ ...payload, ...pow, csrfToken: getCsrfTokenCached() }),
     });
   } catch {
     return { ok: false, status: 0, error: 'Could not reach the server.' };
@@ -98,13 +92,16 @@ export const loginWithServer = async (email: string, password: string): Promise<
       method: 'POST',
       credentials,
       headers: baseHeaders(),
-      body: JSON.stringify({ email, password, csrfToken: readCsrfCookie() }),
+      body: JSON.stringify({ email, password, csrfToken: getCsrfTokenCached() }),
     });
   } catch {
     return { ok: false, status: 0, error: 'Could not reach the server.' };
   }
   const body = await json(res);
   if (!res.ok) return { ok: false, status: res.status, error: body?.error || 'Invalid email or password.' };
+  // Cache the CSRF token delivered in the body — on a split-origin deploy the
+  // SPA cannot read the API domain's cookie, so this is the only source.
+  if (body?.csrfToken) setCsrfToken(body.csrfToken);
   return { ok: true, status: res.status, token: body.token, csrfToken: body.csrfToken, user: body.user };
 };
 
@@ -146,13 +143,14 @@ export const verifyEmail = async (token: string): Promise<AuthResult> => {
       method: 'POST',
       credentials,
       headers: baseHeaders(),
-      body: JSON.stringify({ token, csrfToken: readCsrfCookie() }),
+      body: JSON.stringify({ token, csrfToken: getCsrfTokenCached() }),
     });
   } catch {
     return { ok: false, status: 0, error: 'Could not reach the server.' };
   }
   const body = await json(res);
   if (!res.ok) return { ok: false, status: res.status, error: body?.error || 'Verification failed.' };
+  if (body?.csrfToken) setCsrfToken(body.csrfToken);
   return { ok: true, status: res.status, token: body.token, csrfToken: body.csrfToken, user: body.user };
 };
 
@@ -165,7 +163,7 @@ export const forgotPassword = async (email: string): Promise<AuthResult> => {
       method: 'POST',
       credentials,
       headers: baseHeaders(),
-      body: JSON.stringify({ email, ...pow, csrfToken: readCsrfCookie() }),
+      body: JSON.stringify({ email, ...pow, csrfToken: getCsrfTokenCached() }),
     });
   } catch {
     return { ok: false, status: 0, error: 'Could not reach the server.' };
@@ -183,7 +181,7 @@ export const resetPassword = async (token: string, password: string): Promise<Au
       method: 'POST',
       credentials,
       headers: baseHeaders(),
-      body: JSON.stringify({ token, password, csrfToken: readCsrfCookie() }),
+      body: JSON.stringify({ token, password, csrfToken: getCsrfTokenCached() }),
     });
   } catch {
     return { ok: false, status: 0, error: 'Could not reach the server.' };
@@ -216,7 +214,7 @@ export const changePassword = async (currentPassword: string, newPassword: strin
       method: 'POST',
       credentials,
       headers: baseHeaders(token),
-      body: JSON.stringify({ currentPassword, newPassword, csrfToken: readCsrfCookie() }),
+      body: JSON.stringify({ currentPassword, newPassword, csrfToken: getCsrfTokenCached() }),
     });
   } catch {
     return { ok: false, status: 0, error: 'Could not reach the server.' };

@@ -2,6 +2,7 @@ import { usePersistedState } from './usePersistedState';
 import { useCallback, useEffect, useState } from 'react';
 import { serverMe, isAuthServerConfigured } from '@/services/auth';
 import { localAvatar } from '@/lib/avatar';
+import { getCsrfToken as readCsrfTokenFromCookieOrCache, setCsrfToken as setCsrfTokenCache } from '@/lib/csrf';
 
 export interface AuthUser {
   id: string;
@@ -55,19 +56,11 @@ const clearClientCookie = (name: string) => {
   document.cookie = `${name}=; Path=/; Max-Age=0; SameSite=Strict`;
 };
 
-// In-memory cache of the most recent CSRF token, kept in sync with the cookie
-// so the fetch layer can echo it on every mutating request without a round-trip
-// to read the cookie.
-let csrfTokenCache: string | null = null;
-export const getCsrfToken = (): string | null => {
-  if (csrfTokenCache) return csrfTokenCache;
-  const fromCookie = readCookie(CSRF_COOKIE);
-  if (fromCookie) csrfTokenCache = fromCookie;
-  return csrfTokenCache;
-};
-const setCsrfTokenCache = (token: string | null) => {
-  csrfTokenCache = token;
-};
+// In-memory CSRF cache lives in src/lib/csrf.ts — shared with api.ts and
+// auth.ts so the token delivered in the login/verify JSON body (the only way
+// to obtain it on a split-origin deploy, where cross-domain cookies are
+// invisible to document.cookie) reaches every mutating request.
+export const getCsrfToken = readCsrfTokenFromCookieOrCache;
 
 // Fetch a fresh CSRF token from the server (the server also sets the cookie).
 // Call this after sign-in, after sign-out, and on app boot.

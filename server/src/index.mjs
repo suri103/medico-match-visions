@@ -181,6 +181,13 @@ const CSRF_COOKIE_TTL_MS = 12 * 60 * 60 * 1000; // 12h — rotate more often tha
 
 const isProductionEnv = process.env.NODE_ENV === "production";
 const cookieSecure = isProductionEnv; // Secure flag OFF for loopback dev so curl/test can drive it
+// Split-origin deploys (SPA on Vercel, API on Railway) are cross-site from the
+// browser's perspective: SameSite=Strict cookies are NEVER attached to those
+// fetches, so cookie-first auth silently dies (every /api/* call 401s and the
+// SPA falls back to demo content). Production therefore uses SameSite=None,
+// which requires the Secure flag (already set above). Local dev keeps Strict —
+// frontend and API are both localhost, i.e. same-site, so Strict works there.
+const cookieSameSite = isProductionEnv ? "None" : "Strict";
 
 function setSessionCookie(res, token) {
   // C1: res.setHeader("Set-Cookie") REPLACES — login/verify set session + CSRF
@@ -192,7 +199,7 @@ function setSessionCookie(res, token) {
       "Path=/",
       `Max-Age=${Math.floor(SESSION_COOKIE_TTL_MS / 1000)}`,
       "HttpOnly",
-      "SameSite=Strict",
+      `SameSite=${cookieSameSite}`,
       cookieSecure ? "Secure" : "",
     ]
       .filter(Boolean)
@@ -208,7 +215,7 @@ function clearSessionCookie(res) {
       "Path=/",
       "Max-Age=0",
       "HttpOnly",
-      "SameSite=Strict",
+      `SameSite=${cookieSameSite}`,
       cookieSecure ? "Secure" : "",
     ]
       .filter(Boolean)
@@ -224,7 +231,7 @@ function setCsrfCookie(res, token) {
       "Path=/",
       `Max-Age=${Math.floor(CSRF_COOKIE_TTL_MS / 1000)}`,
       // NOT HttpOnly — the JS layer needs to read it to echo on mutating calls.
-      "SameSite=Strict",
+      `SameSite=${cookieSameSite}`,
       cookieSecure ? "Secure" : "",
     ]
       .filter(Boolean)
