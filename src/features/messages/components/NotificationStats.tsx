@@ -37,7 +37,7 @@ const NotificationStats: React.FC<NotificationStatsProps> = ({
             <Bell className="h-5 w-5 text-blue-600" />
           </div>
           <div className="ml-3 min-w-0">
-            <div className="text-xs text-slate-500 font-medium truncate">New Messages</div>
+            <div className="text-xs text-slate-500 font-medium truncate" title="New Messages">New Messages</div>
             <div className="text-xl font-bold text-slate-800">{getNotificationCount('message')}</div>
           </div>
         </div>
@@ -57,7 +57,7 @@ const NotificationStats: React.FC<NotificationStatsProps> = ({
             <Eye className="h-5 w-5 text-sky-600" />
           </div>
           <div className="ml-3 min-w-0">
-            <div className="text-xs text-slate-500 font-medium truncate">Profile Views</div>
+            <div className="text-xs text-slate-500 font-medium truncate" title="Profile Views">Profile Views</div>
             <div className="text-xl font-bold text-slate-800">{getNotificationCount('profile_view')}</div>
           </div>
         </div>
@@ -77,7 +77,7 @@ const NotificationStats: React.FC<NotificationStatsProps> = ({
             <Heart className="h-5 w-5 text-red-600" />
           </div>
           <div className="ml-3 min-w-0">
-            <div className="text-xs text-slate-500 font-medium truncate">Interests</div>
+            <div className="text-xs text-slate-500 font-medium truncate" title="Interests">Interests</div>
             <div className="text-xl font-bold text-slate-800">{getNotificationCount('interest')}</div>
           </div>
         </div>
@@ -97,7 +97,7 @@ const NotificationStats: React.FC<NotificationStatsProps> = ({
             <Calendar className="h-5 w-5 text-green-600" />
           </div>
           <div className="ml-3 min-w-0">
-            <div className="text-xs text-slate-500 font-medium truncate">Date Requests</div>
+            <div className="text-xs text-slate-500 font-medium truncate" title="Date Requests">Date Requests</div>
             <div className="text-xl font-bold text-slate-800">{getNotificationCount('video_request')}</div>
           </div>
         </div>
