@@ -197,7 +197,7 @@ const OnboardingPage = () => {
               <Input id="ob-name" placeholder="Jane Smith" value={profile.name} onChange={(e) => update('name', e.target.value)} />
               <p className="text-[11px] text-slate-500 mt-1">Use your real name — matrimonial profiles are shown to prospective partners.</p>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-end">
               <div>
                 <Label htmlFor="ob-dob">Date of birth</Label>
                 <Input id="ob-dob" type="date" value={profile.dob} onChange={(e) => update('dob', e.target.value)} />
@@ -217,7 +217,7 @@ const OnboardingPage = () => {
                 </select>
               </div>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-end">
               <div>
                 <Label htmlFor="ob-height">Height (cm)</Label>
                 <Input id="ob-height" type="number" placeholder="170" value={profile.heightCm} onChange={(e) => update('heightCm', e.target.value)} />
@@ -252,7 +252,7 @@ const OnboardingPage = () => {
                 {careerStagesList.map((s) => <option key={s} value={s}>{s}</option>)}
               </select>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-end">
               <div>
                 <Label htmlFor="ob-degree">Degree *</Label>
                 <select
@@ -317,7 +317,7 @@ const OnboardingPage = () => {
             <p className="text-xs text-slate-500">
               Used for Kundali Milan compatibility scoring. Optional, but it unlocks the 36-Guna report on profiles you view.
             </p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-end">
               <div>
                 <Label htmlFor="ob-rashi">Rashi (Moon sign)</Label>
                 <select id="ob-rashi" className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
@@ -335,7 +335,7 @@ const OnboardingPage = () => {
                 </select>
               </div>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-end">
               <div>
                 <Label htmlFor="ob-manglik">Manglik</Label>
                 <select id="ob-manglik" className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
@@ -351,7 +351,7 @@ const OnboardingPage = () => {
                 </select>
               </div>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-end">
               <div>
                 <Label htmlFor="ob-religion">Religion</Label>
                 <select id="ob-religion" className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
@@ -375,7 +375,7 @@ const OnboardingPage = () => {
         return (
           <div className="space-y-3">
             <p className="text-xs text-slate-500">These drive which profiles we surface to you first.</p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-end">
               <div>
                 <Label htmlFor="ob-prefmin">Partner age from</Label>
                 <Input id="ob-prefmin" type="number" placeholder="24" value={profile.prefAgeMin} onChange={(e) => update('prefAgeMin', e.target.value)} />
@@ -407,7 +407,7 @@ const OnboardingPage = () => {
       case 'family':
         return (
           <div className="space-y-3">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-end">
               <div>
                 <Label htmlFor="ob-familytype">Family type</Label>
                 <select id="ob-familytype" className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
