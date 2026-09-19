@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button';
 import { useNavigate, Link } from 'react-router-dom';
 import {
   Heart, Video, ArrowRight, ShieldCheck,
+  Eye, EyeOff,
   Sparkles, Lock, Mail, KeyRound, Search,
   Stethoscope, ChevronRight
 } from 'lucide-react';
@@ -73,6 +74,7 @@ const Index = () => {
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [showHeroPassword, setShowHeroPassword] = useState(false);
 
   useEffect(() => {
     const onStorage = () => setHasProfile(hasCreatedProfile());
@@ -451,13 +453,22 @@ const Index = () => {
                       <div className="relative">
                         <Lock size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                         <Input
-                          type="password"
+                          type={showHeroPassword ? 'text' : 'password'}
                           placeholder="Enter your password"
                           value={loginPassword}
                           onChange={(e) => setLoginPassword(e.target.value)}
-                          className="pl-8 text-xs h-9 rounded-xl"
+                          className="pl-8 pr-9 text-xs h-9 rounded-xl"
                           required
                         />
+                        <button
+                          type="button"
+                          onClick={() => setShowHeroPassword((v) => !v)}
+                          aria-label={showHeroPassword ? 'Hide password' : 'Show password'}
+                          title={showHeroPassword ? 'Hide password' : 'Show password'}
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1"
+                        >
+                          {showHeroPassword ? <EyeOff size={14} /> : <Eye size={14} />}
+                        </button>
                       </div>
                     </div>
 
