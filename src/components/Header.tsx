@@ -67,9 +67,10 @@ const Header = () => {
             {showAppNav && (
               <>
                 <button
-                  onClick={() => navigate('/notifications')}
+                  onClick={() => navigate('/messages?tab=whats-new', { state: { activeTab: 'whats-new' } })}
                   className="relative mr-2 p-2 rounded-full hover:bg-slate-100 text-slate-600"
                   title="Notifications"
+                  aria-label="Notifications"
                 >
                   <Bell size={18} />
                   {unreadCount > 0 && (

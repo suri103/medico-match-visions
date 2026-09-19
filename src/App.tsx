@@ -34,7 +34,6 @@ const InterestedInYouPage = lazy(() => import("./pages/InterestedInYouPage"));
 const SavedMatchesPage = lazy(() => import("./pages/SavedMatchesPage"));
 const PublicProfilePage = lazy(() => import("./pages/PublicProfilePage"));
 const AdminPage = lazy(() => import("./pages/AdminPage"));
-const NotificationsPage = lazy(() => import("./pages/NotificationsPage"));
 const PrivacyPage = lazy(() => import("./pages/PrivacyPage"));
 const TermsPage = lazy(() => import("./pages/TermsPage"));
 const DeleteAccountPage = lazy(() => import("./pages/DeleteAccountPage"));
@@ -143,7 +142,6 @@ const App = () => {
                 <Route path="/account" element={<ProtectedRoute><AccountPage /></ProtectedRoute>} />
                 <Route path="/delete-account" element={<ProtectedRoute><DeleteAccountPage /></ProtectedRoute>} />
                 <Route path="/admin" element={<ProtectedRoute><AdminPage /></ProtectedRoute>} />
-                <Route path="/notifications" element={<ProtectedRoute><NotificationsPage /></ProtectedRoute>} />
 
                 <Route path="*" element={<NotFound />} />
               </Routes>

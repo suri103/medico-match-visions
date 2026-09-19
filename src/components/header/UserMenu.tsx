@@ -18,8 +18,8 @@ const UserMenu: React.FC<UserMenuProps> = ({ user, onSignOut }) => {
   const navigate = useNavigate();
 
   // Notifications bell lives ONLY in Header.tsx (single server-driven badge ->
-  // /notifications). A second bell here duplicated it on desktop and counted
-  // from the local store instead of the server feed.
+  // /messages?tab=whats-new). The old /notifications route was removed because
+  // nothing linked to it and the whats-new view is the richer center.
 
   // The avatar uses the real identity (Clerk or the stored doctor profile).
   // When no photo is available it falls back to the initials, never a fake persona.
