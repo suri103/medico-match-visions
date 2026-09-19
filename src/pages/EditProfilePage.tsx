@@ -632,10 +632,14 @@ const EditProfilePage = () => {
                 </div>
 
                 {/* Birth details: power real kundali matching (rashi/nakshatra
-                    self-declaration alone is low-fidelity) + astro consults. */}
+                    self-declaration alone is low-fidelity) + astro consults.
+                    NOTE: all three labels carry min-h-7 — the long first label
+                    wraps to two lines on narrow columns while the others stay
+                    on one, and without a reserved height the inputs drift out
+                    of alignment. */}
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <div>
-                    <Label htmlFor="create-birth-date">Date of Birth (for kundali)</Label>
+                    <Label htmlFor="create-birth-date" className="min-h-7 leading-snug">Date of Birth (for kundali)</Label>
                     <Input
                       id="create-birth-date"
                       type="date"
@@ -644,7 +648,7 @@ const EditProfilePage = () => {
                     />
                   </div>
                   <div>
-                    <Label htmlFor="create-birth-time">Time of Birth</Label>
+                    <Label htmlFor="create-birth-time" className="min-h-7 leading-snug">Time of Birth</Label>
                     <Input
                       id="create-birth-time"
                       type="time"
@@ -653,7 +657,7 @@ const EditProfilePage = () => {
                     />
                   </div>
                   <div>
-                    <Label htmlFor="create-birth-city">City of Birth</Label>
+                    <Label htmlFor="create-birth-city" className="min-h-7 leading-snug">City of Birth</Label>
                     <Input
                       id="create-birth-city"
                       placeholder="e.g. Mumbai"
