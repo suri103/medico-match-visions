@@ -357,6 +357,28 @@ export const FavoritesProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       // interest slot nor double-append (the ledger never refunds).
       if (interests.some((i) => i.doctor.id === doctor.id)) return true;
 
+      // Photo gate (onboarding gap-fix #3): a generated initials avatar must
+      // never represent a real member on a matrimonial platform. When the
+      // sender has no real photo, refuse the interest and send them to the
+      // photo step. A soft gate — it never blocks browsing or shortlisting.
+      try {
+        const stored = JSON.parse(localStorage.getItem('mm:profilePhotos') || '[]') as Array<{ url?: string }>;
+        const hasReal = stored.some((p) => {
+          const u = (p?.url || '').trim();
+          return Boolean(u) && !u.startsWith('data:image/svg');
+        });
+        if (!hasReal) {
+          toast({
+            title: 'Add a profile photo first',
+            description: 'Profiles without a real photo cannot send interests — photoless profiles are also ranked last in search.',
+          });
+          window.setTimeout(() => {
+            window.location.assign('/onboarding?step=photo');
+          }, 600);
+          return false;
+        }
+      } catch { /* storage unavailable — proceed (server still validates) */ }
+
       // Wired mode: optimistic UI with server-authoritative reconciliation and
       // rollback (audit C-1: optimistic UI must cleanly rollback on quota/server error).
       if (hasServerSession()) {

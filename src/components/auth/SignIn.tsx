@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { toast } from '@/hooks/use-toast';
 import { loginWithServer, forgotPassword, isAuthServerConfigured } from '@/services/auth';
+import { hasCreatedProfile } from '@/lib/profile';
 import { Badge } from '@/components/ui/badge';
 import { useAuth } from '@/hooks/useAuth';
 import { demoModeEnabled } from '@/lib/devAuth';
@@ -113,9 +114,11 @@ const SignIn: React.FC = () => {
         setIsLoading(false);
         toast({
           title: `Welcome back, Dr. ${name}! 🩺`,
-          description: "Signed in successfully. Redirecting to your matrimonial matches...",
+          description: "Signed in successfully.",
         });
-        navigate('/matches');
+        // Onboarding gap-fix #1: members without a profile go to the setup
+        // wizard first; everyone else lands on Matches.
+        navigate(hasCreatedProfile() ? '/matches' : '/onboarding');
         return;
       }
       if (res.status === 401) {

@@ -10,6 +10,7 @@ import DoctorsGrid from '@/features/matches/components/DoctorsGrid';
 import { Button } from '@/components/ui/button';
 import { Filter } from 'lucide-react';
 import { useSidebar } from '@/components/ui/sidebar';
+import ProfileCompletenessBanner from '@/components/ProfileCompletenessBanner';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 const OnlineHeader: React.FC<{ count: number; onSortChange: (value: string) => void }> = ({ count, onSortChange }) => {
@@ -189,6 +190,9 @@ const OnlinePage = () => {
               <div className="max-w-7xl mx-auto w-full">
                 {/* Header section with count, mobile filter button, and sorting */}
                 <OnlineHeader count={onlineDoctorsList.length} onSortChange={handleSortChange} />
+
+                {/* Onboarding gap-fix #2: persistent completion nudge. */}
+                <ProfileCompletenessBanner className="mb-6" />
 
                 {/* Doctors Grid with all interactive modals */}
                 <DoctorsGrid

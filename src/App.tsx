@@ -38,6 +38,9 @@ const NotificationsPage = lazy(() => import("./pages/NotificationsPage"));
 const PrivacyPage = lazy(() => import("./pages/PrivacyPage"));
 const TermsPage = lazy(() => import("./pages/TermsPage"));
 const DeleteAccountPage = lazy(() => import("./pages/DeleteAccountPage"));
+// Onboarding gap-fix #1: post-verification setup wizard. New members are routed
+// here instead of landing on an empty Matches grid.
+const OnboardingPage = lazy(() => import("./pages/OnboardingPage"));
 // Launch-gap fix #2: legal pages. Static, content-checked-in, lawyer-reviewed
 // before launch. Each is independent (no shared layout coupling) so the legal
 // owner can edit one without touching the product shell.
@@ -133,6 +136,9 @@ const App = () => {
                 <Route path="/messages" element={<ProtectedRoute><MessagesPage /></ProtectedRoute>} />
                 <Route path="/profile" element={<ProtectedRoute><PublicProfilePage /></ProtectedRoute>} />
                 <Route path="/profile/edit" element={<ProtectedRoute><EditProfilePage /></ProtectedRoute>} />
+                {/* Onboarding wizard (post-verify setup). Same protection as the
+                    rest of the member area — a guest cannot reach it. */}
+                <Route path="/onboarding" element={<ProtectedRoute><OnboardingPage /></ProtectedRoute>} />
                 <Route path="/doctor/:id" element={<ProtectedRoute><PublicProfilePage /></ProtectedRoute>} />
                 <Route path="/account" element={<ProtectedRoute><AccountPage /></ProtectedRoute>} />
                 <Route path="/delete-account" element={<ProtectedRoute><DeleteAccountPage /></ProtectedRoute>} />

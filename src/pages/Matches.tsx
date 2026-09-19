@@ -18,6 +18,7 @@ import SavedSearchesList from '@/features/matches/components/SavedSearchesList';
 import MatchesHeader from '@/features/matches/components/MatchesHeader';
 import DoctorsGrid from '@/features/matches/components/DoctorsGrid';
 import { SavedSearch } from '@/features/matches/types';
+import ProfileCompletenessBanner from '@/components/ProfileCompletenessBanner';
 
 const Matches = () => {
   const location = useLocation();
@@ -232,6 +233,10 @@ const Matches = () => {
                   setShowSavedSearches={setShowSavedSearches}
                   onSortChange={handleSortChange}
                 />
+
+                {/* Onboarding gap-fix #2: the persistent completion nudge —
+                    invisible once the member is at/above target. */}
+                <ProfileCompletenessBanner className="mt-4" />
 
                 {/* P0-5 Today's picks: server-ranked daily matches. */}
                 {dailyPicks.length > 0 && (

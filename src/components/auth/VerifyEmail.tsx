@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { toast } from '@/hooks/use-toast';
 import { verifyEmail } from '@/services/auth';
 import { useAuth } from '@/hooks/useAuth';
+import { hasCreatedProfile } from '@/lib/profile';
 import { Button } from '@/components/ui/button';
 
 const VerifyEmail: React.FC = () => {
@@ -34,7 +35,9 @@ const VerifyEmail: React.FC = () => {
           degree: res.user.degree || undefined,
         }, res.token || undefined);
         toast({ title: 'Email verified', description: 'Your account is now active. Welcome!' });
-        navigate('/matches');
+        // Onboarding gap-fix #1: a brand-new member has no profile yet — send
+        // them into the setup wizard rather than an empty Matches grid.
+        navigate(hasCreatedProfile() ? '/matches' : '/onboarding');
       } else {
         setStatus('error');
         setError(res.error || 'Verification failed. The link may have expired.');
