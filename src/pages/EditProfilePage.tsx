@@ -328,12 +328,6 @@ const EditProfilePage = () => {
                   Update your doctor biodata and preferences for prospective matrimonial matches.
                 </p>
               </div>
-              <Button
-                className="bg-mediblue-600 hover:bg-mediblue-700 text-white text-xs sm:text-sm"
-                onClick={handleCreateProfile}
-              >
-                <Check size={16} className="mr-1.5" /> Save Biodata
-              </Button>
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 sm:gap-8">
