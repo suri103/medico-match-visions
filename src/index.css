@@ -75,6 +75,59 @@
   body {
     @apply bg-background text-foreground;
   }
+
+  /* ---------------------------------------------------------------------
+     Native date/time pickers.
+     WebKit renders `<input type="date">` / `type="time">` as an internal
+     shadow tree: the editable fields (::-webkit-datetime-edit) plus a picker
+     button (::-webkit-calendar-picker-indicator) that draws the calendar /
+     clock glyph. Two things reliably break that layout:
+       1. Host `display: flex` (our Input used to set it) — the indicator is a
+          flex item whose content is a background image, so it has no
+          min-content width and collapses to 0 => icon invisible.
+       2. Nothing constraining the indicator — it then sits immediately after
+          the text instead of at the right edge of the field.
+     So: force block layout on the host, reserve padding on the right, and
+     absolutely position the indicator against the field's right edge. This
+     works for both the date and time controls and at every field width.
+     (Firefox has no ::-webkit-* hook and renders its own native control.)
+     --------------------------------------------------------------------- */
+  input[type="date"],
+  input[type="time"],
+  input[type="datetime-local"],
+  input[type="month"],
+  input[type="week"] {
+    display: block;
+    position: relative;
+    /* room for the pinned picker icon + a little breathing space */
+    padding-right: 2.5rem;
+  }
+
+  input[type="date"]::-webkit-calendar-picker-indicator,
+  input[type="time"]::-webkit-calendar-picker-indicator,
+  input[type="datetime-local"]::-webkit-calendar-picker-indicator,
+  input[type="month"]::-webkit-calendar-picker-indicator,
+  input[type="week"]::-webkit-calendar-picker-indicator {
+    position: absolute;
+    right: 0.6rem;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 1.05rem;
+    height: 1.05rem;
+    margin: 0;
+    padding: 0;
+    opacity: 1;
+    cursor: pointer;
+  }
+
+  /* Keep the editable text inside the reserved area so it can never run under
+     the icon on narrow columns. */
+  input[type="date"]::-webkit-datetime-edit,
+  input[type="time"]::-webkit-datetime-edit,
+  input[type="datetime-local"]::-webkit-datetime-edit {
+    overflow: hidden;
+    min-width: 0;
+  }
 }
 
 @layer components {

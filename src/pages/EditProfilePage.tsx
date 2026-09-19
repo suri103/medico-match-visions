@@ -633,14 +633,18 @@ const EditProfilePage = () => {
 
                 {/* Birth details: power real kundali matching (rashi/nakshatra
                     self-declaration alone is low-fidelity) + astro consults.
-                    ALIGNMENT: the grid is items-end so the three inputs always
-                    sit on the same row no matter how many lines a label wraps
-                    to (no pixel-height guessing). The min-h-10 reserve on the
-                    labels additionally keeps their text top-aligned so the row
-                    looks tidy rather than staggered. */}
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+                    ALIGNMENT/WIDTH: this block lives in the LEFT column of an
+                    lg:grid-cols-2 parent, so a 3-up row squeezed each field to
+                    ~150px — too narrow for the native date text plus its picker
+                    icon (which WebKit then clips) and the cause of the wrapped
+                    "Date of Birth (for kundali)" label. Two columns gives each
+                    field room, so labels no longer wrap at any breakpoint and
+                    the date/time icons have space. items-end stays as the
+                    structural guard: inputs always sit on one row regardless of
+                    label height. */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-end">
                   <div>
-                    <Label htmlFor="create-birth-date" className="min-h-10 leading-snug">Date of Birth (for kundali)</Label>
+                    <Label htmlFor="create-birth-date">Date of Birth (for kundali)</Label>
                     <Input
                       id="create-birth-date"
                       type="date"
@@ -649,7 +653,7 @@ const EditProfilePage = () => {
                     />
                   </div>
                   <div>
-                    <Label htmlFor="create-birth-time" className="min-h-10 leading-snug">Time of Birth</Label>
+                    <Label htmlFor="create-birth-time">Time of Birth</Label>
                     <Input
                       id="create-birth-time"
                       type="time"
@@ -658,7 +662,7 @@ const EditProfilePage = () => {
                     />
                   </div>
                   <div>
-                    <Label htmlFor="create-birth-city" className="min-h-10 leading-snug">City of Birth</Label>
+                    <Label htmlFor="create-birth-city">City of Birth</Label>
                     <Input
                       id="create-birth-city"
                       placeholder="e.g. Mumbai"
