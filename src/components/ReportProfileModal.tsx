@@ -15,6 +15,7 @@ import { Flag, ShieldAlert } from 'lucide-react';
 import { Doctor } from '@/features/matches/types';
 import { useFavoritesContext } from '@/features/favorites/FavoritesContext';
 import { toast } from '@/hooks/use-toast';
+import { reportProfile } from '@/services/api';
 
 interface ReportProfileModalProps {
   isOpen: boolean;
@@ -46,7 +47,7 @@ export const ReportProfileModal: React.FC<ReportProfileModalProps> = ({
 
   if (!doctor) return null;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedReason) {
       toast({
@@ -58,6 +59,10 @@ export const ReportProfileModal: React.FC<ReportProfileModalProps> = ({
     }
 
     setIsSubmitting(true);
+
+    try {
+      await reportProfile(doctor.id, selectedReason, details.trim());
+    } catch { /* ignore */ }
 
     try {
       const raw = localStorage.getItem('mm:reports');

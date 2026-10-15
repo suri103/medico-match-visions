@@ -167,11 +167,15 @@ export async function withTx(fn) {
   }
 }
 
-/** 'YYYY-MM' business period in India's timezone. */
+/** 'YYYY-MM' business period in India's timezone (locale/small-icu safe). */
 export function istPeriod(date = new Date()) {
-  return new Intl.DateTimeFormat("en-CA", {
+  const d = date instanceof Date && !Number.isNaN(date.getTime()) ? date : new Date();
+  const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: "Asia/Kolkata",
     year: "numeric",
     month: "2-digit",
-  }).format(date);
+  }).formatToParts(d);
+  const year = parts.find((p) => p.type === "year")?.value || String(d.getUTCFullYear());
+  const month = parts.find((p) => p.type === "month")?.value || String(d.getUTCMonth() + 1).padStart(2, "0");
+  return `${year}-${month}`;
 }

@@ -265,8 +265,14 @@ const AccountPage = () => {
       verificationStatus: 'pending',
     }));
     try {
-      const { submitVerificationDoc, hasServerSession } = await import('@/services/api');
+      const { submitVerificationDoc, saveMyServerProfile, hasServerSession } = await import('@/services/api');
       if (hasServerSession() && profile.verificationDocumentUrl) {
+        if (profile.councilName || profile.registrationNumber) {
+          await saveMyServerProfile({
+            council_name: profile.councilName || null,
+            registration_number: profile.registrationNumber || null,
+          }).catch(() => null);
+        }
         const r = await submitVerificationDoc('council', profile.verificationDocumentUrl);
         if (!r.ok) {
           toast({ title: "Server upload failed", description: r.error || "Saved on this device only.", variant: "destructive" });

@@ -2,6 +2,8 @@
 // are verified on the server (server/src/index.mjs) which holds the KEY SECRET —
 // it never ships in the frontend bundle. Point VITE_API_BASE_URL at that server.
 
+import { getCsrfToken } from "@/lib/csrf";
+
 // Resolved lazily so tests can stub the env per-case.
 const getApiBaseUrl = (): string => (import.meta.env.VITE_API_BASE_URL as string | undefined) || "";
 
@@ -11,13 +13,7 @@ export { getApiBaseUrl };
 // credentials: 'include') AND echo the CSRF token on mutating calls. The
 // legacy Bearer path is retained for the mobile app.
 const readCsrfCookie = (): string | null => {
-  if (typeof document === "undefined") return null;
-  const raw = document.cookie || "";
-  for (const part of raw.split(/;\s*/)) {
-    const eq = part.indexOf("=");
-    if (eq > 0 && part.slice(0, eq) === "mm_csrf") return part.slice(eq + 1);
-  }
-  return null;
+  return getCsrfToken();
 };
 
 const authBearer = (): Record<string, string> => {
@@ -204,6 +200,47 @@ export const takeActivationToken = (): string | null => {
     const token = sessionStorage.getItem(CHECKOUT_TOKEN_KEY);
     if (token) sessionStorage.removeItem(CHECKOUT_TOKEN_KEY);
     return token;
+  } catch {
+    return null;
+  }
+};
+
+export interface GenerateInvoiceRequest {
+  token: string;
+  amount: number;
+  planName?: string;
+  doctorName?: string;
+  gstin?: string;
+  billingAddress?: string;
+}
+
+export interface InvoiceResult {
+  invoiceNumber: string;
+  date: string;
+  planName: string;
+  doctorName: string;
+  gstin: string;
+  billingAddress: string;
+  baseAmount: number;
+  cgst: number;
+  sgst: number;
+  total: number;
+}
+
+/** Request an authoritative GST invoice for a verified payment token. */
+export const generateInvoice = async (
+  payload: GenerateInvoiceRequest
+): Promise<InvoiceResult | null> => {
+  if (!getApiBaseUrl() || !payload.token) return null;
+  try {
+    const res = await fetch(`${getApiBaseUrl()}/api/generate-invoice`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json", ...authBearer() },
+      body: JSON.stringify({ ...payload, csrfToken: readCsrfCookie() }),
+    });
+    if (!res.ok) return null;
+    return await res.json();
   } catch {
     return null;
   }

@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Header from '@/components/Header';
 import { usePersistedState } from '@/hooks/usePersistedState';
-import { hasServerSession, saveMyServerProfile, uploadMyPhoto, listMyPhotos, setPrimaryPhoto as serverSetPrimaryPhoto, deletePhoto as serverDeletePhoto } from '@/services/api';
+import { hasServerSession, saveMyServerProfile, getMyServerProfile, uploadMyPhoto, listMyPhotos, setPrimaryPhoto as serverSetPrimaryPhoto, deletePhoto as serverDeletePhoto } from '@/services/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -54,12 +54,46 @@ const EditProfilePage = () => {
     void (async () => {
       try {
         const serverPhotos = await listMyPhotos();
-        if (cancelled || serverPhotos.length === 0) return;
-        setProfilePhotos(serverPhotos.map((p) => ({
-          id: p.id,
-          url: p.url,
-          isPrimary: p.isPrimary,
-        })));
+        if (!cancelled && serverPhotos.length > 0) {
+          setProfilePhotos(serverPhotos.map((p) => ({
+            id: p.id,
+            url: p.url,
+            isPrimary: p.isPrimary,
+          })));
+        }
+        const sp = await getMyServerProfile();
+        if (!cancelled && sp) {
+          setProfile((prev) => ({
+            ...prev,
+            name: prev.name || sp.name.replace(/^Dr\.\s*/i, ''),
+            gender: (prev as unknown as Record<string, string>).gender || sp.gender || '',
+            age: prev.age || (sp.age ? String(sp.age) : ''),
+            specialty: prev.specialty || sp.specialty || '',
+            degree: prev.degree || sp.degree || '',
+            hospital: prev.hospital || sp.hospital || '',
+            location: prev.location || (sp.city ? `${sp.city}${sp.state ? `, ${sp.state}` : ''}` : ''),
+            about: prev.about || sp.aboutMe || '',
+            lookingFor: prev.lookingFor || sp.lookingFor || '',
+            heightCm: prev.heightCm || (sp.heightCm ? String(sp.heightCm) : ''),
+            maritalStatus: prev.maritalStatus || sp.maritalStatus || '',
+            motherTongue: prev.motherTongue || sp.motherTongue || '',
+            religion: prev.religion || sp.religion || '',
+            caste: prev.caste || sp.caste || '',
+            subcaste: (prev as unknown as Record<string, string>).subcaste || sp.subcaste || '',
+            gotra: (prev as unknown as Record<string, string>).gotra || sp.gotra || '',
+            rashi: (prev as unknown as Record<string, string>).rashi || sp.rashi || '',
+            nakshatra: (prev as unknown as Record<string, string>).nakshatra || sp.nakshatra || '',
+            manglik: (prev as unknown as Record<string, string>).manglik || sp.manglik || '',
+            birthDate: (prev as unknown as Record<string, string>).birthDate || sp.birthDate || '',
+            dob: prev.dob || sp.birthDate || '',
+            birthTime: (prev as unknown as Record<string, string>).birthTime || sp.birthTime || '',
+            birthCity: (prev as unknown as Record<string, string>).birthCity || sp.birthCity || '',
+            familyType: (prev as unknown as Record<string, string>).familyType || sp.familyType || '',
+            familyStatus: (prev as unknown as Record<string, string>).familyStatus || sp.familyStatus || '',
+            incomeBand: (prev as unknown as Record<string, string>).incomeBand || sp.incomeBand || '',
+            diet: (prev as unknown as Record<string, string>).diet || sp.diet || '',
+          }));
+        }
       } catch { /* offline — local cache remains */ }
     })();
     return () => { cancelled = true; };
@@ -181,6 +215,16 @@ const EditProfilePage = () => {
       try {
         const stage = (profile as { careerStage?: string }).careerStage || '';
         const degreeDeclared = (profile.degree || '').trim();
+        const dobVal = (profile as { birthDate?: string }).birthDate || profile.dob || null;
+        let calculatedAge = profile.age ? Number(profile.age) : null;
+        if (dobVal && !calculatedAge) {
+          const birth = new Date(dobVal);
+          if (!Number.isNaN(birth.getTime())) {
+            const diffMs = Date.now() - birth.getTime();
+            const ageDt = new Date(diffMs);
+            calculatedAge = Math.abs(ageDt.getUTCFullYear() - 1970);
+          }
+        }
         const isCompleted = Boolean(degreeDeclared) && !degreeDeclared.toLowerCase().includes('pursuing') && !degreeDeclared.toLowerCase().includes('student');
         const saved = await saveMyServerProfile({
           // "Dr." prefix only for COMPLETED qualifications (see mayUseDrTitle
@@ -188,6 +232,7 @@ const EditProfilePage = () => {
           full_name: `${isCompleted ? 'Dr. ' : ''}${profile.name}`.replace(/^Dr\.\s*Dr\./i, 'Dr.').trim(),
           career_stage: stage || null,
           gender: (profile as { gender?: string }).gender || null,
+          age: calculatedAge,
           degree: profile.degree || null,
           specialty: profile.specialty || null,
           hospital: profile.hospital || null,
@@ -208,7 +253,7 @@ const EditProfilePage = () => {
           manglik: profile.manglik || null,
           // Kundali fidelity: structured birth details (server normalizes an
           // empty birth_date to NULL; other fields are free-text).
-          birth_date: (profile as { birthDate?: string }).birthDate || null,
+          birth_date: dobVal,
           birth_time: (profile as { birthTime?: string }).birthTime || null,
           birth_city: (profile as { birthCity?: string }).birthCity || null,
           phone: profile.phone || null,

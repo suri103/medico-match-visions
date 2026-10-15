@@ -10,6 +10,7 @@ import {
   createRazorpayOrder,
   verifyRazorpayPayment,
   redeemActivationToken,
+  generateInvoice,
   isCheckoutServerConfigured,
   storeActivationToken,
   CheckoutError,
@@ -109,7 +110,15 @@ const PaymentModal: React.FC<PaymentModalProps> = ({
       // Same contract as the live path below: a failed immediate redemption
       // must persist the PAID token and say so — never drop it silently (C2).
       const purchasedSku = await redeemActivationToken(verification.activation.token);
-      if (!purchasedSku) {
+      if (purchasedSku) {
+        if (typeof generateInvoice === 'function') {
+          void generateInvoice({
+            token: verification.activation.token,
+            amount: payableAmount,
+            planName: serviceName,
+          }).catch(() => null);
+        }
+      } else {
         storeActivationToken(verification.activation.token);
         // M-2: try the authoritative /api/quota before alarming the user -
         // verify-time grants usually landed server-side already.
@@ -209,7 +218,15 @@ const PaymentModal: React.FC<PaymentModalProps> = ({
       if (verification.activation) {
         if (onSuccess) {
           purchasedSku = await redeemActivationToken(verification.activation.token);
-          if (!purchasedSku) {
+          if (purchasedSku) {
+            if (typeof generateInvoice === 'function') {
+              void generateInvoice({
+                token: verification.activation.token,
+                amount: payableAmount,
+                planName: serviceName,
+              }).catch(() => null);
+            }
+          } else {
             // Redemption failed HERE (e.g. a demo session has no account to
             // attach the entitlement to, or a transient network error). The
             // PAID token must never be dropped silently (audit C2): persist it

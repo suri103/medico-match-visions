@@ -252,6 +252,84 @@ const main = async () => {
     adminProfiles.status === 200 || adminProfiles.status === 503
   );
 
+  // 10. Forged invoice amount is ignored and authoritative captured amount is used (audit M-2 / C-3)
+  const invoiceForged = await api("POST", "/api/generate-invoice", {
+    token: actToken,
+    amount: 999999,
+  });
+  check(
+    "invoice ignores forged client amount and preserves authoritative total (₹1349)",
+    invoiceForged.status === 200 && invoiceForged.json?.total === 1349
+  );
+
+  const invalidTokenInvoice = await api("POST", "/api/generate-invoice", {
+    token: "invalid.forged.token",
+    amount: 1349,
+  });
+  check(
+    "invoice with forged activation token rejected with 400",
+    invalidTokenInvoice.status === 400
+  );
+
+  // 11. CSRF protection on cookie-authenticated session (audit C-1)
+  const webLogin = await api("POST", "/api/auth/login", {
+    email: "root@example.com",
+    password: "Password123!",
+  });
+  const cookies = webLogin.headers.get("set-cookie") || "";
+  const sessionMatch = /mm_session=([^;]+)/.exec(cookies);
+  const csrfMatch = /mm_csrf=([^;]+)/.exec(cookies);
+  const sessionCookie = sessionMatch ? sessionMatch[1] : "";
+  const csrfCookie = csrfMatch ? csrfMatch[1] : "";
+
+  if (sessionCookie && csrfCookie) {
+    const noCsrfPost = await api(
+      "POST",
+      "/api/blocks",
+      { userId: normalAdminId },
+      null,
+      { Cookie: `mm_session=${sessionCookie}; mm_csrf=${csrfCookie}` }
+    );
+    check(
+      "cookie session without X-CSRF-Token rejected with 403",
+      noCsrfPost.status === 403
+    );
+
+    const badCsrfPost = await api(
+      "POST",
+      "/api/blocks",
+      { userId: normalAdminId },
+      null,
+      {
+        Cookie: `mm_session=${sessionCookie}; mm_csrf=${csrfCookie}`,
+        "X-CSRF-Token": "invalid_csrf_token_value",
+      }
+    );
+    check(
+      "cookie session with mismatched X-CSRF-Token rejected with 403",
+      badCsrfPost.status === 403
+    );
+  } else {
+    check("web login sets mm_session and mm_csrf cookies", false);
+  }
+
+  // 12. Schema and regex integrity assertions (audit C-2, H-4, M-8)
+  const schemaSql = fs.readFileSync(path.join(__dirname, "..", "migrations", "schema.sql"), "utf8");
+  check(
+    "schema.sql contains credits_remaining on subscriptions",
+    schemaSql.includes("credits_remaining")
+  );
+  check(
+    "schema.sql contains updated_at on video_dates",
+    schemaSql.includes("updated_at") && schemaSql.includes("video_dates")
+  );
+
+  const indexSource = fs.readFileSync(path.join(__dirname, "..", "src", "index.mjs"), "utf8");
+  check(
+    "index.mjs sendOtpSms uses single-escaped digits regex /[^\d]/g",
+    indexSource.includes("replace(/[^\\d]/g, \"\")") && !indexSource.includes("replace(/[^\\\\d]/g")
+  );
+
   console.log(`\nRegression results: ${failures === 0 ? "ALL PASSED" : `${failures} FAILURES`}\n`);
 
   child.kill();

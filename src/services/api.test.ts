@@ -19,6 +19,9 @@ import {
   cancelVideoDate,
   hasServerSession,
   sendSupportMessage,
+  serverProfileToDoctor,
+  blockUser,
+  openEventStream,
 } from './api';
 
 describe('wired backend client (services/api)', () => {
@@ -126,5 +129,49 @@ describe('wired backend client (services/api)', () => {
     const r = await sendSupportMessage({ name: 'A', email: 'a@x.in', subject: 'Hi', message: 'Need help with my profile please' });
     expect(r.ok).toBe(true);
     expect(String(fetchMock.mock.calls[0][0])).toBe('https://api.test/api/support');
+  });
+
+  it('serverProfileToDoctor preserves userId and structured properties', () => {
+    const doc = serverProfileToDoctor({
+      id: 'p-1',
+      userId: 'u-123',
+      name: 'Dr. Priya Sharma',
+      isSample: false,
+      interests: ['Reading'],
+      isOnline: true,
+      isVerified: true,
+      familyType: 'Nuclear',
+      familyStatus: 'Middle Class',
+      incomeBand: '25-50L',
+      diet: 'Vegetarian',
+      careerStage: 'Consultant',
+    } as unknown as Parameters<typeof serverProfileToDoctor>[0]);
+    expect(doc.id).toBe('p-1');
+    expect(doc.userId).toBe('u-123');
+    expect(doc.name).toBe('Priya Sharma');
+    expect(doc.familyType).toBe('Nuclear');
+    expect(doc.familyStatus).toBe('Middle Class');
+    expect(doc.incomeBand).toBe('25-50L');
+    expect(doc.diet).toBe('Vegetarian');
+    expect(doc.careerStage).toBe('Consultant');
+  });
+
+  it('blockUser posts userId and profileId to /api/blocks', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ blocked: true }), { status: 200 }));
+    const ok = await blockUser('u-456', 'p-789');
+    expect(ok).toBe(true);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toBe('https://api.test/api/blocks');
+    expect(JSON.parse(init!.body as string)).toEqual({ userId: 'u-456', profileId: 'p-789' });
+  });
+
+  it('openEventStream connects with credentials include on ticket request', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ ticket: 'test-ticket-xyz' }), { status: 200 }));
+    const close = openEventStream({});
+    expect(fetchMock).toHaveBeenCalled();
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toBe('https://api.test/api/events/ticket');
+    expect(init?.credentials).toBe('include');
+    close();
   });
 });

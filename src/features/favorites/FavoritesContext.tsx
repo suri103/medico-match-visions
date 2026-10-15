@@ -15,6 +15,7 @@ import {
   blockUser as serverBlockUser, unblockUser as serverUnblockUser,
   listFavoriteIds, addFavoriteRemote, removeFavoriteRemote,
   listShortlistIds, addShortlistRemote, removeShortlistRemote,
+  listBlockedUsers,
 } from "@/services/api";
 
 export type ConnectionStatus = 'pending' | 'matched' | 'passed' | 'blocked';
@@ -200,6 +201,14 @@ export const FavoritesProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           merged.push((doc ? { ...doc } : { id, name: `Profile ${id}`, age: 0, specialty: "", degree: "", hospital: "", city: "", state: "", country: "India", imageUrl: localAvatar(`Profile ${id}`), matchPercentage: 0, interests: [], isOnline: false, sexualOrientation: "Straight" }) as Doctor);
         }
         return merged;
+      });
+    }).catch(() => {});
+
+    listBlockedUsers().then((blocked) => {
+      if (!blocked || cancelled || blocked.length === 0) return;
+      setBlockedIds((prev) => {
+        const merged = new Set([...prev, ...blocked.map((b) => b.id)]);
+        return Array.from(merged);
       });
     }).catch(() => {});
 
@@ -495,13 +504,13 @@ export const FavoritesProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setInterests(prev => prev.filter(i => i.doctor.id !== doctorId));
     setInterestedInYou(prev => prev.filter(i => i.doctor.id !== doctorId));
     const ownerId = ownerUserIdsRef.current[doctorId];
-    if (ownerId) void serverBlockUser(ownerId).catch(() => {});
+    void serverBlockUser(ownerId || doctorId, doctorId).catch(() => {});
   }, [setBlockedIds, setConnections, setFavorites, setShortlist, setInterests, setInterestedInYou]);
   const unblockDoctor = useCallback((doctorId: string) => {
     setBlockedIds(prev => prev.filter(id => id !== doctorId));
     setConnections(prev => prev.filter(c => !(c.doctorId === doctorId && c.status === 'blocked')));
     const ownerId = ownerUserIdsRef.current[doctorId];
-    if (ownerId) void serverUnblockUser(ownerId).catch(() => {});
+    void serverUnblockUser(ownerId || doctorId, doctorId).catch(() => {});
   }, [setBlockedIds, setConnections]);
 
   const markViewed = useCallback((id: string) => {

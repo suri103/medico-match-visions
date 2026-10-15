@@ -258,6 +258,7 @@ export function serverProfileToDoctor(p: ServerProfile): Doctor {
   // not MBBS/Physician (a null degree must never appear credentialed).
   return {
     id: p.id,
+    userId: p.userId ?? undefined,
     name: p.name.replace(/^Dr\.\s*/i, ""),
     age: p.age ?? 30,
     specialty: p.specialty || "",
@@ -283,10 +284,11 @@ export function serverProfileToDoctor(p: ServerProfile): Doctor {
     manglik: p.manglik || undefined,
     kundaliGunas: p.kundaliGunas ?? undefined,
     isVerified: p.isVerified,
-    familyType: (p as unknown as Record<string, string>).familyType,
-    familyStatus: (p as unknown as Record<string, string>).familyStatus,
-    incomeBand: (p as unknown as Record<string, string>).incomeBand,
-    diet: (p as unknown as Record<string, string>).diet,
+    careerStage: (p as unknown as Record<string, string>).careerStage ?? undefined,
+    familyType: p.familyType ?? undefined,
+    familyStatus: p.familyStatus ?? undefined,
+    incomeBand: p.incomeBand ?? undefined,
+    diet: p.diet ?? undefined,
   } as Doctor;
 }
 
@@ -408,13 +410,19 @@ export async function listBlockedUsers(): Promise<{ id: string; name: string; im
   return out?.blocked ?? null;
 }
 
-export async function blockUser(userId: string): Promise<boolean> {
-  const out = await callOrError("/api/blocks", { method: "POST", body: JSON.stringify({ userId }) });
+export async function blockUser(userId: string, profileId?: string): Promise<boolean> {
+  const out = await callOrError("/api/blocks", {
+    method: "POST",
+    body: JSON.stringify({ userId, profileId: profileId || userId }),
+  });
   return out.error === null;
 }
 
-export async function unblockUser(userId: string): Promise<boolean> {
-  const out = await callOrError("/api/blocks/unblock", { method: "POST", body: JSON.stringify({ userId }) });
+export async function unblockUser(userId: string, profileId?: string): Promise<boolean> {
+  const out = await callOrError("/api/blocks/unblock", {
+    method: "POST",
+    body: JSON.stringify({ userId, profileId: profileId || userId }),
+  });
   return out.error === null;
 }
 
@@ -1136,6 +1144,7 @@ export function openEventStream(handlers: EventStreamHandlers): () => void {
     try {
       const res = await fetch(`${base()}/api/events/ticket`, {
         method: "POST",
+        credentials,
         headers: authHeaders(),
       });
       if (!res.ok) throw new Error("ticket");

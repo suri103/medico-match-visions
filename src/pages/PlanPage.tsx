@@ -17,6 +17,7 @@ import {
 } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import { useSearchParams, useNavigate } from 'react-router-dom';
 import PaymentModal from '@/components/PaymentModal';
 import { useCheckoutResult } from '@/hooks/useCheckoutResult';
 import { usePlan, PlanName } from '@/hooks/usePlan';
@@ -32,8 +33,27 @@ const planNameFromSku = (sku?: string | null): PlanName | null => {
 
 const PlanPage = () => {
   const { toast } = useToast();
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
   const [selectedPlan, setSelectedPlan] = useState<{ name: string; amount: number; sku: string } | null>(null);
   const { planName, activate } = usePlan();
+
+  React.useEffect(() => {
+    const skuParam = searchParams.get('sku');
+    if (skuParam === 'kundali-report') {
+      setSelectedPlan({
+        name: 'Kundali Report',
+        amount: 499,
+        sku: 'kundali-report',
+      });
+    } else if (skuParam === 'astrologer-consultation') {
+      setSelectedPlan({
+        name: 'Astrology Consultation',
+        amount: 1499,
+        sku: 'astrologer-consultation',
+      });
+    }
+  }, [searchParams]);
 
   // After a checkout redirect the hook redeems the server-issued entitlement
   // token and hands us the PURCHASED sku — activation never comes from the URL.
@@ -367,6 +387,20 @@ const PlanPage = () => {
               toast({
                 title: "Plan activated! 🎉",
                 description: `Your ${selectedPlan.name} membership is now active. Enjoy all upgraded features!`,
+              });
+            } else if (selectedPlan.sku === 'kundali-report') {
+              const profileId = searchParams.get('profileId');
+              toast({
+                title: "Kundali Report unlocked! 🌟",
+                description: "Your detailed compatibility report has been activated.",
+              });
+              if (profileId) {
+                navigate(`/profile/${encodeURIComponent(profileId)}`);
+              }
+            } else {
+              toast({
+                title: "Purchase activated! 🎉",
+                description: `Your ${selectedPlan.name} is now active.`,
               });
             }
             setSelectedPlan(null);

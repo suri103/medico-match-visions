@@ -1054,7 +1054,12 @@ export async function cancelVideoDate(userId, videoDateId) {
     const originalRequesterId = row.requester_id;
     if (row.kind === "consultation") {
       await c.query(
-        `UPDATE subscriptions SET status = 'active'
+        `UPDATE subscriptions
+            SET status = 'active',
+                credits_remaining = CASE
+                  WHEN status = 'active' THEN GREATEST(COALESCE(credits_remaining, 0), 0) + 1
+                  ELSE 1
+                END
          WHERE user_id = $1 AND sku = 'astrologer-consultation' AND current_period_end > NOW()`,
         [originalRequesterId]
       );
@@ -1077,28 +1082,44 @@ export async function cancelVideoDate(userId, videoDateId) {
 // Blocks / reports
 // ---------------------------------------------------------------------------
 
-export async function blockUser(userId, targetUserId) {
-  if (userId === targetUserId) throw Object.assign(new Error("Cannot block yourself."), { status: 400 });
-  await query(
-    `INSERT INTO blocks (blocker_id, blocked_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`,
-    [userId, targetUserId]
-  );
-  return { blocked: true };
+async function resolveBlockTargetUserId(targetUserId, profileId = null) {
+  if (profileId) {
+    const pr = await query(`SELECT user_id FROM profiles WHERE id = $1`, [profileId]);
+    if (pr.rows[0]?.user_id) return pr.rows[0].user_id;
+  }
+  if (!targetUserId) return null;
+  const u = await query(`SELECT id FROM app_users WHERE id = $1`, [targetUserId]);
+  if (u.rows[0]?.id) return u.rows[0].id;
+  const p = await query(`SELECT user_id FROM profiles WHERE id = $1`, [targetUserId]);
+  return p.rows[0]?.user_id || targetUserId;
 }
 
-export async function unblockUser(userId, targetUserId) {
-  await query(`DELETE FROM blocks WHERE blocker_id=$1 AND blocked_id=$2`, [userId, targetUserId]);
-  return { blocked: false };
+export async function blockUser(userId, targetUserId, profileId = null) {
+  const resolvedTarget = await resolveBlockTargetUserId(targetUserId, profileId);
+  if (!resolvedTarget) throw Object.assign(new Error("Target user not found."), { status: 404 });
+  if (userId === resolvedTarget) throw Object.assign(new Error("Cannot block yourself."), { status: 400 });
+  await query(
+    `INSERT INTO blocks (blocker_id, blocked_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`,
+    [userId, resolvedTarget]
+  );
+  return { blocked: true, userId: resolvedTarget };
+}
+
+export async function unblockUser(userId, targetUserId, profileId = null) {
+  const resolvedTarget = await resolveBlockTargetUserId(targetUserId, profileId);
+  if (!resolvedTarget) return { blocked: false };
+  await query(`DELETE FROM blocks WHERE blocker_id=$1 AND blocked_id=$2`, [userId, resolvedTarget]);
+  return { blocked: false, userId: resolvedTarget };
 }
 
 export async function listBlocks(userId) {
   const res = await query(
-    `SELECT p.user_id AS id, p.full_name AS name, p.photo_url AS image_url
+    `SELECT p.user_id AS id, p.id AS profile_id, p.full_name AS name, p.photo_url AS image_url
      FROM blocks b JOIN profiles p ON p.user_id = b.blocked_id
      WHERE b.blocker_id = $1`,
     [userId]
   );
-  return res.rows.map((r) => ({ id: r.id, name: r.name, imageUrl: r.image_url }));
+  return res.rows.map((r) => ({ id: r.id, profileId: r.profile_id, name: r.name, imageUrl: r.image_url }));
 }
 
 export async function reportUser(userId, reportedProfileId, reason, details) {
@@ -1296,14 +1317,22 @@ export async function recordCapturedPayment({ paymentId, orderId, userId, sku, a
 
       if (shouldGrant) {
         await c.query(
-          `INSERT INTO subscriptions (user_id, sku, payment_id, current_period_end, status)
-           VALUES ($1,$2,$3,$4,'active')
+          `INSERT INTO subscriptions (user_id, sku, payment_id, current_period_end, status, credits_remaining)
+           VALUES ($1,$2,$3,$4,'active',1)
            ON CONFLICT (user_id, sku) DO UPDATE SET
              payment_id = EXCLUDED.payment_id,
-             current_period_end = GREATEST(COALESCE(subscriptions.current_period_end, NOW()), NOW())
-                                  + make_interval(days => $5::int),
+             current_period_end = CASE
+               WHEN $6 = 'membership' THEN GREATEST(COALESCE(subscriptions.current_period_end, NOW()), NOW())
+                                           + make_interval(days => $5::int)
+               ELSE GREATEST(COALESCE(subscriptions.current_period_end, NOW()), EXCLUDED.current_period_end)
+             END,
+             credits_remaining = CASE
+               WHEN $6 = 'consultation' AND subscriptions.status = 'active' AND subscriptions.current_period_end > NOW()
+                 THEN GREATEST(COALESCE(subscriptions.credits_remaining, 1), 0) + 1
+               ELSE 1
+             END,
              status = 'active', cancel_at_period_end = FALSE, activated_at = NOW()`,
-          [effectiveUser, grantSku, paymentId, periodEnd, days]
+          [effectiveUser, grantSku, paymentId, periodEnd, days, planInfo.kind]
         );
       }
     }
@@ -1407,8 +1436,8 @@ export async function cancelBilling(userId) {
   if (res.rowCount === 0) {
     throw Object.assign(new Error("No active paid subscription to cancel."), { status: 404 });
   }
-  // Return the highest-rank membership cancelled (stable when several exist).
-  const top = [...res.rows].sort().pop();
+  // Return the membership with the furthest period end (deterministic comparator, audit L-2).
+  const top = [...res.rows].sort((a, b) => new Date(a.current_period_end || 0) - new Date(b.current_period_end || 0)).pop();
   return { status: "canceling", planExpiresAt: top.current_period_end, cancelledSkus: res.rows.map((r) => r.sku) };
 }
 
@@ -1423,7 +1452,7 @@ export async function resumeBilling(userId) {
   if (res.rowCount === 0) {
     throw Object.assign(new Error("Nothing to resume."), { status: 404 });
   }
-  const top = [...res.rows].sort().pop();
+  const top = [...res.rows].sort((a, b) => new Date(a.current_period_end || 0) - new Date(b.current_period_end || 0)).pop();
   return { status: "active", planExpiresAt: top.current_period_end, resumedSkus: res.rows.map((r) => r.sku) };
 }
 
@@ -1929,9 +1958,10 @@ export async function createConsultation(userId, scheduledFor, durationMinutes) 
   }
   return withTx(async (c) => {
     const active = await c.query(
-      `SELECT current_period_end FROM subscriptions
+      `SELECT current_period_end, COALESCE(credits_remaining, 1) AS credits_remaining FROM subscriptions
        WHERE user_id = $1 AND sku = 'astrologer-consultation'
          AND status = 'active' AND current_period_end > NOW()
+         AND COALESCE(credits_remaining, 1) > 0
        FOR UPDATE`,
       [userId]
     );
@@ -1948,7 +1978,9 @@ export async function createConsultation(userId, scheduledFor, durationMinutes) 
       [userId, when.toISOString(), dur]
     );
     await c.query(
-      `UPDATE subscriptions SET status = 'expired'
+      `UPDATE subscriptions
+          SET credits_remaining = GREATEST(COALESCE(credits_remaining, 1) - 1, 0),
+              status = CASE WHEN COALESCE(credits_remaining, 1) - 1 <= 0 THEN 'expired' ELSE 'active' END
        WHERE user_id = $1 AND sku = 'astrologer-consultation'`,
       [userId]
     );
@@ -1960,7 +1992,8 @@ export async function hasActiveConsultation(userId) {
   const res = await query(
     `SELECT current_period_end FROM subscriptions
      WHERE user_id = $1 AND sku = 'astrologer-consultation'
-       AND status = 'active' AND current_period_end > NOW()`,
+       AND status = 'active' AND current_period_end > NOW()
+       AND COALESCE(credits_remaining, 1) > 0`,
     [userId]
   );
   return { active: res.rowCount > 0, expiresAt: res.rows[0]?.current_period_end ?? null };
@@ -2074,14 +2107,22 @@ export async function deleteMyAccount(userId) {
     // Pull the email so we can rename to a tombstone (preserves UNIQUE).
     const u = await c.query(`SELECT email FROM app_users WHERE id = $1 FOR UPDATE`, [userId]);
     const tombstoneEmail = `deleted-${userId}@deleted.medicomatch.in`;
-    // Drop dependent profile rows (they expose PII).
+    // Drop dependent profile rows and uploaded verification / photo PII (audit H-6).
     await c.query(`DELETE FROM profile_photos WHERE profile_id IN (SELECT id FROM profiles WHERE user_id = $1)`, [userId]);
+    await c.query(`DELETE FROM verification_documents WHERE user_id = $1`, [userId]);
+    await c.query(`DELETE FROM phone_otps WHERE user_id = $1`, [userId]);
+    await c.query(`DELETE FROM profile_boosts WHERE user_id = $1`, [userId]);
+    await c.query(`DELETE FROM kundali_reports WHERE buyer_id = $1`, [userId]);
+    await c.query(`DELETE FROM event_rsvps WHERE user_id = $1`, [userId]);
+    await c.query(`DELETE FROM success_stories WHERE user_id = $1`, [userId]);
+    await c.query(`DELETE FROM contact_views WHERE viewer_id = $1`, [userId]);
+    await c.query(`DELETE FROM profile_views WHERE viewer_id = $1`, [userId]);
     await c.query(`DELETE FROM profiles WHERE user_id = $1`, [userId]);
-    // Purge communication records (messages, channels, video dates) for DPDP erasure
+    // Purge communication records (messages, channels, video dates) for DPDP erasure.
     await c.query(`DELETE FROM messages WHERE sender_id = $1 OR channel_id IN (SELECT id FROM channels WHERE user_a = $1 OR user_b = $1)`, [userId]);
     await c.query(`DELETE FROM channels WHERE user_a = $1 OR user_b = $1`, [userId]);
     await c.query(`DELETE FROM video_dates WHERE requester_id = $1`, [userId]);
-    // Bump tokenVersion to invalidate every session.
+    // Scrub all PII and credential material on the tombstoned app_users row.
     await c.query(
       `UPDATE app_users
          SET email = $2,
@@ -2089,6 +2130,13 @@ export async function deleteMyAccount(userId) {
              last_name = 'User',
              specialty = '',
              degree = '',
+             phone = NULL,
+             phone_verified = FALSE,
+             verification_level = 'unverified',
+             id_document_url = NULL,
+             id_verified_at = NULL,
+             password_hash = '',
+             salt = '',
              verified = FALSE,
              token_version = token_version + 1,
              is_admin = FALSE,
@@ -2099,17 +2147,12 @@ export async function deleteMyAccount(userId) {
     // Drop social graph rows that reference the user (blocks, reports).
     await c.query(`DELETE FROM blocks WHERE blocker_id = $1 OR blocked_id = $1`, [userId]);
     await c.query(`DELETE FROM reports WHERE reporter_id = $1`, [userId]);
-    // Interests and favorites: withdraw. A user asking to be forgotten
-    // shouldn't have an outgoing interest sitting in another user's
-    // inbox.
     await c.query(`DELETE FROM interests WHERE sender_id = $1 OR recipient_id = $1`, [userId]);
     await c.query(`DELETE FROM favorites WHERE user_id = $1`, [userId]);
     await c.query(`DELETE FROM shortlists WHERE user_id = $1`, [userId]);
-    // Subscriptions: revoke access immediately, retain the row for billing
-    // audit (DPDP doesn't require deleting the financial record; it does
-    // require erasing the personal linkage, which the email rename does).
+    // Subscriptions: revoke access immediately, retain the row for billing audit.
     await c.query(
-      `UPDATE subscriptions SET status = 'refunded', cancel_at_period_end = FALSE
+      `UPDATE subscriptions SET status = 'refunded', cancel_at_period_end = FALSE, credits_remaining = 0
        WHERE user_id = $1 AND status IN ('active', 'canceling')`,
       [userId]
     );
@@ -2445,53 +2488,63 @@ export async function getKundaliReport(buyerId, profileId) {
     if (blocked.rowCount > 0) throw Object.assign(new Error("Profile not found."), { status: 404 });
   }
 
-  // Already generated (paid earlier): always accessible — the purchase is the
-  // entitlement, the report row is the receipt.
-  const stored = await query(`SELECT report, created_at FROM kundali_reports WHERE buyer_id = $1 AND profile_id = $2`, [buyerId, profileId]);
-  if (stored.rowCount > 0) {
-    return { report: stored.rows[0].report, createdAt: stored.rows[0].created_at, alreadyOwned: true };
-  }
+  return withTx(async (c) => {
+    // Already generated (paid earlier): always accessible — the purchase is the
+    // entitlement, the report row is the receipt.
+    const stored = await c.query(
+      `SELECT report, created_at FROM kundali_reports WHERE buyer_id = $1 AND profile_id = $2`,
+      [buyerId, profileId]
+    );
+    if (stored.rowCount > 0) {
+      return { report: stored.rows[0].report, createdAt: stored.rows[0].created_at, alreadyOwned: true };
+    }
 
-  // Entitlement: an ACTIVE kundali-report subscription (granted by the normal
-  // Razorpay -> redeem path; kind='consultation' so it never touches memberships).
-  const entitled = await query(
-    `SELECT 1 FROM subscriptions s WHERE s.user_id = $1 AND s.sku = 'kundali-report'
-       AND s.status = 'active' AND s.current_period_end > NOW()`,
-    [buyerId]
-  );
-  if (entitled.rowCount === 0) {
-    throw Object.assign(new Error("Purchase the Detailed Kundali Match Report to view this breakdown."), {
-      status: 402, code: "purchase_required", sku: "kundali-report",
-    });
-  }
+    // Lock the active kundali-report subscription row inside the transaction so
+    // concurrent requests for different profiles cannot double-spend a single
+    // ₹499 purchase (audit H-4).
+    const entitled = await c.query(
+      `SELECT COALESCE(s.credits_remaining, 1) AS credits_remaining
+         FROM subscriptions s
+        WHERE s.user_id = $1 AND s.sku = 'kundali-report'
+          AND s.status = 'active' AND s.current_period_end > NOW()
+          AND COALESCE(s.credits_remaining, 1) > 0
+        FOR UPDATE`,
+      [buyerId]
+    );
+    if (entitled.rowCount === 0) {
+      throw Object.assign(new Error("Purchase the Detailed Kundali Match Report to view this breakdown."), {
+        status: 402, code: "purchase_required", sku: "kundali-report",
+      });
+    }
 
-  const me = await query(`SELECT rashi, nakshatra, manglik, full_name FROM profiles WHERE user_id = $1`, [buyerId]);
-  const mine = me.rows[0] || {};
-  const report = computeKundaliMilan(mine, t);
-  const full = {
-    ...report,
-    partnerA: { name: mine.full_name ?? "You" },
-    partnerB: { name: t.full_name ?? "Member", profileId },
-    generatedAt: new Date().toISOString(),
-    // Honest product framing: algorithmic reference, not a guarantee.
-    disclaimer: "Algorithmic Ashta Koota reference based on self-declared birth details. For matrimonial compatibility reference only — not a guarantee or astrological advice.",
-  };
-  await query(
-    `INSERT INTO kundali_reports (buyer_id, profile_id, report)
-     VALUES ($1, $2, $3)
-     ON CONFLICT (buyer_id, profile_id) DO UPDATE SET report = EXCLUDED.report`,
-    [buyerId, profileId, JSON.stringify(full)]
-  );
-  // Single-use per PAIR (safe default made explicit): consuming the entitlement
-  // here means one ₹499 payment mints one pair's report, not unlimited pairs
-  // in the 30-day window. Re-reads of the same pair stay free via the stored
-  // row above; the next *new* pair requires a fresh purchase.
-  await query(
-    `UPDATE subscriptions SET status = 'expired'
-     WHERE user_id = $1 AND sku = 'kundali-report' AND status = 'active'`,
-    [buyerId]
-  );
-  return { report: full, createdAt: new Date().toISOString(), alreadyOwned: false };
+    const me = await c.query(`SELECT rashi, nakshatra, manglik, full_name FROM profiles WHERE user_id = $1`, [buyerId]);
+    const mine = me.rows[0] || {};
+    const report = computeKundaliMilan(mine, t);
+    const full = {
+      ...report,
+      partnerA: { name: mine.full_name ?? "You" },
+      partnerB: { name: t.full_name ?? "Member", profileId },
+      generatedAt: new Date().toISOString(),
+      // Honest product framing: algorithmic reference, not a guarantee.
+      disclaimer: "Algorithmic Ashta Koota reference based on self-declared birth details. For matrimonial compatibility reference only — not a guarantee or astrological advice.",
+    };
+    await c.query(
+      `INSERT INTO kundali_reports (buyer_id, profile_id, report)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (buyer_id, profile_id) DO UPDATE SET report = EXCLUDED.report`,
+      [buyerId, profileId, JSON.stringify(full)]
+    );
+    // Single-use per PAIR (safe default made explicit): decrement credits_remaining
+    // and transition status to expired once credits_remaining reaches 0 (audit H-4).
+    await c.query(
+      `UPDATE subscriptions
+          SET credits_remaining = GREATEST(COALESCE(credits_remaining, 1) - 1, 0),
+              status = CASE WHEN COALESCE(credits_remaining, 1) - 1 <= 0 THEN 'expired' ELSE 'active' END
+        WHERE user_id = $1 AND sku = 'kundali-report' AND status = 'active'`,
+      [buyerId]
+    );
+    return { report: full, createdAt: new Date().toISOString(), alreadyOwned: false };
+  });
 }
 
 export async function validateCoupon(code, userId = null) {

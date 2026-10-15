@@ -36,6 +36,7 @@ import { useAuthSessionKey } from '@/hooks/useAuthSessionKey';
 import {
   hasServerSession, listChannels, listMessages as listServerMessages,
   sendChatMessage as sendServerMessage, openEventStream, sendTyping,
+  reportProfile,
 } from '@/services/api';
 import CallModal from '@/components/CallModal';
 
@@ -469,6 +470,7 @@ const Chat: React.FC<ChatProps> = ({
   };
 
   const handleReport = () => {
+    void reportProfile(doctorId, "Inappropriate chat behavior", "Reported from chat conversation").catch(() => false);
     try {
       const raw = localStorage.getItem('mm:reports');
       const arr = raw ? JSON.parse(raw) : [];

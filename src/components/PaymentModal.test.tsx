@@ -25,6 +25,7 @@ vi.mock('@/services/checkout', () => ({
   isCheckoutServerConfigured: () => true,
   storeActivationToken: (...a: unknown[]) => storeMock(...a),
   takeActivationToken: () => null,
+  generateInvoice: vi.fn().mockResolvedValue(null),
   CheckoutError: class extends Error {
     status?: number;
     constructor(m: string, s?: number) {

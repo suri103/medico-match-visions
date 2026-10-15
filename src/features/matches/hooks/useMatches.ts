@@ -95,9 +95,10 @@ export const useMatches = (initialSearch?: MatchSearchCriteria) => {
       if (!rows || cancelled) return;
       setServerPool(rows.map((p) => ({
         id: p.id,
+        userId: p.userId ?? undefined,
         name: p.name.replace(/^Dr\.\s*/i, ''),
         age: p.age ?? 30,
-        specialty: p.specialty || 'Physician',
+        specialty: p.specialty || '',
         degree: p.degree || '',
         hospital: p.hospital || '',
         city: p.city || '',
@@ -120,11 +121,11 @@ export const useMatches = (initialSearch?: MatchSearchCriteria) => {
         manglik: p.manglik || undefined,
         kundaliGunas: p.kundaliGunas ?? undefined,
         isVerified: p.isVerified,
-        // P0-4 family depth (extra props tolerated via cast).
-        familyType: (p as unknown as Record<string, string>).familyType,
-        familyStatus: (p as unknown as Record<string, string>).familyStatus,
-        incomeBand: (p as unknown as Record<string, string>).incomeBand,
-        diet: (p as unknown as Record<string, string>).diet,
+        // P0-4 family depth.
+        familyType: p.familyType ?? undefined,
+        familyStatus: p.familyStatus ?? undefined,
+        incomeBand: p.incomeBand ?? undefined,
+        diet: p.diet ?? undefined,
       } as Doctor)));
     }).catch(() => {});
     return () => { cancelled = true; };
@@ -141,8 +142,8 @@ export const useMatches = (initialSearch?: MatchSearchCriteria) => {
         const rows = await dailyMatches(6);
         if (!rows || cancelled) return;
         setDailyPicks(rows.map((p) => ({
-          id: p.id, name: p.name.replace(/^Dr\.\s*/i, ''), age: p.age ?? 30,
-          specialty: p.specialty || 'Physician', degree: p.degree || '',
+          id: p.id, userId: p.userId ?? undefined, name: p.name.replace(/^Dr\.\s*/i, ''), age: p.age ?? 30,
+          specialty: p.specialty || '', degree: p.degree || '',
           hospital: p.hospital || '', city: p.city || '', state: p.state || '',
           country: p.country || 'India', imageUrl: p.imageUrl || localAvatar(p.name),
           matchPercentage: p.kundaliGunas ?? 75, interests: p.interests || [],
@@ -158,7 +159,7 @@ export const useMatches = (initialSearch?: MatchSearchCriteria) => {
   const [maxAge, setMaxAge] = useState<number[]>([45]);
   const [specialties, setSpecialties] = useState<string[]>([]);
   const [selectedDegrees, setSelectedDegrees] = useState<string[]>([]);
-  const [onlineOnly, setOnlineOnly] = useState(false);
+  const [onlineOnly, setOnlineOnly] = useState(Boolean(initialSearch?.onlineOnly));
   const [selectedDoctor, setSelectedDoctor] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<'matches' | 'video' | 'chat'>('matches');
   const [savedSearches, setSavedSearches] = usePersistedState<SavedSearch[]>('mm:savedSearches', defaultSavedSearches);

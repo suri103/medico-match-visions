@@ -33,11 +33,14 @@ const CONTACT_VIEW_QUOTAS: Record<PlanName, number> = {
 // Business period in India's timezone (Asia/Kolkata), matching server quota periods (audit H-3).
 const monthKeyOf = (date: Date = new Date()): string => {
   try {
-    return new Intl.DateTimeFormat("en-CA", {
+    const parts = new Intl.DateTimeFormat("en-US", {
       timeZone: "Asia/Kolkata",
       year: "numeric",
       month: "2-digit",
-    }).format(date);
+    }).formatToParts(date);
+    const year = parts.find((p) => p.type === "year")?.value || String(date.getFullYear());
+    const month = parts.find((p) => p.type === "month")?.value || String(date.getMonth() + 1).padStart(2, "0");
+    return `${year}-${month}`;
   } catch {
     return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
   }

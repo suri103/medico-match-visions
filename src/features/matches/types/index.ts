@@ -17,6 +17,13 @@ export interface Doctor {
   interests: string[];
   isOnline: boolean;
   sexualOrientation: string;
+  userId?: string | null;
+  careerStage?: string;
+  verificationNote?: string;
+  familyType?: string;
+  familyStatus?: string;
+  incomeBand?: string;
+  diet?: string;
   isVerified?: boolean;
   councilName?: string;
   registrationNumber?: string;

@@ -11,7 +11,7 @@ import { useToast } from '@/hooks/use-toast';
 import { usePersistedState } from '@/hooks/usePersistedState';
 import { EMPTY_PROFILE } from '@/lib/profile';
 import { computeCompleteness } from '@/lib/profileCompleteness';
-import { hasServerSession, saveMyServerProfile } from '@/services/api';
+import { hasServerSession, saveMyServerProfile, getMyServerProfile } from '@/services/api';
 import {
   degreesList, specialtiesList, motherTongueList, religionList, casteList,
   rashiList, nakshatraList, manglikList, careerStagesList,
@@ -75,6 +75,40 @@ const OnboardingPage = () => {
     }
   }, [searchParams, setSearchParams, step.id]);
 
+  useEffect(() => {
+    if (!hasServerSession()) return;
+    let cancelled = false;
+    getMyServerProfile().then((sp) => {
+      if (!sp || cancelled) return;
+      setProfile((prev) => ({
+        ...prev,
+        name: prev.name || sp.name.replace(/^Dr\.\s*/i, ''),
+        gender: prev.gender || sp.gender || '',
+        age: prev.age || (sp.age ? String(sp.age) : ''),
+        specialty: prev.specialty || sp.specialty || '',
+        degree: prev.degree || sp.degree || '',
+        hospital: prev.hospital || sp.hospital || '',
+        location: prev.location || (sp.city ? `${sp.city}${sp.state ? `, ${sp.state}` : ''}` : ''),
+        about: prev.about || sp.aboutMe || '',
+        lookingFor: prev.lookingFor || sp.lookingFor || '',
+        heightCm: prev.heightCm || (sp.heightCm ? String(sp.heightCm) : ''),
+        maritalStatus: prev.maritalStatus || sp.maritalStatus || '',
+        motherTongue: prev.motherTongue || sp.motherTongue || '',
+        religion: prev.religion || sp.religion || '',
+        caste: prev.caste || sp.caste || '',
+        rashi: (prev as unknown as Record<string, string>).rashi || sp.rashi || '',
+        nakshatra: (prev as unknown as Record<string, string>).nakshatra || sp.nakshatra || '',
+        manglik: (prev as unknown as Record<string, string>).manglik || sp.manglik || '',
+        birthDate: (prev as unknown as Record<string, string>).birthDate || sp.birthDate || '',
+        dob: prev.dob || sp.birthDate || '',
+        birthTime: (prev as unknown as Record<string, string>).birthTime || sp.birthTime || '',
+        birthCity: (prev as unknown as Record<string, string>).birthCity || sp.birthCity || '',
+      }));
+    }).catch(() => {});
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const update = (field: keyof typeof profile, value: string) =>
     setProfile((prev) => ({ ...prev, [field]: value }));
 
@@ -95,10 +129,21 @@ const OnboardingPage = () => {
         Boolean(degreeDeclared) &&
         !degreeDeclared.toLowerCase().includes('pursuing') &&
         !degreeDeclared.toLowerCase().includes('student');
+      const dobVal = profile.birthDate || profile.dob || null;
+      let calculatedAge = profile.age ? Number(profile.age) : null;
+      if (dobVal && !calculatedAge) {
+        const birth = new Date(dobVal);
+        if (!Number.isNaN(birth.getTime())) {
+          const diffMs = Date.now() - birth.getTime();
+          const ageDt = new Date(diffMs);
+          calculatedAge = Math.abs(ageDt.getUTCFullYear() - 1970);
+        }
+      }
       const saved = await saveMyServerProfile({
         full_name: `${isCompleted ? 'Dr. ' : ''}${profile.name}`.replace(/^Dr\.\s*Dr\./i, 'Dr.').trim(),
         career_stage: profile.careerStage || null,
         gender: profile.gender || null,
+        age: calculatedAge,
         degree: profile.degree || null,
         specialty: profile.specialty || null,
         hospital: profile.hospital || null,
@@ -115,7 +160,7 @@ const OnboardingPage = () => {
         rashi: profile.rashi || null,
         nakshatra: profile.nakshatra || null,
         manglik: profile.manglik || null,
-        birth_date: profile.birthDate || null,
+        birth_date: dobVal,
         birth_time: profile.birthTime || null,
         birth_city: profile.birthCity || null,
         phone: profile.phone || null,

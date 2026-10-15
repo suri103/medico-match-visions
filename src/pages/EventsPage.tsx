@@ -10,6 +10,7 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { usePersistedState } from '@/hooks/usePersistedState';
 import { useToast } from '@/hooks/use-toast';
+import { createServerEvent } from '@/services/api';
 
 export interface EventItem {
   id: string;
@@ -128,7 +129,7 @@ const EventsPage = () => {
     setExpandedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
   };
 
-  const handleCreateEvent = (e: React.FormEvent) => {
+  const handleCreateEvent = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newEvent.title.trim() || !newEvent.date.trim() || !newEvent.location.trim()) {
       toast({ title: "Missing fields", description: "Please fill in title, date, and location.", variant: "destructive" });
@@ -143,6 +144,15 @@ const EventsPage = () => {
       attendees: Number(newEvent.attendees) || 15,
       description: newEvent.description.trim() || 'Community event hosted by fellow healthcare professionals.',
     };
+    try {
+      await createServerEvent({
+        title: created.title,
+        date: created.date,
+        time: created.time,
+        location: created.location,
+        description: created.description,
+      });
+    } catch { /* offline fallback stands */ }
     setCustomEvents(prev => [created, ...prev]);
     setRegisteredIds(prev => [...prev, created.id]);
     setIsCreateOpen(false);

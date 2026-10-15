@@ -113,15 +113,17 @@ const OnlinePage = () => {
     handleOrientationChange,
     handleEthnicityChange,
     handleSortChange,
-    getPaginatedDoctors,
     selectedDoctorData,
     currentPage,
     setCurrentPage,
-    totalPages,
     filteredDoctors,
   } = useMatches({ onlineOnly: true });
 
+  const ITEMS_PER_PAGE = 6;
   const onlineDoctorsList = filteredDoctors.filter(d => d.isOnline);
+  const onlineTotalPages = Math.max(1, Math.ceil(onlineDoctorsList.length / ITEMS_PER_PAGE));
+  const startIndex = (currentPage - 1) * ITEMS_PER_PAGE;
+  const paginatedOnlineDoctors = onlineDoctorsList.slice(startIndex, startIndex + ITEMS_PER_PAGE);
 
   return (
     <div className="min-h-screen flex flex-col bg-gray-50">
@@ -196,9 +198,9 @@ const OnlinePage = () => {
 
                 {/* Doctors Grid with all interactive modals */}
                 <DoctorsGrid
-                  doctors={getPaginatedDoctors().filter(d => d.isOnline)}
+                  doctors={paginatedOnlineDoctors}
                   currentPage={currentPage}
-                  totalPages={totalPages}
+                  totalPages={onlineTotalPages}
                   onPageChange={setCurrentPage}
                   onReset={handleReset}
                   onLike={handleLike}

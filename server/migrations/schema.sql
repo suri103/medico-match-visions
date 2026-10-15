@@ -174,6 +174,7 @@ CREATE TABLE IF NOT EXISTS video_dates (
   status           TEXT NOT NULL DEFAULT 'requested'
     CHECK (status IN ('requested','accepted','declined','cancelled','completed')),
   created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   cancelled_at     TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS idx_video_dates_requester ON video_dates(requester_id, status);
@@ -211,6 +212,7 @@ CREATE TABLE IF NOT EXISTS subscriptions (
   status       TEXT NOT NULL DEFAULT 'active'
     CHECK (status IN ('active','canceling','expired','refunded')),
   cancel_at_period_end BOOLEAN NOT NULL DEFAULT FALSE,
+  credits_remaining    INT NOT NULL DEFAULT 1,
   -- Audit C1/H1: a separate product (e.g. a consultation booking) must coexist
   -- with a membership, so the key is (user_id, sku) - NOT user_id alone.
   PRIMARY KEY (user_id, sku)
@@ -792,3 +794,9 @@ CREATE TABLE IF NOT EXISTS redeemed_tokens (
   redeemed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 ALTER TABLE redeemed_tokens ENABLE ROW LEVEL SECURITY;
+
+-- Audit C-2 / H-4 (existing DBs): add updated_at to video_dates so respond/
+-- completion aging never fail with undefined_column, and add credits_remaining
+-- to subscriptions so multiple single-use purchases do not overwrite each other.
+ALTER TABLE video_dates ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS credits_remaining INT NOT NULL DEFAULT 1;

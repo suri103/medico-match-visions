@@ -747,19 +747,19 @@ const PublicProfilePage = () => {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
                   <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200">
                     <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Medical Degree</p>
-                    <p className="text-sm font-bold text-slate-900 mt-0.5">{doctor.degree || 'MBBS, MD'}</p>
+                    <p className="text-sm font-bold text-slate-900 mt-0.5">{doctor.degree || 'Not specified'}</p>
                   </div>
                   <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200">
                     <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Specialization</p>
-                    <p className="text-sm font-bold text-slate-900 mt-0.5">{doctor.specialty}</p>
+                    <p className="text-sm font-bold text-slate-900 mt-0.5">{doctor.specialty || 'General Medicine'}</p>
                   </div>
                   <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200">
                     <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Hospital / Practice</p>
-                    <p className="text-sm font-bold text-slate-900 mt-0.5">{doctor.hospital}</p>
+                    <p className="text-sm font-bold text-slate-900 mt-0.5">{doctor.hospital || 'Private Practice'}</p>
                   </div>
                   <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200">
-                    <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Clinical Experience</p>
-                    <p className="text-sm font-bold text-slate-900 mt-0.5">8+ Years of Practice</p>
+                    <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Career Stage</p>
+                    <p className="text-sm font-bold text-slate-900 mt-0.5">{doctor.careerStage || 'Medical Professional'}</p>
                   </div>
                 </div>
 
@@ -882,7 +882,7 @@ const PublicProfilePage = () => {
                 <div className="grid grid-cols-2 gap-y-4 gap-x-3 text-xs">
                   <div>
                     <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Religion</p>
-                    <p className="font-semibold text-slate-800 text-sm mt-0.5">{doctor.religion || 'Hindu'}</p>
+                    <p className="font-semibold text-slate-800 text-sm mt-0.5">{doctor.religion || 'Not specified'}</p>
                   </div>
                   <div>
                     <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Caste / Community</p>
@@ -898,15 +898,15 @@ const PublicProfilePage = () => {
                   </div>
                   <div>
                     <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Mother Tongue</p>
-                    <p className="font-semibold text-slate-800 text-sm mt-0.5">{doctor.motherTongue || 'Hindi'}</p>
+                    <p className="font-semibold text-slate-800 text-sm mt-0.5">{doctor.motherTongue || 'Not specified'}</p>
                   </div>
                   <div>
                     <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Marital Status</p>
-                    <p className="font-semibold text-slate-800 text-sm mt-0.5">{doctor.maritalStatus || 'Never Married'}</p>
+                    <p className="font-semibold text-slate-800 text-sm mt-0.5">{doctor.maritalStatus || 'Not specified'}</p>
                   </div>
                   <div>
                     <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Height</p>
-                    <p className="font-semibold text-slate-800 text-sm mt-0.5">{doctor.heightCm ? `${doctor.heightCm} cm` : '5 ft 8 in'}</p>
+                    <p className="font-semibold text-slate-800 text-sm mt-0.5">{doctor.heightCm ? `${doctor.heightCm} cm` : '—'}</p>
                   </div>
                   <div>
                     <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Location</p>

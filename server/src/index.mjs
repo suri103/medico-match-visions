@@ -354,12 +354,17 @@ let invoiceSeq = readJson(INVOICE_SEQ_FILE, { year: null, n: 0 });
 // taken from UTC, so invoices issued 00:00–05:30 IST carried yesterday's date.
 const istDateString = (d = new Date()) => {
   const date = d instanceof Date ? d : new Date(d);
-  return new Intl.DateTimeFormat("en-CA", {
+  const valid = Number.isNaN(date.getTime()) ? new Date() : date;
+  const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: "Asia/Kolkata",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
-  }).format(Number.isNaN(date.getTime()) ? new Date() : date);
+  }).formatToParts(valid);
+  const year = parts.find((p) => p.type === "year")?.value || String(valid.getUTCFullYear());
+  const month = parts.find((p) => p.type === "month")?.value || String(valid.getUTCMonth() + 1).padStart(2, "0");
+  const day = parts.find((p) => p.type === "day")?.value || String(valid.getUTCDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 };
 
 // ---------------------------------------------------------------------------
@@ -438,15 +443,87 @@ const ADMIN_FLAG_TTL_MS = Math.max(
 );
 const adminFlagCache = new Map(); // userId -> { v: [isAdmin, isRootAdmin], exp }
 
+function rowToMemUser(row, existing = {}) {
+  return {
+    ...existing,
+    id: row.id,
+    email: row.email,
+    firstName: row.first_name ?? existing.firstName ?? "",
+    lastName: row.last_name ?? existing.lastName ?? "",
+    specialty: row.specialty ?? existing.specialty ?? "",
+    degree: row.degree ?? existing.degree ?? "",
+    hash: row.password_hash ?? existing.hash ?? "",
+    salt: row.salt ?? existing.salt ?? "",
+    isAdmin: Boolean(row.is_admin),
+    isRootAdmin: Boolean(row.is_root_admin),
+    verified: Boolean(row.verified),
+    tokenVersion: Number(row.token_version ?? existing.tokenVersion ?? 0),
+    suspended: Boolean(row.suspended),
+    createdAt: row.created_at ? new Date(row.created_at).toISOString() : (existing.createdAt || new Date().toISOString()),
+  };
+}
+
+async function hydrateUserById(userId, force = false) {
+  if (!userId) return null;
+  if (!dbEnabled) return users[userId] || null;
+  if (!force && users[userId]) return users[userId];
+  try {
+    const r = await query(
+      `SELECT id, email, first_name, last_name, specialty, degree, password_hash, salt, is_admin, is_root_admin, verified, token_version, suspended, created_at FROM app_users WHERE id = $1`,
+      [userId]
+    );
+    if (r.rowCount > 0) {
+      const row = r.rows[0];
+      users[row.id] = rowToMemUser(row, users[row.id]);
+      return users[row.id];
+    }
+  } catch {}
+  return users[userId] || null;
+}
+
+async function hydrateUserByEmail(normalizedEmail, force = false) {
+  if (!normalizedEmail) return null;
+  const local = Object.values(users).find((u) => u.email === normalizedEmail);
+  if (!dbEnabled) return local || null;
+  if (!force && local) return local;
+  try {
+    const r = await query(
+      `SELECT id, email, first_name, last_name, specialty, degree, password_hash, salt, is_admin, is_root_admin, verified, token_version, suspended, created_at FROM app_users WHERE lower(email) = $1`,
+      [normalizedEmail]
+    );
+    if (r.rowCount > 0) {
+      const row = r.rows[0];
+      users[row.id] = rowToMemUser(row, users[row.id]);
+      return users[row.id];
+    }
+  } catch {}
+  return local || null;
+}
+
 async function resolveAdminFlags(user) {
   if (!dbEnabled) return [Boolean(user.isAdmin), Boolean(user.isRootAdmin)];
   const hit = adminFlagCache.get(user.id);
   if (hit && hit.exp > Date.now()) return hit.v;
   let v;
   try {
-    const r = await query(`SELECT is_admin, is_root_admin FROM app_users WHERE id = $1`, [user.id]);
+    const r = await query(
+      `SELECT is_admin, is_root_admin, token_version, suspended, verified FROM app_users WHERE id = $1`,
+      [user.id]
+    );
     if (r.rowCount > 0) {
-      v = [Boolean(r.rows[0].is_admin), Boolean(r.rows[0].is_root_admin)];
+      const row = r.rows[0];
+      v = [Boolean(row.is_admin), Boolean(row.is_root_admin)];
+      user.isAdmin = v[0];
+      user.isRootAdmin = v[1];
+      if (row.token_version !== null && row.token_version !== undefined) {
+        user.tokenVersion = Math.max(Number(user.tokenVersion || 0), Number(row.token_version || 0));
+      }
+      if (row.suspended !== null && row.suspended !== undefined) {
+        user.suspended = Boolean(user.suspended) || Boolean(row.suspended);
+      }
+      if (row.verified !== null && row.verified !== undefined) {
+        user.verified = Boolean(user.verified) || Boolean(row.verified);
+      }
     } else {
       // No mirrored row (legacy edge): fall back to the JSON store only.
       v = [Boolean(user.isAdmin), Boolean(user.isRootAdmin)];
@@ -473,47 +550,25 @@ const sessionMiddleware = async (req, res, next) => {
   const token = cookieToken || (bearerMatch && bearerMatch[1]);
   if (token) {
     let parsed = verifySessionToken(token);
-    // Multi-replica/stateless consistency: if missing from in-memory cache, hydrate from DB
+    // Multi-replica/stateless consistency: if missing or stale in memory, hydrate from DB
     if (!parsed && dbEnabled && typeof token === "string") {
       const parts = token.split(".");
       if (parts.length === 4) {
         const [candidateId] = parts;
-        if (!users[candidateId]) {
-          try {
-            const r = await query(
-              `SELECT id, email, first_name, last_name, specialty, degree, password_hash, salt, is_admin, is_root_admin, verified, token_version, suspended FROM app_users WHERE id = $1`,
-              [candidateId]
-            );
-            if (r.rowCount > 0) {
-              const row = r.rows[0];
-              users[row.id] = {
-                id: row.id,
-                email: row.email,
-                firstName: row.first_name || "",
-                lastName: row.last_name || "",
-                specialty: row.specialty || "",
-                degree: row.degree || "",
-                hash: row.password_hash,
-                salt: row.salt,
-                isAdmin: Boolean(row.is_admin),
-                isRootAdmin: Boolean(row.is_root_admin),
-                verified: Boolean(row.verified),
-                tokenVersion: Number(row.token_version || 0),
-                suspended: Boolean(row.suspended),
-              };
-              parsed = verifySessionToken(token);
-            }
-          } catch {}
-        }
+        await hydrateUserById(candidateId, true);
+        parsed = verifySessionToken(token);
       }
     }
     const u = parsed && users[parsed.userId];
     if (u) {
-      if (u.suspended) {
-        return res.status(403).json({ error: "This account has been suspended. Contact support." });
-      }
       try {
         const [dbAdmin, dbRoot] = await resolveAdminFlags(u);
+        if (u.suspended) {
+          return res.status(403).json({ error: "This account has been suspended. Contact support." });
+        }
+        if (parsed.tokenVersion !== undefined && Number(parsed.tokenVersion) !== Number(u.tokenVersion ?? 0)) {
+          return next();
+        }
         const { id, email, firstName, lastName, specialty, degree } = u;
         // H-2 FIX: surface the verification flag on the request so
         // requireVerifiedInteract can gate interact-with-others routes when
@@ -817,23 +872,19 @@ const browseOverBudget = async (userId, rowsRequested) => {
   if (!userId) return false;
   if (!dbEnabled) return browseOverBudgetSync(userId, rowsRequested);
   try {
-    // IST calendar day partitions the budget (matches quota/invoice bucketing).
+    // Atomic single-statement increment keyed by IST calendar day and IST midnight
+    // window_start so 00:00-05:30 IST and 05:30-24:00 IST share one bucket (audit M-1).
     const istDay = istDateString();
     const bucketKey = `browse-daily:${userId}:${istDay}`;
-    const cur = await query(
-      `SELECT hits FROM rate_limit_buckets WHERE bucket_key = $1 AND window_start = date_trunc('day', NOW())`,
-      [bucketKey]
-    );
-    const used = Number(cur.rows[0]?.hits || 0);
-    if (used + rowsRequested > BROWSE_DAILY_MAX) return true;
-    await query(
+    const r = await query(
       `INSERT INTO rate_limit_buckets (bucket_key, window_start, hits)
-       VALUES ($1, date_trunc('day', NOW()), $2)
+       VALUES ($1, (date_trunc('day', NOW() AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata'), $2)
        ON CONFLICT (bucket_key, window_start)
-       DO UPDATE SET hits = rate_limit_buckets.hits + EXCLUDED.hits`,
+       DO UPDATE SET hits = rate_limit_buckets.hits + EXCLUDED.hits
+       RETURNING hits`,
       [bucketKey, rowsRequested]
     );
-    return false;
+    return Number(r.rows[0]?.hits || 0) > BROWSE_DAILY_MAX;
   } catch {
     return browseOverBudgetSync(userId, rowsRequested);
   }
@@ -1329,7 +1380,7 @@ app.post("/api/auth/register", async (req, res) => {
     return res.status(400).json({ error: "First name is required." });
   }
   const normalizedEmail = email.trim().toLowerCase();
-  const existing = Object.values(users).find((u) => u.email === normalizedEmail);
+  const existing = await hydrateUserByEmail(normalizedEmail);
 
   // Identical response for new and existing accounts — no account enumeration.
   const message = "If this email is registered, check your inbox for a verification link.";
@@ -1490,6 +1541,12 @@ app.post("/api/auth/login", async (req, res) => {
 app.post("/api/auth/verify-email", async (req, res) => {
   if (await rateLimited(req)) return res.status(429).json({ error: "Too many requests." });
   const { token } = req.body || {};
+  if (dbEnabled && typeof token === "string" && token.includes(".")) {
+    try {
+      const [candidateId] = Buffer.from(token.slice(0, token.lastIndexOf(".")), "base64url").toString("utf8").split("|");
+      if (candidateId && !users[candidateId]) await hydrateUserById(candidateId);
+    } catch {}
+  }
   const userId = verifyEmailToken(token, "verify");
   if (!userId || !users[userId]) {
     return res.status(400).json({ error: "Invalid or expired verification link." });
@@ -1554,7 +1611,7 @@ app.post("/api/auth/forgot-password", async (req, res) => {
   }
   const message = "If this email is registered, a password reset link has been sent.";
   const normalizedEmail = email.trim().toLowerCase();
-  const user = Object.values(users).find((u) => u.email === normalizedEmail);
+  const user = await hydrateUserByEmail(normalizedEmail);
   if (user) {
     // Per-recipient throttle: identical response whether or not the email
     // actually goes out (no enumeration); test-mode token only on real sends.
@@ -1589,6 +1646,12 @@ app.post("/api/auth/forgot-password", async (req, res) => {
 app.post("/api/auth/reset-password", async (req, res) => {
   if (await rateLimited(req)) return res.status(429).json({ error: "Too many requests." });
   const { token, password } = req.body || {};
+  if (dbEnabled && typeof token === "string" && token.includes(".")) {
+    try {
+      const [candidateId] = Buffer.from(token.slice(0, token.lastIndexOf(".")), "base64url").toString("utf8").split("|");
+      if (candidateId && !users[candidateId]) await hydrateUserById(candidateId);
+    } catch {}
+  }
   const userId = verifyEmailToken(token, "reset");
   if (!userId || !users[userId]) {
     return res.status(400).json({ error: "Invalid or expired reset link." });
@@ -2031,6 +2094,20 @@ app.post("/api/razorpay/redeem", async (req, res) => {
       // Stash for the coupon step below: only consume when this redeem was the
       // first to apply the payment.
       req._redeemApplied = redeemGrant?.result === "applied";
+
+      // Audit M-4: automatically mint and persist the sequential GST invoice on
+      // redemption so Account -> Invoices & Receipts (GET /api/invoices) is
+      // populated immediately without requiring a separate manual call.
+      try {
+        await ensureDbInvoice({
+          tokenHash,
+          parsed,
+          userId: req.user.id,
+          doctorName: `${mayUseDrTitle(req.user) ? "Dr. " : ""}${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || null,
+        });
+      } catch (invErr) {
+        console.error(JSON.stringify({ level: "error", msg: "auto_invoice_failed", error: String(invErr) }));
+      }
     } catch (err) {
       console.error(JSON.stringify({ level: "error", msg: "redeem_token_reserve_error", error: String(err) }));
       return res.status(500).json({ error: "Internal server error." });
@@ -2112,6 +2189,109 @@ app.post("/api/razorpay/redeem", async (req, res) => {
 // integer paise so subtotal + CGST + SGST always sums exactly to the total.
 // Requires a valid (not-yet-redeemed) activation token.
 // ---------------------------------------------------------------------------
+const SKU_DISPLAY_NAMES = {
+  "premium": "Premium Membership (Monthly)",
+  "premium-annual": "Premium Membership (Annual)",
+  "platinum": "Platinum Membership (Monthly)",
+  "platinum-annual": "Platinum Membership (Annual)",
+  "astrologer-consultation": "Astrology Consultation",
+  "astrologer-consultation-1499": "Astrology Consultation (Essential)",
+  "astrologer-consultation-1699": "Astrology Consultation (Classic)",
+  "astrologer-consultation-1999": "Astrology Consultation (Expert)",
+  "kundali-report": "Detailed Kundali Match Report",
+};
+
+async function resolveAuthoritativePaymentPaise(parsed) {
+  let capturedPaise = null;
+  if (dbEnabled && parsed?.paymentId) {
+    try {
+      // Audit C-3 FIX: payment_transactions PK is payment_id, NOT razorpay_payment_id.
+      const paymentRow = await query(
+        `SELECT amount_paise FROM payment_transactions WHERE payment_id = $1`,
+        [parsed.paymentId]
+      );
+      if (paymentRow.rows[0] && Number(paymentRow.rows[0].amount_paise) > 0) {
+        capturedPaise = Number(paymentRow.rows[0].amount_paise);
+      }
+    } catch {}
+  }
+  let orderPaise = null;
+  if (parsed?.orderId) {
+    if (dbEnabled) {
+      try {
+        const ord = await domain.getOrder(parsed.orderId);
+        if (ord && Number(ord.amount_paise) > 0) {
+          orderPaise = Number(ord.amount_paise);
+        }
+      } catch {}
+    }
+    if (orderPaise === null) {
+      const memOrder = liveOrders.get(parsed.orderId) || simOrders.get(parsed.orderId);
+      if (memOrder && Number(memOrder.amount) > 0) {
+        orderPaise = Number(memOrder.amount);
+      }
+    }
+  }
+  return { capturedPaise, orderPaise, authoritativePaise: capturedPaise ?? orderPaise };
+}
+
+async function ensureDbInvoice({ tokenHash, parsed, userId = null, doctorName = null, gstin = null, billingAddress = null, fallbackPaise = null }) {
+  const { authoritativePaise } = await resolveAuthoritativePaymentPaise(parsed);
+  const catalogDefaultPaise = (PLAN_CATALOG[parsed.sku]?.[0] || 0) * 100;
+  const totalPaise = authoritativePaise ?? fallbackPaise ?? catalogDefaultPaise;
+  if (!totalPaise || totalPaise <= 0) return null;
+  const basePaise = Math.round(totalPaise / 1.18);
+  const gstPaise = totalPaise - basePaise;
+  const istToday = istDateString();
+  const seqYear = Number(istToday.slice(0, 4));
+
+  return withTx(async (client) => {
+    const existing = await client.query(`SELECT * FROM invoices WHERE token_hash = $1`, [tokenHash]);
+    if (existing.rowCount > 0) {
+      if (doctorName || gstin || billingAddress) {
+        const upd = await client.query(
+          `UPDATE invoices
+              SET doctor_name = COALESCE($2, doctor_name),
+                  gstin = COALESCE($3, gstin),
+                  billing_address = COALESCE($4, billing_address),
+                  user_id = COALESCE(user_id, $5)
+            WHERE token_hash = $1
+            RETURNING *`,
+          [tokenHash, doctorName ? String(doctorName).slice(0, 120) : null, gstin ? String(gstin).slice(0, 30) : null, billingAddress ? String(billingAddress).slice(0, 200) : null, userId || parsed.userId || null]
+        );
+        return upd.rows[0] || existing.rows[0];
+      }
+      return existing.rows[0];
+    }
+    const seqRes = await client.query(
+      `INSERT INTO invoice_sequences (year, next_n) VALUES ($1, 2)
+       ON CONFLICT (year) DO UPDATE SET next_n = invoice_sequences.next_n + 1
+       RETURNING (invoice_sequences.next_n - 1) AS n`,
+      [seqYear]
+    );
+    const assignedSeq = Number(seqRes.rows[0]?.n || 1);
+    const invNumber = `MM-INV-${seqYear}-${String(assignedSeq).padStart(6, "0")}`;
+    const ins = await client.query(
+      `INSERT INTO invoices (invoice_number, user_id, payment_id, token_hash, sku, amount_paise, gst_paise, doctor_name, gstin, billing_address)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       RETURNING *`,
+      [
+        invNumber,
+        userId || parsed.userId || null,
+        parsed.paymentId,
+        tokenHash,
+        parsed.sku,
+        totalPaise,
+        gstPaise,
+        doctorName ? String(doctorName).slice(0, 120) : null,
+        gstin ? String(gstin).slice(0, 30) : null,
+        billingAddress ? String(billingAddress).slice(0, 200) : null,
+      ]
+    );
+    return ins.rows[0];
+  });
+}
+
 app.post("/api/generate-invoice", async (req, res) => {
   if (await rateLimited(req)) return res.status(429).json({ error: "Too many requests." });
 
@@ -2123,59 +2303,11 @@ app.post("/api/generate-invoice", async (req, res) => {
       .status(400)
       .json({ error: "Invoices are only generated for verified payments." });
   }
-  
+
   const tokenHash = sha256(token);
-  // M-2 FIX: hoisted so both the DB and the no-DB fallback price from the
-  // captured payment, never from the request body.
-  let capturedPaise = null;
-  if (dbEnabled) {
-    try {
-      // the invoiced amount is sourced from the captured payment row,
-      // never from the request body (a caller-supplied amount can only match,
-      // never set, the GST math). SAFE DEFAULT: mismatch => 400.
-      const paymentRow = await query(
-        `SELECT amount_paise FROM payment_transactions WHERE razorpay_payment_id = $1`,
-        [parsed.paymentId]
-      );
-      capturedPaise = paymentRow.rows[0] ? Number(paymentRow.rows[0].amount_paise) : null;
-      if (capturedPaise !== null && Number.isFinite(Number(amount)) && Math.round(Number(amount) * 100) !== capturedPaise) {
-        return res.status(400).json({ error: "Invoice amount does not match the captured payment." });
-      }
-      const existing = await query(`SELECT * FROM invoices WHERE token_hash = $1`, [tokenHash]);
-      if (existing.rowCount > 0) {
-        const inv = existing.rows[0];
-        const SKU_DISPLAY_NAMES = {
-          "premium": "Premium Membership (Monthly)",
-          "premium-annual": "Premium Membership (Annual)",
-          "platinum": "Platinum Membership (Monthly)",
-          "platinum-annual": "Platinum Membership (Annual)",
-          "astrologer-consultation": "Astrology Consultation",
-          "astrologer-consultation-1499": "Astrology Consultation (Essential)",
-          "astrologer-consultation-1699": "Astrology Consultation (Classic)",
-          "astrologer-consultation-1999": "Astrology Consultation (Expert)",
-          "kundali-report": "Detailed Kundali Match Report",
-        };
-        const officialPlanName = SKU_DISPLAY_NAMES[inv.sku] || (planName ? String(planName).slice(0, 100) : "MedicoMatch Membership");
-        const bPaise = Math.round(inv.amount_paise / 1.18);
-        const gPaise = inv.amount_paise - bPaise;
-        const cPaise = Math.ceil(gPaise / 2);
-        const sPaise = gPaise - cPaise;
-        return res.json({
-          invoiceNumber: inv.invoice_number,
-          date: istDateString(new Date(inv.issued_at)),
-          planName: officialPlanName,
-          doctorName: inv.doctor_name || "Doctor User",
-          gstin: inv.gstin || "Not provided",
-          billingAddress: inv.billing_address || "India",
-          subtotal: Number((bPaise / 100).toFixed(2)),
-          cgst: Number((cPaise / 100).toFixed(2)),
-          sgst: Number((sPaise / 100).toFixed(2)),
-          total: Number((inv.amount_paise / 100).toFixed(2)),
-          status: "PAID",
-        });
-      }
-    } catch { /* proceed to generation */ }
-  } else if (generatedInvoices.has(token)) {
+  const { authoritativePaise } = await resolveAuthoritativePaymentPaise(parsed);
+
+  if (!dbEnabled && generatedInvoices.has(token)) {
     return res.json(generatedInvoices.get(token));
   }
 
@@ -2183,40 +2315,21 @@ app.post("/api/generate-invoice", async (req, res) => {
     return res.status(400).json({ error: "A positive amount is required." });
   }
 
-  let orderAmount = null;
-  if (parsed.orderId) {
-    if (dbEnabled) {
-      try {
-        const ord = await domain.getOrder(parsed.orderId);
-        if (ord && typeof ord.amount_paise === "number") {
-          orderAmount = Math.round(ord.amount_paise / 100);
-        }
-      } catch {}
-    }
-    if (orderAmount === null) {
-      const memOrder = liveOrders.get(parsed.orderId) || simOrders.get(parsed.orderId);
-      if (memOrder && typeof memOrder.amount === "number") {
-        orderAmount = Math.round(memOrder.amount / 100);
-      }
-    }
-  }
-
-  // Price the invoice from the token's sku in the server catalog or order record (allows valid coupon discounts).
-  // M-2 FIX (continued): when a captured payment row exists, its amount is the
-  // authority and overrides the request body — the caller can only request the
-  // invoice, never price it.
+  // Audit C-3 / M-2 FIX: when a captured payment or server-issued order exists,
+  // its recorded amount is the sole authority and overrides any forged client
+  // amount (so neither amount=1 nor inflating a discounted ₹1,349 coupon order
+  // to ₹1,499 can alter the GST invoice total). When no server order/payment
+  // record exists (stateless fallback), the caller amount must match catalog.
   const allowedAmounts = PLAN_CATALOG[parsed.sku] || [];
-  const effectiveAmount = capturedPaise !== null ? capturedPaise / 100 : amount;
   const isAllowed =
-    capturedPaise !== null ||
-    (orderAmount !== null && Math.round(amount) === orderAmount) ||
+    authoritativePaise !== null ||
     allowedAmounts.includes(Math.round(amount));
 
   if (!isAllowed) {
     return res.status(400).json({ error: "Invoice amount does not match the purchased plan." });
   }
 
-  const totalPaise = capturedPaise !== null ? capturedPaise : Math.round(effectiveAmount * 100);
+  const totalPaise = authoritativePaise !== null ? authoritativePaise : Math.round(amount * 100);
   const basePaise = Math.round(totalPaise / 1.18);
   const gstPaise = totalPaise - basePaise;
   const cgstPaise = Math.ceil(gstPaise / 2);
@@ -2228,45 +2341,20 @@ app.post("/api/generate-invoice", async (req, res) => {
   const istToday = istDateString();
   const seqYear = Number(istToday.slice(0, 4));
 
-  // L1: only SKUs the catalog can actually sell get display names. Tiered
-  // astrologer SKUs map to the canonical consultation row in billing.
-  const SKU_DISPLAY_NAMES = {
-    "premium": "Premium Membership (Monthly)",
-    "premium-annual": "Premium Membership (Annual)",
-    "platinum": "Platinum Membership (Monthly)",
-    "platinum-annual": "Platinum Membership (Annual)",
-    "astrologer-consultation": "Astrology Consultation",
-    "astrologer-consultation-1499": "Astrology Consultation (Essential)",
-    "astrologer-consultation-1699": "Astrology Consultation (Classic)",
-    "astrologer-consultation-1999": "Astrology Consultation (Expert)",
-          "kundali-report": "Detailed Kundali Match Report",
-  };
   const officialPlanName = SKU_DISPLAY_NAMES[parsed.sku] || (planName ? String(planName).slice(0, 100) : "MedicoMatch Membership");
 
   let outInvoice = null;
 
   if (dbEnabled) {
     try {
-      const invRow = await withTx(async (client) => {
-        const existing = await client.query(`SELECT * FROM invoices WHERE token_hash = $1`, [tokenHash]);
-        if (existing.rowCount > 0) {
-          return existing.rows[0];
-        }
-        const seqRes = await client.query(
-          `INSERT INTO invoice_sequences (year, next_n) VALUES ($1, 2)
-           ON CONFLICT (year) DO UPDATE SET next_n = invoice_sequences.next_n + 1
-           RETURNING (invoice_sequences.next_n - 1) AS n`,
-          [seqYear]
-        );
-        const assignedSeq = Number(seqRes.rows[0]?.n || 1);
-        const invNumber = `MM-INV-${seqYear}-${String(assignedSeq).padStart(6, "0")}`;
-        const ins = await client.query(
-          `INSERT INTO invoices (invoice_number, user_id, payment_id, token_hash, sku, amount_paise, gst_paise, doctor_name, gstin, billing_address)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-           RETURNING *`,
-          [invNumber, req.user?.id || parsed.userId || null, parsed.paymentId, tokenHash, parsed.sku, totalPaise, gstPaise, doctorName || null, gstin || null, billingAddress || null]
-        );
-        return ins.rows[0];
+      const invRow = await ensureDbInvoice({
+        tokenHash,
+        parsed,
+        userId: req.user?.id || parsed.userId || null,
+        doctorName: doctorName || null,
+        gstin: gstin || null,
+        billingAddress: billingAddress || null,
+        fallbackPaise: totalPaise,
       });
       if (invRow) {
         const bPaise = Math.round(invRow.amount_paise / 1.18);
@@ -2558,15 +2646,17 @@ app.get("/api/blocks", requireDbUser, wrap(async (req, res) => {
 }));
 
 app.post("/api/blocks", rateLimitMiddleware, requireDbUser, wrap(async (req, res) => {
-  const { userId } = req.body || {};
-  if (typeof userId !== "string" || !userId) return res.status(400).json({ error: "userId is required." });
-  res.json(await domain.blockUser(req.user.id, userId));
+  const { userId, profileId } = req.body || {};
+  const target = (typeof userId === "string" && userId) || (typeof profileId === "string" && profileId) || "";
+  if (!target) return res.status(400).json({ error: "userId or profileId is required." });
+  res.json(await domain.blockUser(req.user.id, target, typeof profileId === "string" ? profileId : null));
 }));
 
 app.post("/api/blocks/unblock", rateLimitMiddleware, requireDbUser, wrap(async (req, res) => {
-  const { userId } = req.body || {};
-  if (typeof userId !== "string" || !userId) return res.status(400).json({ error: "userId is required." });
-  res.json(await domain.unblockUser(req.user.id, userId));
+  const { userId, profileId } = req.body || {};
+  const target = (typeof userId === "string" && userId) || (typeof profileId === "string" && profileId) || "";
+  if (!target) return res.status(400).json({ error: "userId or profileId is required." });
+  res.json(await domain.unblockUser(req.user.id, target, typeof profileId === "string" ? profileId : null));
 }));
 
 app.post("/api/reports", rateLimitMiddleware, requireDbUser, wrap(async (req, res) => {
@@ -2682,7 +2772,7 @@ async function sendOtpSms(phone, code) {
   const key = process.env.MSG91_API_KEY || "";
   if (provider !== "msg91" || !key) return { sent: false, provider: "none" };
   // MSG91 expects the country code without '+'; Indian numbers default to 91.
-  const mobile = String(phone).replace(/[^\\d]/g, "");
+  const mobile = String(phone).replace(/[^\d]/g, "");
   const withCc = mobile.length === 10 ? `91${mobile}` : mobile;
   try {
     const res = await fetch(`${MSG91_ENDPOINT}?otp=${encodeURIComponent(code)}&mobile=${encodeURIComponent(withCc)}`, {
@@ -2786,7 +2876,7 @@ app.get("/api/boost", requireDbUser, wrap(async (req, res) => {
 // P0-10 coupon preview (applied for real at create-order).
 app.get("/api/coupons/validate", requireDbUser, wrap(async (req, res) => {
   if (dbEnabled) {
-    const c = await domain.validateCoupon(String(req.query.code || ""));
+    const c = await domain.validateCoupon(String(req.query.code || ""), req.user?.id || null);
     if (!c) return res.status(404).json({ error: "Invalid or expired coupon." });
     return res.json(c);
   }
@@ -2838,7 +2928,7 @@ app.post("/api/admin/users/:id/warn", rateLimitMiddleware, requireDbUser, requir
   const out = await domain.warnUser(req.user.id, req.params.id, req.body?.reason);
   if (out.autoSuspend) {
     // 3rd strike: suspend canonically (same path as manual suspend).
-    const target = users[req.params.id];
+    const target = users[req.params.id] || (await hydrateUserById(req.params.id));
     if (target && !target.suspended) {
       target.suspended = true;
       target.tokenVersion = (target.tokenVersion ?? 0) + 1;
@@ -3135,7 +3225,7 @@ app.get("/api/admin/me", requireAdmin, wrap(async (req, res) => {
 
 app.post("/api/admin/users/:id/promote-admin", requireAdmin, wrap(async (req, res) => {
   if (!req.isRootAdmin) return res.status(403).json({ error: "Root admin required." });
-  const target = users[req.params.id];
+  const target = users[req.params.id] || (await hydrateUserById(req.params.id));
   if (!target) return res.status(404).json({ error: "User not found." });
   if (target.isRootAdmin) return res.status(400).json({ error: "Root admins are managed via ADMIN_EMAILS." });
   target.isAdmin = true;
@@ -3150,7 +3240,7 @@ app.post("/api/admin/users/:id/promote-admin", requireAdmin, wrap(async (req, re
 
 app.post("/api/admin/users/:id/demote-admin", requireAdmin, wrap(async (req, res) => {
   if (!req.isRootAdmin) return res.status(403).json({ error: "Root admin required." });
-  const target = users[req.params.id];
+  const target = users[req.params.id] || (await hydrateUserById(req.params.id));
   if (!target) return res.status(404).json({ error: "User not found." });
   if (target.isRootAdmin) return res.status(400).json({ error: "Root admins are managed via ADMIN_EMAILS." });
   target.isAdmin = false;
@@ -3179,12 +3269,12 @@ app.post("/api/admin/reports/:id/resolve", rateLimitMiddleware, requireDbUser, r
 app.get("/api/admin/users", requireDbUser, requireAdmin, wrap(async (req, res) => {
   const rows = await domain.listAdminUsers(req.query.q, Number(req.query.limit) || 50);
   // Suspension is canonical on the auth store — merge it into admin view.
-  const enriched = rows.map((r) => ({ ...r, suspended: Boolean(users[r.id]?.suspended) }));
+  const enriched = rows.map((r) => ({ ...r, suspended: Boolean(r.suspended) || Boolean(users[r.id]?.suspended) }));
   res.json({ users: enriched });
 }));
 
 app.post("/api/admin/users/:id/suspend", requireAdmin, wrap(async (req, res) => {
-  const target = users[req.params.id];
+  const target = users[req.params.id] || (await hydrateUserById(req.params.id));
   if (!target) return res.status(404).json({ error: "User not found." });
   if (target.id === req.user.id) return res.status(400).json({ error: "You cannot suspend yourself." });
   // Role hierarchy: root accounts are env-managed and untouchable here;
@@ -3222,7 +3312,7 @@ app.post("/api/admin/users/:id/suspend", requireAdmin, wrap(async (req, res) => 
 }));
 
 app.post("/api/admin/users/:id/unsuspend", requireAdmin, wrap(async (req, res) => {
-  const target = users[req.params.id];
+  const target = users[req.params.id] || (await hydrateUserById(req.params.id));
   if (!target) return res.status(404).json({ error: "User not found." });
   target.suspended = false;
   persistUsers();
@@ -3441,6 +3531,13 @@ async function main() {
             `UPDATE app_users SET is_admin = TRUE, is_root_admin = TRUE WHERE lower(email) = $1`,
             [email]
           );
+          for (const u of Object.values(users)) {
+            if (String(u.email || "").toLowerCase() === email) {
+              u.isAdmin = true;
+              u.isRootAdmin = true;
+              invalidateAdminFlagCache(u.id);
+            }
+          }
         } catch (err) {
           console.error(JSON.stringify({ level: "error", msg: "admin_promote_failed", email, error: String(err) }));
         }
@@ -3451,6 +3548,7 @@ async function main() {
         if (adminEmails.includes(String(u.email).toLowerCase())) {
           u.isAdmin = true;
           u.isRootAdmin = true;
+          invalidateAdminFlagCache(u.id);
           promoted++;
         }
       }
@@ -3468,12 +3566,20 @@ async function main() {
         const rows = await domain.subscriptionsExpiring(3);
         for (const s of rows.slice(0, 200)) {
           try {
+            const claimed = await query(
+              `UPDATE subscriptions
+                  SET renewal_notified_at = NOW()
+                WHERE user_id = $1 AND sku = $2
+                  AND (renewal_notified_at IS NULL OR renewal_notified_at < NOW() - INTERVAL '3 days')
+                RETURNING user_id`,
+              [s.userId, s.sku]
+            );
+            if (claimed.rowCount === 0) continue;
             await sendEmail({
               to: s.email,
               subject: "Your MedicoMatch membership ends soon",
               text: `Your ${s.sku} membership ends on ${new Date(s.expiresAt).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" })}. Renew from your Account page to keep your benefits.`,
             });
-            await domain.markRenewalNotified(s.userId, s.sku);
           } catch { /* per-recipient failure is non-fatal */ }
         }
         if (rows.length > 0) console.log(JSON.stringify({ level: "info", msg: "renewal_digest_sent", total: rows.length }));
@@ -3492,7 +3598,7 @@ async function main() {
         const r = await query(
           `SELECT u.id, u.email,
                   (SELECT COUNT(*)::int FROM notifications n WHERE n.user_id = u.id AND n.read_at IS NULL AND n.created_at > NOW() - INTERVAL '2 days') AS unread,
-                  (SELECT COUNT(*)::int FROM profile_views v JOIN profiles p ON p.id = v.profile_id WHERE p.user_id = u.id AND v.viewed_on > CURRENT_DATE - 2) AS views
+                  (SELECT COUNT(*)::int FROM profile_views v JOIN profiles p ON p.id = v.profile_id WHERE p.user_id = u.id AND v.viewed_on >= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date - 2) AS views
            FROM app_users u
            WHERE u.verified = TRUE
              AND u.suspended = FALSE
@@ -3503,12 +3609,20 @@ async function main() {
         for (const row of r.rows) {
           try {
             if ((row.unread ?? 0) + (row.views ?? 0) === 0) continue;
+            const claimed = await query(
+              `UPDATE app_users
+                  SET digest_sent_at = NOW()
+                WHERE id = $1
+                  AND (digest_sent_at IS NULL OR digest_sent_at < NOW() - INTERVAL '20 hours')
+                RETURNING id`,
+              [row.id]
+            );
+            if (claimed.rowCount === 0) continue;
             await sendEmail({
               to: row.email,
               subject: "You have new activity on MedicoMatch",
               text: `Namaste! Since your last visit: ${row.views ?? 0} new profile view(s) and ${row.unread ?? 0} unread notification(s) (interests, messages, matches). Sign in to see who's waiting: ${APP_URL}/matches`,
             });
-            await query(`UPDATE app_users SET digest_sent_at = NOW() WHERE id = $1`, [row.id]);
           } catch { /* per-recipient failure is non-fatal */ }
         }
         if (r.rows.length > 0) console.log(JSON.stringify({ level: "info", msg: "engagement_digest_sent", total: r.rows.length }));

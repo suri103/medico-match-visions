@@ -112,8 +112,8 @@ const DeleteAccountPage: React.FC = () => {
               <CardDescription>What will be removed and what is retained</CardDescription>
             </CardHeader>
             <CardContent className="prose prose-slate max-w-none text-sm text-slate-700 space-y-2">
-              <p><strong>Removed immediately:</strong> your profile, photos, interests (sent and received), favorites, shortlists, blocks, chat channels &amp; messages, video-date bookings, notifications, and quota usage.</p>
-              <p><strong>Anonymized (tombstoned):</strong> your account record becomes "Deleted User" so chat messages from other users still have a valid referent. Your email becomes <code>deleted-&#123;your-id&#125;@deleted.medicomatch.in</code>.</p>
+              <p><strong>Removed immediately:</strong> your profile, photos, medical council verification documents, phone OTP records, kundali reports, profile boosts, event RSVPs, interests (sent and received), favorites, shortlists, blocks, chat channels &amp; messages, video-date bookings, notifications, contact and profile view history, and quota usage.</p>
+              <p><strong>Anonymized (tombstoned):</strong> your name becomes "Deleted User", credential hashes, phone number, and salt are securely scrubbed, and your email is scrambled to <code>deleted-&#123;your-id&#125;@deleted.medicomatch.in</code> so past financial audit trails remain integral without preserving personal identifiers.</p>
               <p><strong>Retained for legal reasons:</strong></p>
               <ul className="list-disc pl-5 space-y-1">
                 <li>Payment transactions and invoices: <strong>7 years</strong> (Income Tax Act, 1961).</li>
