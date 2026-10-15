@@ -84,7 +84,6 @@ const OnboardingPage = () => {
         ...prev,
         name: prev.name || sp.name.replace(/^Dr\.\s*/i, ''),
         gender: prev.gender || sp.gender || '',
-        age: prev.age || (sp.age ? String(sp.age) : ''),
         specialty: prev.specialty || sp.specialty || '',
         degree: prev.degree || sp.degree || '',
         hospital: prev.hospital || sp.hospital || '',
@@ -130,8 +129,8 @@ const OnboardingPage = () => {
         !degreeDeclared.toLowerCase().includes('pursuing') &&
         !degreeDeclared.toLowerCase().includes('student');
       const dobVal = profile.birthDate || profile.dob || null;
-      let calculatedAge = profile.age ? Number(profile.age) : null;
-      if (dobVal && !calculatedAge) {
+      let calculatedAge: number | null = null;
+      if (dobVal) {
         const birth = new Date(dobVal);
         if (!Number.isNaN(birth.getTime())) {
           const diffMs = Date.now() - birth.getTime();
