@@ -21,6 +21,7 @@ export default defineConfig(({ mode: _mode }) => ({
     },
   },
   build: {
+    emptyOutDir: true,
     rollupOptions: {
       output: {
         // Function form is required by vite 8 (rolldown) and supported by
