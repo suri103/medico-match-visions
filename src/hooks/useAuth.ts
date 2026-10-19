@@ -56,6 +56,34 @@ const clearClientCookie = (name: string) => {
   document.cookie = `${name}=; Path=/; Max-Age=0; SameSite=Strict`;
 };
 
+/**
+ * Purge EVERY piece of per-account client state (audit H6).
+ *
+ * mm:* keys are flat and NOT user-scoped — chats, photos, the verification
+ * certificate data URL, favorites, interests, reports, the plan ledger — so
+ * anything left behind is rendered to the NEXT account on a shared browser.
+ * Call this whenever a session ends, by any route: explicit sign-out, a
+ * rejected/expired cookie on boot, or switching accounts.
+ */
+const purgeLocalAppState = () => {
+  try {
+    const stale: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith('mm:')) stale.push(key);
+    }
+    const checkoutToken = sessionStorage.getItem('mm:checkoutToken');
+    // Anonymous visitors hit this on every load (no session, no keys) — skip the
+    // broadcast when there is genuinely nothing to clear.
+    if (stale.length === 0 && !checkoutToken) return;
+    for (const key of stale) localStorage.removeItem(key);
+    sessionStorage.removeItem('mm:checkoutToken');
+    window.dispatchEvent(new CustomEvent('mm:persisted-state-changed', { detail: { key: '*' } }));
+  } catch {
+    // Storage unavailable — nothing to purge.
+  }
+};
+
 // In-memory CSRF cache lives in src/lib/csrf.ts — shared with api.ts and
 // auth.ts so the token delivered in the login/verify JSON body (the only way
 // to obtain it on a split-origin deploy, where cross-domain cookies are
@@ -111,8 +139,11 @@ export const useAuth = () => {
     void fetchCsrfToken();
     serverMe().then((me) => {
       if (!me.valid) {
+        // The server rejected our cookie — that is a session end exactly like
+        // sign-out, so the previous member's local state must go too (audit H6).
         setSession(null);
         setServerSignedIn(false);
+        purgeLocalAppState();
         return;
       }
       // FIX (navbar-for-anonymous bug): only trust the "offline grace window"
@@ -136,9 +167,17 @@ export const useAuth = () => {
         window.dispatchEvent(new CustomEvent('mm:persisted-state-changed', { detail: { key: 'mm:activePlan' } }));
       } catch { /* storage unavailable */ }
     });
-  }, [setSession]);
+    // `hasCookie` / `session?.user` are read above; the once-per-load guard makes
+    // extra runs no-ops, so depending on them is safe (and keeps lint honest).
+  }, [setSession, hasCookie, session?.user]);
 
   const signIn = useCallback((user: Partial<AuthUser>, token?: string) => {
+    // Switching accounts without an explicit sign-out (or a stale session left
+    // by an expired cookie) must not carry the previous member's local state
+    // into the new one (audit H6).
+    if (user.id && session?.user?.id && session.user.id !== user.id) {
+      purgeLocalAppState();
+    }
     const fullUser: AuthUser = {
       id: user.id || `doc_${Date.now()}`,
       // Audit H-2: no fabricated fallback — a missing email stays empty rather
@@ -166,7 +205,9 @@ export const useAuth = () => {
     setServerSignedIn(true);
     // Refresh the CSRF token after sign-in (the server rotated the cookie).
     void fetchCsrfToken();
-  }, [setSession]);
+    // Re-created when the signed-in account changes so the account-switch purge
+    // above always sees the current session.
+  }, [setSession, session?.user?.id]);
 
   const signOut = useCallback(async () => {
     // Audit M-12 / item 1: ask the server to clear the httpOnly session cookie
@@ -189,21 +230,11 @@ export const useAuth = () => {
     setServerSignedIn(false);
     setCsrfTokenCache(null);
     clearClientCookie(CSRF_COOKIE);
-    // Purge ALL app state — chats, photos, certificates, reports, plan,
-    // quotas, everything. Keys are not user-scoped, so anything left behind
-    // bleeds into the next account on a shared device (audit H6).
-    try {
-      const stale: string[] = [];
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (key && key.startsWith('mm:')) stale.push(key);
-      }
-      for (const key of stale) localStorage.removeItem(key);
-      sessionStorage.removeItem('mm:checkoutToken');
-      window.dispatchEvent(new CustomEvent('mm:persisted-state-changed', { detail: { key: '*' } }));
-    } catch {
-      // Storage unavailable — nothing to purge.
-    }
+    // Purge ALL app state — chats, photos, certificates, reports, plan, quotas,
+    // everything. Keys are not user-scoped, so anything left behind bleeds into
+    // the next account on a shared device (audit H6). The same helper runs when
+    // the boot validator finds a rejected cookie.
+    purgeLocalAppState();
   }, [setSession]);
 
   return {

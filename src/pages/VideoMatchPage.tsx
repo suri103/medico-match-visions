@@ -12,6 +12,7 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
 import { usePlan } from '@/hooks/usePlan';
+import { demoModeEnabled } from '@/lib/devAuth';
 import { Doctor } from '@/features/matches/types';
 import { Separator } from '@/components/ui/separator';
 import VideoCall from '@/components/VideoCall';
@@ -36,7 +37,11 @@ const VideoMatchPage: React.FC = () => {
   const { blockedIds, connections } = useFavoritesContext();
   const { planName, consumeVideoDate } = usePlan();
   const [activeTab, setActiveTab] = useState('explore');
-  const [pendingRequests, setPendingRequests] = useState<VideoMatchRequest[]>([
+  // Audit H9: fixtures are DEMO-ONLY (same gate every other surface uses). They
+  // previously rendered in production, and "accepting" one decremented the real
+  // monthly video-date quota for a counterparty who does not exist.
+  const [pendingRequests, setPendingRequests] = useState<VideoMatchRequest[]>(() =>
+    demoModeEnabled ? [
     {
       id: '1',
       doctorId: '101',
@@ -57,9 +62,9 @@ const VideoMatchPage: React.FC = () => {
       message: 'Hi there! I noticed we both enjoy hiking. Let\'s chat about work-life balance.',
       status: 'pending'
     }
-  ]);
+  ] : []);
   
-  const allMatchSuggestions: Doctor[] = [
+  const allMatchSuggestions: Doctor[] = demoModeEnabled ? [
 
     {
       id: '201',
@@ -106,7 +111,7 @@ const VideoMatchPage: React.FC = () => {
       isOnline: true,
       sexualOrientation: 'Straight'
     }
-  ];
+  ] : [];
   
   const dismissed = new Set([...blockedIds, ...connections.filter(c => c.status === 'passed').map(c => c.doctorId)]);
   const matchSuggestions = allMatchSuggestions.filter(d => !dismissed.has(d.id) && d.profileVisibility !== 'hidden' && d.profileVisibility !== 'private');
@@ -275,6 +280,12 @@ const VideoMatchPage: React.FC = () => {
                         />
                       </div>
                     ))}
+                    {matchSuggestions.length === 0 && (
+                      <p className="text-sm text-slate-500 md:col-span-2 lg:col-span-3">
+                        No video-match suggestions yet. They appear here once you and another
+                        member have both shown interest — send an interest from Matches or Browse.
+                      </p>
+                    )}
                   </div>
                 </CardContent>
               </Card>

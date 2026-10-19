@@ -7,14 +7,18 @@ Exclusive matrimony platform for doctors and healthcare professionals (India).
 - **Frontend**: React 18 + TypeScript + Vite + Tailwind/shadcn (`src/`)
 - **Backend**: single Express process (`server/`) — email/password auth with
   scrypt, Razorpay orders + signature verification, single-use entitlement
-  tokens, GST invoices. Persistence: JSON files in `server/data/`.
+  tokens, GST invoices. Persistence is Postgres (`DATABASE_URL`): profiles,
+  quotas, interests, chat, video dates, billing. The JSON files in
+  `server/data/` are the dev/test fallback only — production requires a
+  database (the boot refuses to start without one).
 - **Payments**: Razorpay (UPI / Cards / NetBanking). The KEY SECRET only ever
   lives on the server; plans activate exclusively by redeeming a server-issued
   token after signature verification.
 
-> **Status note**: profiles, matches, chats and video dates are currently
-> client-side demonstration content (production builds show a banner saying
-> so). The server-backed surface today is auth + payments + entitlements.
+> **Status note**: the social surface (profiles, matches, interests, chat,
+> video dates) is server-backed in DB mode. Demo fixtures exist for local runs
+> and are marked `is_sample` (hidden from browse) — set
+> `SEED_SAMPLE_DATA=false` to remove them from the database entirely.
 
 ## Development
 

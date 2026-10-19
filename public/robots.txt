@@ -12,5 +12,10 @@ Allow: /
 
 User-agent: *
 Allow: /
+Disallow: /search
+Disallow: /matches
+Disallow: /messages
+Disallow: /account
+Disallow: /admin
 
-Sitemap: /sitemap.xml
+Sitemap: https://medicomatch.in/sitemap.xml

@@ -6,8 +6,8 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { sendEmail } from "./email.mjs";
-import { dbEnabled, DATABASE_URL, migrate, query, withTx } from "./db.mjs";
-import { addClient, closeUser as kickSse, publishToUser, initEventsPubSub } from "./events.mjs";
+import { dbEnabled, DATABASE_URL, getPool, migrate, query, withTx } from "./db.mjs";
+import { addClient, closeUser as kickSse, publishToUser, initEventsPubSub, connectionCount } from "./events.mjs";
 import * as domain from "./domain.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -16,7 +16,12 @@ const app = express();
 // Behind Railway/Fly/Nginx-style proxies, req.ip must be taken from
 // X-Forwarded-For — otherwise the rate limiter buckets EVERY visitor under the
 // proxy's IP and legitimate users get 429s in production (audit H6).
-app.set("trust proxy", true);
+// Audit H1: `true` trusts EVERY hop, so a client-supplied X-Forwarded-For is
+// used verbatim as the rate-limit bucket key — one forged header per request
+// defeats the whole per-IP limiter (login brute force, PoW-challenge flooding).
+// Trust exactly the hops we own; raise TRUST_PROXY_HOPS if another proxy is
+// ever added in front of the platform edge.
+app.set("trust proxy", Math.max(1, Number(process.env.TRUST_PROXY_HOPS) || 1));
 
 // Minimal hardening headers Express can own. HSTS/TLS termination belongs to
 // the reverse proxy / hosting layer.
@@ -66,6 +71,46 @@ app.use((_req, res, next) => {
   for (const [k, v] of Object.entries(SECURITY_HEADERS)) res.setHeader(k, v);
   next();
 });
+
+// ---------------------------------------------------------------------------
+// Process-level safety net (audit X5 / H10). Express 4 does NOT catch rejected
+// promises from async handlers and Node exits on an unhandled rejection by
+// default, so one transient DB error inside a money path used to take the whole
+// API down — including the Razorpay webhook. Rejections are logged and absorbed
+// (the request that caused them has already failed on its own); a genuinely
+// unknown synchronous fault still exits so the host restarts a clean process.
+// ---------------------------------------------------------------------------
+process.on("unhandledRejection", (reason) => {
+  console.error(
+    JSON.stringify({ level: "error", msg: "unhandled_rejection", error: String(reason) })
+  );
+});
+process.on("uncaughtException", (err) => {
+  console.error(
+    JSON.stringify({
+      level: "error",
+      msg: "uncaught_exception",
+      error: String(err && err.stack ? err.stack : err),
+    })
+  );
+  process.exit(1);
+});
+
+// Async route wrapper: one failure boundary for every handler. 5xx never leaks
+// a stack or an internal message; app-authored <500 errors (quota, not found,
+// validation) still reach the client with their code.
+const wrap = (fn) => async (req, res) => {
+  try {
+    await fn(req, res);
+  } catch (err) {
+    const status = Number(err.status) || (err.code === "quota" ? 429 : 500);
+    if (status >= 500) {
+      console.error(JSON.stringify({ level: "error", msg: "api_error", path: req.path, error: String(err) }));
+      return res.status(500).json({ error: "Internal server error." });
+    }
+    res.status(status).json({ error: err.message || "Request failed.", code: err.code });
+  }
+};
 
 const PORT = process.env.PORT || 3001;
 const APP_URL = process.env.APP_URL || "http://localhost:8080";
@@ -143,36 +188,43 @@ if (process.env.NODE_ENV === "production") {
 // Signs sessions and activation tokens. Required in production (boot-checked
 // above); the dev fallback keeps local development friction-free.
 //
-// Audit H-5: the dev fallback to a literal constant MUST NOT ship anywhere
-// that could ever serve real traffic. We refuse to boot if NODE_ENV is unset
-// or anything other than "development"/"test" AND ACTIVATION_SECRET is the
-// literal placeholder. (In production the boot-check above is the primary
-// guard; this is the belt-and-braces guard for a misconfigured staging
-// deploy where NODE_ENV wasn't set.)
+// Audit X1: the fallback is ONLY safe for an explicitly-local process. The
+// previous guard required NODE_ENV to be truthy, so a deploy with NODE_ENV unset
+// and no ACTIVATION_SECRET booted with a public literal as the HMAC key for
+// every session and email token — anyone could mint a session for any user id
+// (and the production boot checks above were skipped in exactly that state).
+// Fail closed whenever the process looks like a deployment.
 const DEV_ACTIVATION_SECRET = "dev-only-insecure-activation-secret";
 const activationSecret =
   process.env.ACTIVATION_SECRET ||
   (razorpayKeySecret ? `razorpay:${razorpayKeySecret}` : DEV_ACTIVATION_SECRET);
-if (activationSecret === DEV_ACTIVATION_SECRET && process.env.NODE_ENV && process.env.NODE_ENV !== "development" && process.env.NODE_ENV !== "test") {
+const isDevOrTestEnv =
+  process.env.NODE_ENV === "development" || process.env.NODE_ENV === "test";
+// A bare `npm run dev` on a laptop (no NODE_ENV, no DB, no APP_URL, no Razorpay
+// keys) keeps the frictionless fallback; anything else must set the secret.
+const bareLocalRun =
+  !process.env.NODE_ENV && !DATABASE_URL && !process.env.APP_URL && !razorpayKeySecret;
+if (!process.env.ACTIVATION_SECRET && !isDevOrTestEnv && !bareLocalRun) {
   console.error(
-    `Refusing to start: ACTIVATION_SECRET is unset and the dev fallback is not safe under NODE_ENV=${process.env.NODE_ENV}. Set ACTIVATION_SECRET or run with NODE_ENV=development/test.`
+    `Refusing to start: ACTIVATION_SECRET is required (got NODE_ENV=${process.env.NODE_ENV || "unset"}). It signs every session and email token, so the dev fallback literal must never serve a deployment — set ACTIVATION_SECRET, or run with NODE_ENV=development/test.`
   );
   process.exit(1);
 }
 
 // ---------------------------------------------------------------------------
 // Session cookie (audit M-12 / item 1 of the launch readiness list):
-// The web frontend stores the signed session token in an httpOnly, Secure,
-// SameSite=Strict cookie. The Authorization: Bearer path is retained for the
-// mobile app / API clients. Same signed token, same verifySessionToken code.
+// The web frontend stores the signed session token in an httpOnly, Secure
+// cookie. The Authorization: Bearer path is retained for the mobile app / API
+// clients. Same signed token, same verifySessionToken code.
 //
 // CSRF (item 1 cont.): an httpOnly cookie is auto-sent by the browser, so we
 // need an explicit CSRF defense for any non-GET / non-HEAD request. We use the
 // "double-submit cookie" pattern: a separate non-httpOnly cookie (or header)
 // carrying a random token that the client must echo on every mutating call.
-// SameSite=Strict blocks the most common cross-site case; double-submit is
-// the belt-and-braces defence against same-site CSRF (e.g. an XSS in a
-// subdomain, or a logged-in user's malicious extension).
+// SameSite is Strict for loopback dev and None in production (the SPA and API
+// are split across origins, so Strict cookies would never be attached) — which
+// means the double-submit check below is the ONLY cross-site layer in
+// production. Do not weaken it.
 // ---------------------------------------------------------------------------
 const SESSION_COOKIE = "mm_session";
 const CSRF_COOKIE = "mm_csrf";
@@ -294,9 +346,12 @@ const csrfGuard = (req, res, next) => {
 };
 
 // ---------------------------------------------------------------------------
-// Simple JSON-file stores (server/data/). There is no database in this stack;
-// these files are the persistence layer — include them in backups. Swap for a
-// real database before scaling beyond a single instance.
+// JSON-file stores (server/data/). These are the DEV/TEST fallback only: when
+// DATABASE_URL is set the server runs in DB mode and Postgres is the system of
+// record for profiles, quotas and billing (production REQUIRES a database —
+// see the fail-closed boot checks above). The files below are still written for
+// the account mirror / display entitlement, so DATA_DIR must stay writable —
+// but they are NOT what you back up in production. Back up Postgres.
 // ---------------------------------------------------------------------------
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "..", "data");
 const USERS_FILE = path.join(DATA_DIR, "users.json");
@@ -380,9 +435,11 @@ const verifyPassword = (password, salt, expectedHash) => {
 };
 
 // ---------------------------------------------------------------------------
-// Sessions: stateless signed tokens `uid.exp.hmac` (7-day expiry). Revocation
-// means rotating ACTIVATION_SECRET (documented in DEPLOYMENT.md); per-session
-// revocation requires server-side session storage.
+// Sessions: stateless signed tokens `uid.exp.ver.hmac` (7-day expiry). `ver` is
+// the account's tokenVersion, so a password change/reset (or an admin demote)
+// invalidates that user's sessions immediately. Global revocation = rotate
+// ACTIVATION_SECRET (break-glass, signs everyone out); per-session (device)
+// revocation would need server-side session storage.
 // ---------------------------------------------------------------------------
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -987,6 +1044,28 @@ const rateLimitMiddleware = async (req, res, next) => {
 const EMAIL_SEND_MAX = 3;
 const EMAIL_SEND_WINDOW_MS = 15 * 60 * 1000;
 const emailsSent = new Map(); // normalized email -> recent send timestamps[]
+
+// Per-account LOGIN-FAILURE throttle (audit H2). Only a FAILED password ticks
+// this counter, so a correct password always succeeds (no account-lockout DoS)
+// while distributed guessing against one account stays capped.
+const LOGIN_FAILURE_MAX = 10;
+const LOGIN_FAILURE_WINDOW_MS = 15 * 60 * 1000;
+const loginFailures = new Map(); // normalized email -> recent failure timestamps[]
+const noteLoginFailure = (email) => {
+  const now = Date.now();
+  const recent = (loginFailures.get(email) || []).filter((t) => now - t < LOGIN_FAILURE_WINDOW_MS);
+  recent.push(now);
+  loginFailures.delete(email);
+  loginFailures.set(email, recent);
+  if (loginFailures.size > 5000) {
+    for (const [k, v] of loginFailures) {
+      if (v[v.length - 1] <= now - LOGIN_FAILURE_WINDOW_MS) loginFailures.delete(k);
+    }
+  }
+  return recent.length;
+};
+const clearLoginFailures = (email) => loginFailures.delete(email);
+
 const emailSendAllowed = (email) => {
   const now = Date.now();
   const recent = (emailsSent.get(email) || []).filter((t) => now - t < EMAIL_SEND_WINDOW_MS);
@@ -1091,7 +1170,15 @@ app.post(
         return res.json({ ok: true });
       }
       const refundEntity = payload?.refund?.entity ?? null;
-      if (String(type).startsWith("refund.")) {
+      const refundType = String(type).toLowerCase();
+      const refundStatus = String(refundEntity?.status || "").toLowerCase();
+      // Audit X8: only a PROCESSED refund is money actually returned. The old
+      // branch matched the "refund." prefix alone, so refund.created (and even
+      // refund.failed) revoked paid access — and since the idempotency gate is
+      // keyed on the refund id, the later authoritative refund.processed was
+      // then swallowed as a duplicate.
+      const refundIsTerminal = refundType === "refund.processed" || refundStatus === "processed";
+      if (refundType.startsWith("refund.")) {
         if (!refundEntity?.id || (!refundEntity.payment_id && !refundEntity.order_id)) {
           // L-6: a refund event we cannot key on must be LOUD, not silently
           // logged at info — an unnoticed shape change means refunds stop
@@ -1099,8 +1186,12 @@ app.post(
           console.error(JSON.stringify({ level: "error", msg: "webhook_refund_unkeyable", type, hasEntity: Boolean(refundEntity?.id), hasPaymentRef: Boolean(refundEntity?.payment_id || refundEntity?.order_id) }));
           return res.json({ ok: true });
         }
+        if (!refundIsTerminal) {
+          console.log(JSON.stringify({ level: "info", msg: "webhook_refund_ignored_nonterminal", type, refundId: refundEntity.id, status: refundEntity.status ?? null }));
+          return res.json({ ok: true });
+        }
       }
-      if (String(type).startsWith("refund.") && refundEntity?.id) {
+      if (refundType.startsWith("refund.") && refundEntity?.id) {
         const out = await domain.recordRefund({
           refundId: refundEntity.id,
           paymentId: refundEntity.payment_id ?? paymentId,
@@ -1109,8 +1200,10 @@ app.post(
           reason: refundEntity.notes ? JSON.stringify(refundEntity.notes).slice(0, 280) : "",
           source: "webhook",
         });
-        console.log(JSON.stringify({ level: "info", msg: "webhook_refund_processed", type, refundId: refundEntity.id, result: out.result }));
-        if (out.result === "applied" && out.userId) {
+        console.log(JSON.stringify({ level: "info", msg: "webhook_refund_processed", type, refundId: refundEntity.id, result: out.result, revoked: out.revoked ?? null }));
+        // Audit X7: a PARTIAL refund is bookkept but must not touch the plan or
+        // its UI mirror — `revoked` is the only signal that may demote.
+        if (out.result === "applied" && out.userId && out.revoked) {
           // Unified policy mirror (audit H-3): a refunded MEMBERSHIP downgrades
           // the mirror to basic only when nothing is set or the current entry
           // is a membership. Consultation entitlements are never clobbered by
@@ -1196,7 +1289,19 @@ app.post(
   }
 );
 
-app.use(express.json({ limit: "100kb" }));
+// Audit X6: profile photos arrive as data URLs (the client caps the file at
+// 1.5 MB and base64 inflates that ~4/3), so the global 100 kb JSON limit
+// rejected every real photo in body-parser BEFORE the handler could see it —
+// and the error handler then reported the rejection as a 500. The upload route
+// gets its own, larger parser; everything else keeps the tight default.
+const jsonSmall = express.json({ limit: "100kb" });
+const jsonPhoto = express.json({ limit: "3mb" });
+app.use((req, res, next) => {
+  if (req.method === "POST" && req.path === "/api/me/photo") {
+    return jsonPhoto(req, res, next);
+  }
+  return jsonSmall(req, res, next);
+});
 app.use(sessionMiddleware);
 // Audit M-12 / item 1: CSRF guard for cookie-authenticated mutating requests.
 // Mounted after sessionMiddleware so /api/csrf and authenticated POSTs can
@@ -1236,15 +1341,24 @@ app.get("/readyz", async (_req, res) => {
   }
 });
 
-// Item 2: Content-Security-Policy violation report endpoint. Browsers POST
-// here when a page attempts to violate the Report-Only policy. We log the
-// violation (truncated) and return 204; never echo the report back.
-app.post("/api/csp-report", express.json({ type: "application/csp-report", limit: "8kb" }), (req, res) => {
+// Audit B4: Content-Security-Policy violation report endpoint. Browsers POST
+// here when a page attempts to violate the policy. We rate-limit the sink,
+// strip query strings to prevent token/credential leakage, and truncate fields.
+app.post("/api/csp-report", rateLimitMiddleware, express.json({ type: "application/csp-report", limit: "8kb" }), (req, res) => {
   try {
     const v = req.body?.["csp-report"] || req.body;
+    const cleanUrl = (raw) => {
+      if (!raw) return "";
+      try {
+        const u = new URL(String(raw));
+        return `${u.origin}${u.pathname}`.slice(0, 150);
+      } catch {
+        return String(raw).split("?")[0].slice(0, 150);
+      }
+    };
     const directive = String(v?.["violated-directive"] || v?.effectiveDirective || "").slice(0, 80);
-    const blocked = String(v?.["blocked-uri"] || "").slice(0, 200);
-    const doc = String(v?.["document-uri"] || "").slice(0, 200);
+    const blocked = cleanUrl(v?.["blocked-uri"]);
+    const doc = cleanUrl(v?.["document-uri"]);
     console.warn(JSON.stringify({
       level: "warn",
       msg: "csp_violation",
@@ -1386,6 +1500,9 @@ app.post("/api/auth/register", async (req, res) => {
   const message = "If this email is registered, check your inbox for a verification link.";
 
   if (existing) {
+    // Audit B5: Equalize timing against the new-account path where scrypt password
+    // hashing dominates execution time. Prevents account enumeration via timing oracle.
+    hashPassword(password, crypto.randomBytes(16).toString("hex"));
     if (existing.verified) {
       if (emailSendAllowed(normalizedEmail)) {
         sendEmail({
@@ -1480,9 +1597,6 @@ app.post("/api/auth/login", async (req, res) => {
     return res.status(400).json({ error: "Email and password are required." });
   }
   const normalizedEmail = email.trim().toLowerCase();
-  if (await emailRateLimited(normalizedEmail)) {
-    return res.status(429).json({ error: "Too many login attempts. Please try again later." });
-  }
   let user = Object.values(users).find((u) => u.email === normalizedEmail);
   if (!user && dbEnabled) {
     try {
@@ -1516,18 +1630,28 @@ app.post("/api/auth/login", async (req, res) => {
     // Equalize timing for unknown emails so response latency does not reveal
     // whether an account exists (scrypt is the dominant cost) — audit H2.
     hashPassword(password, crypto.randomBytes(16).toString("hex"));
-    return res.status(401).json({ error: "Invalid email or password." });
+    // Audit H2: only failed attempts tick the per-account counter, so a
+    // distributed guessing run is capped without ever locking out the owner.
+    return res
+      .status(noteLoginFailure(normalizedEmail) > LOGIN_FAILURE_MAX ? 429 : 401)
+      .json({ error: "Invalid email or password." });
   }
   const passwordOk = verifyPassword(password, user.salt, user.hash);
+  if (!passwordOk) {
+    return res
+      .status(noteLoginFailure(normalizedEmail) > LOGIN_FAILURE_MAX ? 429 : 401)
+      .json({ error: "Invalid email or password." });
+  }
   // Unverified accounts complete sign-up via the emailed link; keep this
   // response indistinguishable from a bad password (no enumeration).
   // Suspended accounts are refused here too — the session middleware enforces
   // the canonical flag on every authenticated call, but a suspended user must
   // not be able to mint a FRESH session at all (smoke-db regression: login
   // returned 200 + a live token for a suspended account). Same generic 401.
-  if (!user.verified || !passwordOk || user.suspended) {
+  if (!user.verified || user.suspended) {
     return res.status(401).json({ error: "Invalid email or password." });
   }
+  clearLoginFailures(normalizedEmail);
   const sessionToken = issueSessionToken(user.id);
   const csrfToken = issueCsrfToken();
   setSessionCookie(res, sessionToken);
@@ -1760,15 +1884,34 @@ app.post("/api/auth/sign-out", (req, res) => {
   res.json({ ok: true });
 });
 
-app.get("/api/auth/me", (req, res) => {
+app.get("/api/auth/me", wrap(async (req, res) => {
   if (!req.user) return res.status(401).json({ error: "Not authenticated." });
-  const entitlement = entitlements[req.user.id];
-  res.json({
-    user: req.user,
-    activePlan: entitlement ? entitlement.sku : null,
-    activatedAt: entitlement ? entitlement.activatedAt : null,
-  });
-});
+  const mirrored = entitlements[req.user.id];
+  let activePlan = mirrored ? mirrored.sku : null;
+  let activatedAt = mirrored ? mirrored.activatedAt : null;
+  // Audit H3: in DB mode `subscriptions` is the source of truth for a
+  // MEMBERSHIP. The mirror read above lives on the container's ephemeral
+  // filesystem (so it was empty after every redeploy, demoting paying members to
+  // "basic" in the UI) and it carries no expiry (so a lapsed plan stayed
+  // active-looking forever). Non-membership skus (consultations/reports) remain
+  // mirror-driven: they are single-use products, not access windows.
+  if (dbEnabled) {
+    try {
+      const truthSku = await domain.getActiveMembershipSku(req.user.id);
+      if (truthSku) {
+        activePlan = truthSku;
+      } else if (mirrored && MEMBERSHIP_SKUS.indexOf(mirrored.sku) === -1) {
+        activePlan = mirrored.sku;
+      } else {
+        activePlan = null;
+        activatedAt = null;
+      }
+    } catch (err) {
+      console.error(JSON.stringify({ level: "error", msg: "me_plan_lookup_failed", error: String(err) }));
+    }
+  }
+  res.json({ user: req.user, activePlan, activatedAt });
+}));
 
 // ---------------------------------------------------------------------------
 // Create a Razorpay Order (server-side, keeps the KEY SECRET safe).
@@ -1801,6 +1944,28 @@ app.post("/api/razorpay/create-order", async (req, res) => {
     }
     if (typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0) {
       return res.status(400).json({ error: "A positive amount is required." });
+    }
+
+    // Audit X4: never take money for a plan the account cannot use. Buying a
+    // lower tier while a higher one is active captured the payment, skipped the
+    // grant (recordCapturedPayment's rank guard) and still reported success.
+    // Refuse it before an order exists; that guard stays as a backstop for
+    // webhook/redeem replays.
+    if (dbEnabled && req.user) {
+      const [activeMembership, requestedPlan] = await Promise.all([
+        domain.getActiveMembership(req.user.id).catch(() => null),
+        domain.getPlan(sku).catch(() => null),
+      ]);
+      if (
+        activeMembership &&
+        requestedPlan &&
+        requestedPlan.kind === "membership" &&
+        Number(activeMembership.rank) > Number(requestedPlan.rank)
+      ) {
+        return res.status(409).json({
+          error: `Your ${activeMembership.sku} membership is already active and includes everything in this plan, so there is nothing to buy right now. It stays valid until it expires.`,
+        });
+      }
     }
     // P0-10 coupons: validated server-side; the payable amount must equal the
     // discounted catalog price (integer rupees). Consumed at verify-time, not here.
@@ -1878,6 +2043,9 @@ app.post("/api/razorpay/create-order", async (req, res) => {
     };
     const response = await fetch("https://api.razorpay.com/v1/orders", {
       method: "POST",
+      // Audit H12: bounded outbound call — a hung Razorpay socket must not park
+      // the checkout request until the proxy times out.
+      signal: AbortSignal.timeout(15_000),
       headers: {
         "Content-Type": "application/json",
         Authorization: `Basic ${auth}`,
@@ -1920,7 +2088,7 @@ app.post("/api/razorpay/create-order", async (req, res) => {
 // and mint a single-use entitlement token for the purchased plan.
 // Body: { razorpay_order_id, razorpay_payment_id, razorpay_signature, sku }
 // ---------------------------------------------------------------------------
-app.post("/api/razorpay/verify-payment", async (req, res) => {
+app.post("/api/razorpay/verify-payment", wrap(async (req, res) => {
   if (await rateLimited(req)) return res.status(429).json({ error: "Too many requests." });
 
   const { razorpay_order_id, razorpay_payment_id, razorpay_signature, sku } = req.body || {};
@@ -2035,7 +2203,7 @@ app.post("/api/razorpay/verify-payment", async (req, res) => {
     paymentId: razorpay_payment_id,
     activation: { token, sku, expiresAt: Date.now() + ACTIVATION_TTL_MS },
   });
-});
+}));
 
 // ---------------------------------------------------------------------------
 // Redeem an entitlement token (single-use). The frontend activates a plan ONLY
@@ -2246,6 +2414,36 @@ async function ensureDbInvoice({ tokenHash, parsed, userId = null, doctorName = 
   const seqYear = Number(istToday.slice(0, 4));
 
   return withTx(async (client) => {
+    // Audit X2: the invoice identity is the PAYMENT, not the activation token.
+    // verify-payment can be replayed for the same (order, payment, signature)
+    // and mints a fresh token each time (its payload embeds an expiry), so
+    // keying only on token_hash let one payment allocate several sequential GST
+    // invoice numbers. The advisory lock serialises concurrent attempts for the
+    // same payment so the check-then-allocate cannot burn a sequence number;
+    // uq_invoices_payment is the durable backstop.
+    if (parsed.paymentId) {
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [
+        `invoice:${parsed.paymentId}`,
+      ]);
+      const byPayment = await client.query(`SELECT * FROM invoices WHERE payment_id = $1`, [parsed.paymentId]);
+      if (byPayment.rowCount > 0) {
+        const found = byPayment.rows[0];
+        if (doctorName || gstin || billingAddress || userId || parsed.userId) {
+          const upd = await client.query(
+            `UPDATE invoices
+                SET doctor_name = COALESCE($2, doctor_name),
+                    gstin = COALESCE($3, gstin),
+                    billing_address = COALESCE($4, billing_address),
+                    user_id = COALESCE(user_id, $5)
+              WHERE id = $1
+              RETURNING *`,
+            [found.id, doctorName ? String(doctorName).slice(0, 120) : null, gstin ? String(gstin).slice(0, 30) : null, billingAddress ? String(billingAddress).slice(0, 200) : null, userId || parsed.userId || null]
+          );
+          return upd.rows[0] || found;
+        }
+        return found;
+      }
+    }
     const existing = await client.query(`SELECT * FROM invoices WHERE token_hash = $1`, [tokenHash]);
     if (existing.rowCount > 0) {
       if (doctorName || gstin || billingAddress) {
@@ -2274,6 +2472,7 @@ async function ensureDbInvoice({ tokenHash, parsed, userId = null, doctorName = 
     const ins = await client.query(
       `INSERT INTO invoices (invoice_number, user_id, payment_id, token_hash, sku, amount_paise, gst_paise, doctor_name, gstin, billing_address)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       ON CONFLICT DO NOTHING
        RETURNING *`,
       [
         invNumber,
@@ -2288,6 +2487,15 @@ async function ensureDbInvoice({ tokenHash, parsed, userId = null, doctorName = 
         billingAddress ? String(billingAddress).slice(0, 200) : null,
       ]
     );
+    if (ins.rowCount === 0) {
+      // Lost a race (or a legacy row already holds this payment id) — return the
+      // winner's invoice rather than allocating a second number for one payment.
+      const winner = parsed.paymentId
+        ? await client.query(`SELECT * FROM invoices WHERE payment_id = $1`, [parsed.paymentId])
+        : await client.query(`SELECT * FROM invoices WHERE token_hash = $1`, [tokenHash]);
+      if (winner.rowCount > 0) return winner.rows[0];
+      throw new Error("Invoice could not be created.");
+    }
     return ins.rows[0];
   });
 }
@@ -2422,19 +2630,6 @@ const requireDbUser = (req, res, next) => {
   next();
 };
 
-const wrap = (fn) => async (req, res) => {
-  try {
-    await fn(req, res);
-  } catch (err) {
-    const status = Number(err.status) || (err.code === "quota" ? 429 : 500);
-    if (status >= 500) {
-      console.error(JSON.stringify({ level: "error", msg: "api_error", path: req.path, error: String(err) }));
-      return res.status(500).json({ error: "Internal server error." });
-    }
-    res.status(status).json({ error: err.message || "Request failed.", code: err.code });
-  }
-};
-
 app.get("/api/invoices", requireDbUser, wrap(async (req, res) => {
   const invs = await query(
     `SELECT invoice_number, issued_at, sku, amount_paise, gst_paise, doctor_name, gstin, billing_address
@@ -2485,7 +2680,8 @@ app.post("/api/me/delete", rateLimitMiddleware, requireDbUser, wrap(async (req, 
   clearSessionCookie(res);
   setCsrfCookie(res, issueCsrfToken());
   await domain.writeAudit(req.user.id, "user.delete_self", req.user.id, "");
-  console.log(JSON.stringify({ level: "info", msg: "user_deleted", userId: req.user.id, priorEmail: out.email }));
+  // Audit M6: the account is gone — do not keep its address in the log stream.
+  console.log(JSON.stringify({ level: "info", msg: "user_deleted", userId: req.user.id }));
   res.json({ ok: true, tombstoneEmail: out.tombstoneEmail });
 }));
 
@@ -2777,6 +2973,7 @@ async function sendOtpSms(phone, code) {
   try {
     const res = await fetch(`${MSG91_ENDPOINT}?otp=${encodeURIComponent(code)}&mobile=${encodeURIComponent(withCc)}`, {
       method: "POST",
+      signal: AbortSignal.timeout(10_000),
       headers: { authkey: key, "Content-Type": "application/json" },
       body: JSON.stringify({ otp: code, mobile: withCc }),
     });
@@ -2978,6 +3175,12 @@ app.get("/api/events", (req, res) => {
   }
   eventTickets.delete(ticket); // single-use
 
+  // Audit C3: Instance-wide cap on concurrent SSE streams to prevent FD/memory exhaustion.
+  const MAX_GLOBAL_SSE = Math.max(100, Number(process.env.MAX_GLOBAL_SSE_CONNECTIONS) || 5000);
+  if (connectionCount() >= MAX_GLOBAL_SSE) {
+    return res.status(503).json({ error: "Server connection limit reached. Please retry shortly." });
+  }
+
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache, no-transform",
@@ -3161,6 +3364,9 @@ app.post("/api/me/photo", rateLimitMiddleware, requireDbUser, wrap(async (req, r
     const objectPath = `${req.user.id}/${crypto.randomBytes(8).toString("hex")}.${ext}`;
     const up = await fetch(`${SUPABASE_URL}/storage/v1/object/profile-photos/${objectPath}`, {
       method: "POST",
+      // Audit H12: image bodies are the largest outbound payload — bound it so a
+      // stalled storage host cannot hold a request slot indefinitely.
+      signal: AbortSignal.timeout(20_000),
       headers: {
         Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
         "Content-Type": m[1],
@@ -3228,12 +3434,21 @@ app.post("/api/admin/users/:id/promote-admin", requireAdmin, wrap(async (req, re
   const target = users[req.params.id] || (await hydrateUserById(req.params.id));
   if (!target) return res.status(404).json({ error: "User not found." });
   if (target.isRootAdmin) return res.status(400).json({ error: "Root admins are managed via ADMIN_EMAILS." });
+  // Audit H4: write the DB FIRST and fail loudly. The old order updated the
+  // JSON mirror, swallowed the DB error with .catch(() => {}) and still
+  // returned 200 — resolveAdminFlags then re-read the DB on the next cache miss
+  // and silently reverted the promotion the operator was told had succeeded.
+  if (dbEnabled) {
+    try {
+      await query(`UPDATE app_users SET is_admin = TRUE WHERE id = $1`, [target.id]);
+    } catch (err) {
+      console.error(JSON.stringify({ level: "error", msg: "admin_promote_db_failed", userId: target.id, error: String(err) }));
+      return res.status(503).json({ error: "Could not save the role change. Try again." });
+    }
+  }
   target.isAdmin = true;
   persistUsers();
   invalidateAdminFlagCache(target.id);
-  if (dbEnabled) {
-    await query(`UPDATE app_users SET is_admin = TRUE WHERE id = $1`, [target.id]).catch(() => {});
-  }
   await domain.writeAudit(req.user.id, "admin.promote", target.id);
   res.json({ isAdmin: true });
 }));
@@ -3243,13 +3458,20 @@ app.post("/api/admin/users/:id/demote-admin", requireAdmin, wrap(async (req, res
   const target = users[req.params.id] || (await hydrateUserById(req.params.id));
   if (!target) return res.status(404).json({ error: "User not found." });
   if (target.isRootAdmin) return res.status(400).json({ error: "Root admins are managed via ADMIN_EMAILS." });
+  // Audit H4: DB first (see promote-admin). A revocation that only lands in the
+  // ephemeral mirror is a security hole, not a cosmetic bug.
+  if (dbEnabled) {
+    try {
+      await query(`UPDATE app_users SET is_admin = FALSE, token_version = COALESCE(token_version, 0) + 1 WHERE id = $1`, [target.id]);
+    } catch (err) {
+      console.error(JSON.stringify({ level: "error", msg: "admin_demote_db_failed", userId: target.id, error: String(err) }));
+      return res.status(503).json({ error: "Could not save the role change. Try again." });
+    }
+  }
   target.isAdmin = false;
   target.tokenVersion = (target.tokenVersion || 0) + 1;
   persistUsers();
   invalidateAdminFlagCache(target.id);
-  if (dbEnabled) {
-    await query(`UPDATE app_users SET is_admin = FALSE, token_version = COALESCE(token_version, 0) + 1 WHERE id = $1`, [target.id]).catch(() => {});
-  }
   await domain.writeAudit(req.user.id, "admin.demote", target.id);
   res.json({ isAdmin: false });
 }));
@@ -3374,11 +3596,15 @@ app.post("/api/admin/refunds", rateLimitMiddleware, requireAdmin, wrap(async (re
   let rzPayment = null;
   try {
     const r0 = await fetch(`https://api.razorpay.com/v1/payments/${paymentId}`, {
+      signal: AbortSignal.timeout(15_000),
       headers: { Authorization: `Basic ${auth}` },
     });
     rzPayment = r0.ok ? await r0.json() : null;
-  } catch {
-    rzPayment = null;
+  } catch (err) {
+    // Audit H12: distinguish "Razorpay unreachable" from "unknown payment" —
+    // claiming 400 for a timeout tells the operator the wrong thing.
+    console.error(JSON.stringify({ level: "error", msg: "refund_payment_lookup_failed", paymentId, error: String(err) }));
+    return res.status(502).json({ error: "Could not reach Razorpay to verify this payment. Try again." });
   }
   if (!rzPayment || rzPayment.id !== paymentId) {
     return res.status(400).json({ error: "Unknown Razorpay payment." });
@@ -3386,11 +3612,23 @@ app.post("/api/admin/refunds", rateLimitMiddleware, requireAdmin, wrap(async (re
   const refundAmount = Number.isFinite(amountPaise) && amountPaise > 0
     ? Math.min(Math.round(amountPaise), rzPayment.amount)
     : rzPayment.amount;
-  const r1 = await fetch(`https://api.razorpay.com/v1/payments/${paymentId}/refund`, {
-    method: "POST",
-    headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ amount: refundAmount, speed: "normal" }),
-  });
+  let r1;
+  try {
+    r1 = await fetch(`https://api.razorpay.com/v1/payments/${paymentId}/refund`, {
+      method: "POST",
+      signal: AbortSignal.timeout(20_000),
+      headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ amount: refundAmount, speed: "normal" }),
+    });
+  } catch (err) {
+    // The request may still have reached Razorpay before the socket died. Never
+    // report a plain failure here — money may have moved, so the operator has to
+    // confirm in the dashboard before retrying (audit H12).
+    console.error(JSON.stringify({ level: "error", msg: "refund_request_unconfirmed", paymentId, amountPaise: refundAmount, error: String(err) }));
+    return res.status(502).json({
+      error: "The refund could not be confirmed — check this payment in the Razorpay dashboard before retrying.",
+    });
+  }
   const data = await r1.json().catch(() => ({}));
   if (!r1.ok) {
     return res.status(502).json({ error: data?.error?.description || "Razorpay refund failed." });
@@ -3399,7 +3637,9 @@ app.post("/api/admin/refunds", rateLimitMiddleware, requireAdmin, wrap(async (re
     refundId: data.id, paymentId, amountPaise: data.amount, reason: reason || "admin-initiated",
   });
   await domain.writeAudit(req.user.id, "refund.initiate", paymentId, `refund=${data.id} amount=${data.amount}`);
-  if (out.result === "applied" && out.userId) {
+  // Audit X7: only a FULL refund (cumulative) may demote; a partial refund keeps
+  // the plan exactly as it was (bookkept, audited, no access change).
+  if (out.result === "applied" && out.userId && out.revoked) {
     // Same unified policy mirror as the webhook path (audit H-3).
     const current = entitlements[out.userId];
     if (!current || MEMBERSHIP_SKUS.indexOf(current.sku) !== -1) {
@@ -3412,6 +3652,19 @@ app.post("/api/admin/refunds", rateLimitMiddleware, requireAdmin, wrap(async (re
 
 // Central error handler — no stack traces in responses.
 app.use((err, _req, res, _next) => {
+  // Body-parser (and other Express internals) raise errors that carry a status.
+  // Report them as they are instead of masking every client mistake as a 500 —
+  // an oversized upload used to answer "Internal server error" (audit X6).
+  const status = Number(err?.status || err?.statusCode) || 500;
+  if (status >= 400 && status < 500) {
+    const message =
+      err?.type === "entity.too.large" || status === 413
+        ? "That upload is too large — please choose an image under ~1.5 MB."
+        : err?.type === "entity.parse.failed"
+          ? "Malformed request body."
+          : err?.message || "Request failed.";
+    return res.status(status).json({ error: message });
+  }
   console.error(JSON.stringify({ level: "error", msg: "unhandled_error", error: String(err) }));
   res.status(500).json({ error: "Internal server error." });
 });
@@ -3430,7 +3683,9 @@ async function main() {
       query("DELETE FROM rate_limit_buckets WHERE window_start < NOW() - INTERVAL '2 days'").catch(() => {});
       query("DELETE FROM rate_limit_buckets WHERE bucket_key NOT LIKE 'browse-daily:%' AND window_start < NOW() - INTERVAL '15 minutes'").catch(() => {});
       setInterval(() => {
+        // Audit C2: Repeat both daily and 15m minute bucket cleanup in interval.
         query("DELETE FROM rate_limit_buckets WHERE window_start < NOW() - INTERVAL '2 days'").catch(() => {});
+        query("DELETE FROM rate_limit_buckets WHERE bucket_key NOT LIKE 'browse-daily:%' AND window_start < NOW() - INTERVAL '15 minutes'").catch(() => {});
       }, 10 * 60 * 1000).unref();
     } catch (err) {
       console.error(
@@ -3513,6 +3768,41 @@ async function main() {
     } catch (err) {
       console.error(JSON.stringify({ level: "error", msg: "notifications_prune_failed", error: String(err) }));
     }
+
+    // Audit B6: Bound ephemeral tables (used_email_tokens, redeemed_tokens, webhook_events).
+    // Settled webhook idempotency records and redeemed/used token hashes are kept for 90 days
+    // to prevent replay across retry/reconnect windows, then safely purged.
+    const tokenRetentionDays = Math.max(
+      1,
+      Number(process.env.TOKEN_RETENTION_DAYS) || 90
+    );
+    try {
+      const emailTokens = await query(
+        `DELETE FROM used_email_tokens WHERE used_at < NOW() - make_interval(days => $1::int)`,
+        [tokenRetentionDays]
+      );
+      const redeemed = await query(
+        `DELETE FROM redeemed_tokens WHERE redeemed_at < NOW() - make_interval(days => $1::int)`,
+        [tokenRetentionDays]
+      );
+      const webhooks = await query(
+        `DELETE FROM webhook_events WHERE received_at < NOW() - make_interval(days => $1::int)`,
+        [tokenRetentionDays]
+      );
+      const prunedCount = emailTokens.rowCount + redeemed.rowCount + webhooks.rowCount;
+      if (prunedCount > 0) {
+        console.log(JSON.stringify({
+          level: "info",
+          msg: "ephemeral_records_pruned",
+          usedEmailTokens: emailTokens.rowCount,
+          redeemedTokens: redeemed.rowCount,
+          webhookEvents: webhooks.rowCount,
+          retentionDays: tokenRetentionDays,
+        }));
+      }
+    } catch (err) {
+      console.error(JSON.stringify({ level: "error", msg: "ephemeral_prune_failed", error: String(err) }));
+    }
   }
 
   // Bootstrap ROOT admins from ADMIN_EMAILS (comma-separated). Idempotent.
@@ -3561,7 +3851,13 @@ async function main() {
   // Best practice: best-effort, unref'd, DB-mode only; failures never crash boot.
   // Operators needing multi-replica fanout should move this to a job runner.
   if (dbEnabled && process.env.DISABLE_DIGEST !== "true") {
+    // Re-entrancy guard (audit H12): every send in this loop awaits Resend, so a
+    // slow provider could otherwise let the next daily tick start on top of a
+    // run that never finished (duplicate reminders within one 3-day claim window).
+    let renewalDigestRunning = false;
     const runRenewalDigest = async () => {
+      if (renewalDigestRunning) return;
+      renewalDigestRunning = true;
       try {
         const rows = await domain.subscriptionsExpiring(3);
         for (const s of rows.slice(0, 200)) {
@@ -3585,6 +3881,8 @@ async function main() {
         if (rows.length > 0) console.log(JSON.stringify({ level: "info", msg: "renewal_digest_sent", total: rows.length }));
       } catch (err) {
         console.error(JSON.stringify({ level: "error", msg: "renewal_digest_failed", error: String(err) }));
+      } finally {
+        renewalDigestRunning = false;
       }
     };
     setImmediate(runRenewalDigest);
@@ -3593,7 +3891,10 @@ async function main() {
     // Engagement digest (matrimony conversion lever): users who haven't logged
     // in for 24h+ get ONE daily email with their unread social signals (new
     // views, interests, messages). Capped; per-recipient failure is non-fatal.
+    let engagementDigestRunning = false;
     const runEngagementDigest = async () => {
+      if (engagementDigestRunning) return;
+      engagementDigestRunning = true;
       try {
         const r = await query(
           `SELECT u.id, u.email,
@@ -3628,13 +3929,15 @@ async function main() {
         if (r.rows.length > 0) console.log(JSON.stringify({ level: "info", msg: "engagement_digest_sent", total: r.rows.length }));
       } catch (err) {
         console.error(JSON.stringify({ level: "error", msg: "engagement_digest_failed", error: String(err) }));
+      } finally {
+        engagementDigestRunning = false;
       }
     };
     setImmediate(runEngagementDigest);
     setInterval(runEngagementDigest, 24 * 60 * 60 * 1000).unref();
   }
 
-  app.listen(PORT, () => {
+  const server = app.listen(PORT, () => {
     markReady();
     console.log(
       JSON.stringify({
@@ -3647,6 +3950,25 @@ async function main() {
       })
     );
   });
+
+  // Graceful shutdown (audit H10): the host sends SIGTERM before replacing a
+  // container. Stop accepting connections, drain the pool, then exit — a hard
+  // kill mid-transaction is how billing rows and audit entries diverge.
+  const shutdown = (signal) => {
+    console.log(JSON.stringify({ level: "info", msg: "shutdown_started", signal }));
+    server.close(async () => {
+      try {
+        if (dbEnabled) await getPool().end();
+      } catch {
+        /* pool already closed */
+      }
+      process.exit(0);
+    });
+    // Never wedge a deploy: force-exit if connections refuse to drain.
+    setTimeout(() => process.exit(0), 10_000).unref();
+  };
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
 }
 
 main();

@@ -340,13 +340,21 @@ export async function listInterests(): Promise<{
 export async function sendInterest(
   profileId: string,
   note = ""
-): Promise<{ ok: boolean; error: string | null; alreadyInterested?: boolean }> {
-  const out = await callOrError<{ alreadyInterested?: boolean }>("/api/interests", {
+): Promise<{ ok: boolean; error: string | null; alreadyInterested?: boolean; interestId?: string | null }> {
+  // Audit H8: the server returns the durable interest id (domain.sendInterest ->
+  // { interestId }); dropping it here made "withdraw" a silent no-op because the
+  // UI had no server id to delete.
+  const out = await callOrError<{ alreadyInterested?: boolean; interestId?: string | null }>("/api/interests", {
     method: "POST",
     body: JSON.stringify({ profileId, note }),
   });
   if (out.error) return { ok: false, error: out.error };
-  return { ok: true, error: null, alreadyInterested: out.data?.alreadyInterested };
+  return {
+    ok: true,
+    error: null,
+    alreadyInterested: out.data?.alreadyInterested,
+    interestId: out.data?.interestId ?? null,
+  };
 }
 
 export async function respondInterest(interestId: string, action: "accept" | "decline"): Promise<boolean> {

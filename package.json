@@ -12,7 +12,8 @@
     "preview": "vite preview",
     "test": "vitest",
     "test:ui": "vitest --ui",
-    "test:run": "vitest run"
+    "test:run": "vitest run",
+    "deploy:cf": "npm run build && npx wrangler deploy"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.0",

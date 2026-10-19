@@ -1,4 +1,8 @@
-﻿# Phase 1 — Production-Readiness Audit (MedicoMatch)
+# Phase 1 — Production-Readiness Audit (MedicoMatch)
+
+> [!NOTE]
+> **SUPERSEDED / HISTORICAL ARCHIVE**
+> This document records the initial phase audit findings from 2026-08. All critical items (C-1 through C-5) and security findings have been resolved in the codebase. For current production deployment guidelines, refer to [DEPLOYMENT.md](file:///d:/cls/medico-match-visions/DEPLOYMENT.md).
 
 Scope swept end-to-end: `server/src/{index,domain,db,email,events}.mjs`, `server/migrations/schema.sql`, `server/tests/*`, `.github/workflows/ci.yml`, every route/hook/lib in `src/`, config (`eslint.config.js`, `tsconfig*`, `vite.config.ts`, `.env*`, `.gitignore`), `DEPLOYMENT.md`.
 

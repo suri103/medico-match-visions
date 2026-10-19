@@ -16,6 +16,7 @@ import {
   listFavoriteIds, addFavoriteRemote, removeFavoriteRemote,
   listShortlistIds, addShortlistRemote, removeShortlistRemote,
   listBlockedUsers,
+  listMyPhotos,
 } from "@/services/api";
 
 export type ConnectionStatus = 'pending' | 'matched' | 'passed' | 'blocked';
@@ -152,6 +153,9 @@ export const FavoritesProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   // server is the durable record. Server ids are kept in refs so mutations
   // can target the right interest rows.
   const sentServerIdsRef = useRef<Record<string, string>>({});
+  // Audit H7: the "does this member have a real photo?" answer from the SERVER
+  // gallery. null = not hydrated yet (unknown), true/false = known.
+  const hasServerPhotoRef = useRef<boolean | null>(null);
   const recvServerIdsRef = useRef<Record<string, string>>({});
   const ownerUserIdsRef = useRef<Record<string, string>>({});
 
@@ -211,6 +215,16 @@ export const FavoritesProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         return Array.from(merged);
       });
     }).catch(() => {});
+
+    // Audit H7: cache the authoritative "has a real photo" answer. mm:profilePhotos
+    // is only written when the member opens /profile/edit, so the interest gate
+    // below used to refuse a fully-curated member on any fresh device.
+    listMyPhotos().then((photos) => {
+      if (cancelled) return;
+      hasServerPhotoRef.current = photos.some(
+        (p) => Boolean((p?.url || '').trim()) && !String(p.url).startsWith('data:image/svg')
+      );
+    }).catch(() => { /* leave unknown — the gate falls back to localStorage */ });
 
     (async () => {
       const data = await serverListInterests();
@@ -370,13 +384,19 @@ export const FavoritesProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       // never represent a real member on a matrimonial platform. When the
       // sender has no real photo, refuse the interest and send them to the
       // photo step. A soft gate — it never blocks browsing or shortlisting.
+      // Audit H7: consult BOTH sources. The local mirror alone blocked curated
+      // members on a fresh device/browser (it is only written by /profile/edit),
+      // and when the server answer is not in yet we allow the send rather than
+      // guess — this is an advisory nudge, not a server rule.
       try {
         const stored = JSON.parse(localStorage.getItem('mm:profilePhotos') || '[]') as Array<{ url?: string }>;
-        const hasReal = stored.some((p) => {
+        const localHasReal = stored.some((p) => {
           const u = (p?.url || '').trim();
           return Boolean(u) && !u.startsWith('data:image/svg');
         });
-        if (!hasReal) {
+        const serverPhoto = hasServerPhotoRef.current;
+        const hasReal = localHasReal || serverPhoto === true;
+        if (!hasReal && serverPhoto === false) {
           toast({
             title: 'Add a profile photo first',
             description: 'Profiles without a real photo cannot send interests — photoless profiles are also ranked last in search.',
@@ -421,8 +441,21 @@ export const FavoritesProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             return;
           }
           consumeInterest();
+          // Audit H8: remember the durable server id so withdrawInterest can
+          // actually delete the proposal. Previously the id was discarded and
+          // "withdraw" only removed the local row.
+          if (r.interestId) {
+            sentServerIdsRef.current[doctor.id] = r.interestId;
+          }
           if (r.alreadyInterested) {
-            void serverListInterests();
+            // `alreadyInterested` means the server already holds a live proposal
+            // for this pair — refresh our id map from the authoritative list
+            // instead of throwing the response away.
+            void serverListInterests().then((data) => {
+              for (const s of data?.sent ?? []) {
+                if (s.profile?.id) sentServerIdsRef.current[s.profile.id] = s.id;
+              }
+            });
           }
         })().catch(() => {});
         return true;

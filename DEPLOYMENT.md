@@ -3,7 +3,11 @@
 ## Architecture
 
 - **Frontend**: React + TS + Vite SPA (`npm run build` -> `dist/`). Static
-  hosting (Netlify/Vercel/any CDN). `public/_redirects` covers SPA routing.
+  hosting (Netlify/Vercel/Cloudflare). SPA deep links are handled by the host
+  config: `vercel.json` rewrites everything to `/index.html`, and
+  `wrangler.jsonc` sets `not_found_handling: single-page-application` for
+  Cloudflare. Build with the production `VITE_*` values baked in — a `dist/`
+  built against a local `.env` ships an API base of `localhost`.
 - **Backend**: single Express process (`server/`) - auth, Razor orders,
   payment verification, single-use entitlement tokens, GST invoices.
   **Persistence lives in Postgres** (`DATABASE_URL`): profiles, quotas,
@@ -40,7 +44,7 @@
 | `APP_URL` | **prod: yes** | Allowed CORS origin AND base URL of emailed links; must be https |
 | `ACTIVATION_SECRET` | **prod: yes** | Signs sessions + entitlement tokens; boot fails if unset |
 | `DATABASE_URL` | **prod: yes** | Supabase **session pooler** URI (port **5432**, host `*.pooler.supabase.com`, user `postgres.<project-ref>`). Profiles, quotas, interests, chat, billing live here; schema.sql runs at boot, failure aborts startup. ⚠️ Do NOT use the direct `db.*.supabase.co` host (IPv6-only — fails with `connect ENETUNREACH` when the host has no IPv6 route) and do NOT use the transaction pooler (port 6543 — drops LISTEN/NOTIFY + advisory locks). |
-| `RAZORPAY_WEBHOOK_SECRET` | prod: recommended | Verifies payment.captured AND refund.processed webhooks |
+| `RAZORPAY_WEBHOOK_SECRET` | **prod: yes** | Verifies payment.captured AND refund.processed webhooks; boot fails if unset |
 | `RESEND_API_KEY` | **prod: yes** | Emails carry verify/reset tokens; the server fails closed if unset (never logs tokens) |
 | `ADMIN_EMAILS` | no | Comma-separated emails promoted to **ROOT admin** at boot (root manages the admin roster) |
 | `CORS_ORIGINS` | no | Comma-separated extra origins |
@@ -50,6 +54,7 @@
 | `ASTROLOGY_ENABLED` | no | `true` to sell astrologer consultation SKUs; off by default |
 | `REPORTS_ENABLED` | no | `true` to sell kundali-report SKU; off by default |
 | `RATE_LIMIT_MAX` / `USER_RATE_LIMIT_MAX` | no | Defaults 30 / 60 req/min |
+| `TRUST_PROXY_HOPS` | no | Number of proxies in front of the API (default **1**). `req.ip` is the rate-limit bucket key — raise this only when you actually add another proxy hop, never to `true` |
 | `BROWSE_DAILY_MAX` | no | Daily profile-row budget (default 1000) |
 | `ADMIN_FLAG_TTL_MS` | no | Admin flag cache TTL ms (default 30000). Change the roster via the admin API, not raw SQL (M-5) |
 | `REQUIRE_VERIFIED_INTERACT` | no | `true` hard-gates member interactions on verified email (403 `email_unverified`); default `false` (H-2) |
@@ -57,8 +62,8 @@
 | `PORT` | no | Default 3001 |
 ## Pre-deploy checklist
 
-1. `npm ci && npm run lint && npx tsc -p tsconfig.app.json --noEmit && npx tsc -p tsconfig.node.json --noEmit && npx vitest run && npm run build` - all green.
-2. `cd server && node tests/smoke.mjs` (and `node tests/smoke-db.mjs` against a scratch `TEST_DATABASE_URL`) - green.
+1. `npm ci && npm run lint && npm audit --audit-level=high && npx tsc -p tsconfig.app.json --noEmit && npx tsc -p tsconfig.node.json --noEmit && npx vitest run && npm run build` - all green.
+2. `cd server && npm ci && npm audit --audit-level=high && for f in src/*.mjs tests/*.mjs; do node --check "$f"; done && node tests/smoke.mjs && node tests/regression-fixes.mjs` (and `node tests/smoke-db.mjs` against a scratch `TEST_DATABASE_URL`) - green. This is exactly what CI runs.
 3. Boot the server in production mode locally with real env first: it must start cleanly (fail-closed boot validates Razorpay, APP_URL https, ACTIVATION_SECRET, DATABASE_URL and RESEND_API_KEY). Migrations run automatically at boot.
 4. Schema changes are applied by the idempotent boot-time migration (`migrate()` in `server/src/db.mjs`, advisory-locked so concurrent boots never race). Sessions carry a token version => each user signs in once more after a deploy.
 5. Back up the **database** (see Backup/restore) before anything touching billing - the GST invoice counter lives in Postgres `invoice_sequences` in DB mode (`server/data/invoice_seq.json` is only the no-DB dev fallback) and must never be reset.

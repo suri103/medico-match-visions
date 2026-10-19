@@ -330,6 +330,44 @@ const main = async () => {
     indexSource.includes("replace(/[^\\d]/g, \"\")") && !indexSource.includes("replace(/[^\\\\d]/g")
   );
 
+  // 13. Audit H2: the per-account login throttle counts FAILURES only, so a
+  // distributed guessing run against one address is capped while the real owner
+  // can still sign in (the previous pre-check made 16 attempts/min from a single
+  // host a permanent lockout for that account).
+  const throttleFailures = [];
+  for (let i = 0; i < 12; i++) {
+    const r = await api("POST", "/api/auth/login", {
+      email: "root@example.com",
+      password: "definitely-not-the-password",
+    });
+    throttleFailures.push(r.status);
+  }
+  check(
+    "H2: failed logins are throttled (first 10 x 401, then 429)",
+    throttleFailures.slice(0, 10).every((s) => s === 401) && throttleFailures[11] === 429
+  );
+  const rootAfterThrottle = await api("POST", "/api/auth/login", {
+    email: "root@example.com",
+    password: "Password123!",
+  });
+  check(
+    "H2: a correct password is never locked out by earlier failures",
+    rootAfterThrottle.status === 200
+  );
+
+  // 14. Audit X6: profile photos are data URLs (client caps the file at 1.5 MB,
+  // base64 inflates it ~4/3), so /api/me/photo must not be rejected by the
+  // global 100 kb JSON limit — and an oversized body must answer 413, not 500.
+  const mediumPhoto = "data:image/png;base64," + "A".repeat(200 * 1024);
+  const mediumRes = await api("POST", "/api/me/photo", { dataUrl: mediumPhoto });
+  check(
+    "X6: a 200 kb photo body reaches the handler (no 413/500 from body-parser)",
+    mediumRes.status !== 413 && mediumRes.status !== 500
+  );
+  const hugePhoto = "data:image/png;base64," + "A".repeat(3.2 * 1024 * 1024);
+  const hugeRes = await api("POST", "/api/me/photo", { dataUrl: hugePhoto });
+  check("X6: an oversized body returns 413 instead of 500", hugeRes.status === 413);
+
   console.log(`\nRegression results: ${failures === 0 ? "ALL PASSED" : `${failures} FAILURES`}\n`);
 
   child.kill();

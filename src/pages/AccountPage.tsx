@@ -371,9 +371,12 @@ const AccountPage = () => {
   };
 
   const handleSavePreferences = () => {
+    try {
+      localStorage.setItem('mm:accountNotifPrefs', JSON.stringify(notifPrefs));
+    } catch { /* ignore */ }
     toast({
       title: "Preferences saved",
-      description: "Your notification settings have been updated.",
+      description: "Your notification settings have been updated on this device.",
     });
   };
 

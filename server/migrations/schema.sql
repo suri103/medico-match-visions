@@ -435,9 +435,11 @@ CREATE TABLE IF NOT EXISTS events (
   location    TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
   created_by  TEXT REFERENCES app_users(id) ON DELETE SET NULL,
+  is_sample   BOOLEAN NOT NULL DEFAULT FALSE,
   created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at DESC);
+ALTER TABLE events ADD COLUMN IF NOT EXISTS is_sample BOOLEAN NOT NULL DEFAULT FALSE;
 
 CREATE TABLE IF NOT EXISTS event_rsvps (
   event_id   TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
@@ -450,11 +452,11 @@ CREATE TABLE IF NOT EXISTS event_rsvps (
 -- Fabricated events with no organizer (created_by NULL). Suppressed entirely
 -- when SEED_SAMPLE_DATA=false — see db.mjs migrate(), which strips this block
 -- and deletes already-seeded rows at boot.
-INSERT INTO events (id, title, event_date, event_time, location, description) VALUES
-  ('e1', 'Medical Professionals Mixer', 'May 15', '7:00 PM', 'Boston, MA', 'Join us for an evening of networking with fellow medical professionals. Refreshments and dinner will be served.'),
-  ('e2', 'Healthcare Innovation Summit & Gala', 'May 28', '9:00 AM', 'New York, NY', 'A full-day summit focusing on the latest innovations in healthcare technology, clinical trials, and practice management.'),
-  ('e3', 'Wellness & Mindfulness Retreat for Doctors', 'Jun 10', '10:00 AM', 'San Francisco, CA', 'A weekend retreat focused on mental wellbeing, burnout prevention, and social connection for healthcare practitioners.'),
-  ('e4', 'Delhi Medico Evening & Networking Dinner', 'Jun 22', '6:30 PM', 'Delhi, India', 'An exclusive networking evening in New Delhi for physicians, residents, and specialists across major hospitals.')
+INSERT INTO events (id, title, event_date, event_time, location, description, is_sample) VALUES
+  ('e1', 'Medical Professionals Mixer', 'May 15', '7:00 PM', 'Boston, MA', 'Join us for an evening of networking with fellow medical professionals. Refreshments and dinner will be served.', TRUE),
+  ('e2', 'Healthcare Innovation Summit & Gala', 'May 28', '9:00 AM', 'New York, NY', 'A full-day summit focusing on the latest innovations in healthcare technology, clinical trials, and practice management.', TRUE),
+  ('e3', 'Wellness & Mindfulness Retreat for Doctors', 'Jun 10', '10:00 AM', 'San Francisco, CA', 'A weekend retreat focused on mental wellbeing, burnout prevention, and social connection for healthcare practitioners.', TRUE),
+  ('e4', 'Delhi Medico Evening & Networking Dinner', 'Jun 22', '6:30 PM', 'Delhi, India', 'An exclusive networking evening in New Delhi for physicians, residents, and specialists across major hospitals.', TRUE)
 ON CONFLICT (id) DO NOTHING;
 -- @seed-sample-data:end events
 
@@ -800,3 +802,43 @@ ALTER TABLE redeemed_tokens ENABLE ROW LEVEL SECURITY;
 -- to subscriptions so multiple single-use purchases do not overwrite each other.
 ALTER TABLE video_dates ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS credits_remaining INT NOT NULL DEFAULT 1;
+
+-- Audit X2: ONE GST invoice per PAYMENT. verify-payment can be replayed for the
+-- same (order, payment, signature) and mints a FRESH activation token each time
+-- (the token payload embeds an expiry), so keying invoices on token_hash alone
+-- let a single payment produce several sequential invoice numbers — double-
+-- counted revenue and a second GST input-credit claim for the buyer.
+-- Legacy rows are de-duplicated (keeping the earliest per payment) BEFORE the
+-- constraint is added, so this migration never fails on an existing database.
+DELETE FROM invoices a
+ USING invoices b
+ WHERE a.payment_id IS NOT NULL
+   AND a.payment_id = b.payment_id
+   AND (a.issued_at, a.id) > (b.issued_at, b.id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_invoices_payment
+  ON invoices(payment_id) WHERE payment_id IS NOT NULL;
+
+-- Audit M3: refund lookups. listPayments correlates refunds by payment_id and
+-- the export/admin paths filter by user_id; neither column was indexed.
+CREATE INDEX IF NOT EXISTS idx_refunds_payment ON refunds(payment_id);
+CREATE INDEX IF NOT EXISTS idx_refunds_user ON refunds(user_id);
+
+-- Audit B1: Backfill is_sample on seeded events without organizer.
+UPDATE events SET is_sample = TRUE WHERE created_by IS NULL AND id IN ('e1','e2','e3','e4');
+
+-- Audit B7: Missing indexes for scale and ephemeral token cleanup.
+-- 1. Channels lookup: 'my channels' query filters on user_a = $1 OR user_b = $1.
+-- The existing uq_channels_pair is on an expression and cannot serve this.
+CREATE INDEX IF NOT EXISTS idx_channels_user_a ON channels(user_a);
+CREATE INDEX IF NOT EXISTS idx_channels_user_b ON channels(user_b);
+
+-- 2. Admin audit log retention pruning and order-by-created queries.
+CREATE INDEX IF NOT EXISTS idx_admin_audit_log_created_at ON admin_audit_log(created_at DESC);
+
+-- 3. Case-insensitive login queries: lower(email) lookup on every auth attempt.
+CREATE INDEX IF NOT EXISTS idx_app_users_lower_email ON app_users(lower(email));
+
+-- 4. Ephemeral token / event lifecycle pruners (Audit B6).
+CREATE INDEX IF NOT EXISTS idx_used_email_tokens_used_at ON used_email_tokens(used_at);
+CREATE INDEX IF NOT EXISTS idx_redeemed_tokens_redeemed_at ON redeemed_tokens(redeemed_at);
+CREATE INDEX IF NOT EXISTS idx_webhook_events_received_at ON webhook_events(received_at);

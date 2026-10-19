@@ -93,15 +93,15 @@ const EventsPage = () => {
   const allEvents = [...(serverEvents ?? INITIAL_EVENTS), ...customEvents];
 
   // P0-6: real server events replace fixtures when the backend is wired.
-  // Fixtures remain the offline fallback so the page never goes empty.
+  // Fixtures remain the offline fallback only when the API cannot be reached.
   useEffect(() => { void (async () => {
     try {
       const { listServerEvents } = await import('@/services/api');
       const rows = await listServerEvents();
-      if (rows && rows.length > 0) {
+      if (Array.isArray(rows)) {
         setServerEvents(rows.map((r) => ({ id: r.id, title: r.title, date: r.date, time: r.time, location: r.location, attendees: 0, description: r.description })));
       }
-    } catch { /* offline: fixtures stand */ }
+    } catch { /* offline / unwired: fixtures stand */ }
   })(); }, []);
 
   const isRegistered = (id: string) => registeredIds.includes(id);
@@ -144,22 +144,38 @@ const EventsPage = () => {
       attendees: Number(newEvent.attendees) || 15,
       description: newEvent.description.trim() || 'Community event hosted by fellow healthcare professionals.',
     };
+    // createServerEvent RESOLVES { ok, error } — it never throws, so the old
+    // try/catch was dead code and this handler claimed "Event Published!" even
+    // when the server refused (publishing is admin-only, so a member's POST is
+    // 403). Claim success only when the server actually accepted.
+    let published = true;
     try {
-      await createServerEvent({
+      const r = await createServerEvent({
         title: created.title,
         date: created.date,
         time: created.time,
         location: created.location,
         description: created.description,
       });
+      if (!r.ok && r.error !== 'no-server') {
+        toast({
+          title: "Could not publish this event",
+          description: r.error || "Only organisers can publish community events right now.",
+          variant: "destructive",
+        });
+        return;
+      }
+      published = r.ok;
     } catch { /* offline fallback stands */ }
     setCustomEvents(prev => [created, ...prev]);
     setRegisteredIds(prev => [...prev, created.id]);
     setIsCreateOpen(false);
     setNewEvent({ title: '', date: '', time: '6:00 PM', location: 'Mumbai, India', attendees: 20, description: '' });
     toast({
-      title: "Event Published! 🎉",
-      description: `"${created.title}" has been created and added to upcoming events. You are automatically registered!`,
+      title: published ? "Event Published! 🎉" : "Event saved to this device",
+      description: published
+        ? `"${created.title}" has been created and added to upcoming events. You are automatically registered!`
+        : `"${created.title}" is in your local event list. Connect to the server to publish it for everyone.`,
     });
   };
 

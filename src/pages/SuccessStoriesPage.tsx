@@ -203,28 +203,35 @@ const SuccessStoriesPage = () => {
         if (hasServerSession()) {
           const r = await submitStory({ partnerName: title.slice(0, 120), story: content.slice(0, 4000) });
           if (r.ok) {
-            toast({ title: "Story submitted for review", description: "Our team reviews every story before publishing." });
+            toast({
+              title: "Story submitted for review",
+              description: "Thank you for sharing your journey! Our team reviews every story before publishing.",
+            });
+            if (titleEl) titleEl.value = "";
+            if (contentEl) contentEl.value = "";
+            return;
           }
         }
       } catch { /* local draft stands */ }
-    })();
 
-    const newStory = {
-      id: `story-${Date.now()}`,
-      title,
-      content,
-      date: new Date().toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" }),
-      author: { name: "You", image: "https://randomuser.me/api/portraits/men/1.jpg", specialty: "Doctor", location: "" },
-      partner: { name: "Your Match", image: "https://randomuser.me/api/portraits/women/1.jpg", specialty: "Doctor", location: "" },
-      likes: 0,
-      comments: 0,
-      featured: false,
-      tags: ["New"],
-    };
-    setStories(prev => [newStory, ...prev]);
-    if (titleEl) titleEl.value = "";
-    if (contentEl) contentEl.value = "";
-    toast({ title: "Success story submitted", description: "Your story has been published." });
+      // Offline / unwired fallback
+      const newStory = {
+        id: `story-${Date.now()}`,
+        title,
+        content,
+        date: new Date().toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" }),
+        author: { name: "You", image: "https://randomuser.me/api/portraits/men/1.jpg", specialty: "Doctor", location: "" },
+        partner: { name: "Your Match", image: "https://randomuser.me/api/portraits/women/1.jpg", specialty: "Doctor", location: "" },
+        likes: 0,
+        comments: 0,
+        featured: false,
+        tags: ["New"],
+      };
+      setStories(prev => [newStory, ...prev]);
+      if (titleEl) titleEl.value = "";
+      if (contentEl) contentEl.value = "";
+      toast({ title: "Story saved locally", description: "Your story draft has been saved on this device." });
+    })();
   };
   
   const allTags = Array.from(new Set(successStories.flatMap(story => story.tags)));

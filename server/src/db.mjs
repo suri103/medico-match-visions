@@ -66,6 +66,17 @@ export function getPool() {
         ? { ssl: { rejectUnauthorized: process.env.PGSSLMODE !== "no-verify" } }
         : {}),
     });
+    // An IDLE pooled client erroring (Supabase/Supavisor recycling a socket,
+    // network reset, server restart) is emitted on the Pool, not on a client
+    // we hold a reference to. node-postgres already discards the dead client
+    // and the pool recovers — but an EventEmitter 'error' with no listener is
+    // an uncaught exception that exits the process, taking every in-flight
+    // request and the webhook path with it.
+    pool.on("error", (err) => {
+      console.error(
+        JSON.stringify({ level: "error", msg: "pg_pool_idle_client_error", error: String(err) })
+      );
+    });
   }
   return pool;
 }
@@ -80,9 +91,17 @@ export async function migrate() {
   const client = await getPool().connect();
   try {
     await client.query("BEGIN");
-    // Advisory lock (namespace) held for the duration of the migration run.
-    await client.query("SELECT pg_advisory_lock(791234567)");
-    try {
+    // Audit H11: schema.sql is sent as ONE statement, so the pool's 20s
+    // statement_timeout used to apply to the entire batch — including the wait
+    // for another replica's in-flight migration — and a slow-but-healthy run
+    // could fail the boot. Give the migration its own budget.
+    await client.query("SET LOCAL statement_timeout = '180s'");
+    // Transaction-scoped advisory lock (audit H11): COMMIT/ROLLBACK releases it.
+    // The previous explicit pg_advisory_unlock() ran in a `finally` BEFORE the
+    // COMMIT, so a second replica could start migrating against pre-commit
+    // catalog state and race the DROP/ALTER blocks below.
+    await client.query("SELECT pg_advisory_xact_lock(791234567)");
+    {
       let sql = fs.readFileSync(path.join(__dirname, "..", "migrations", "schema.sql"), "utf8");
       // SEED_SAMPLE_DATA=false: the fabricated fixtures (17 sample doctor
       // profiles + 4 organiser-less events) are DROPPED from the DDL so a fresh
@@ -127,8 +146,6 @@ export async function migrate() {
           );
         }
       }
-    } finally {
-      await client.query("SELECT pg_advisory_unlock(791234567)");
     }
     await client.query("COMMIT");
   } catch (err) {

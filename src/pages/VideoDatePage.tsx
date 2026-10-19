@@ -303,11 +303,29 @@ const VideoDatePage: React.FC = () => {
   };
 
   const handleDeclineInvite = (inviteId: string) => {
+    const commitDecline = () => {
+      setInvites(prev => prev.map(iv => (iv.id === inviteId ? { ...iv, status: 'declined' as const } : iv)));
+      toast({ title: "Video Date Declined", description: "The invitation has been declined." });
+    };
     if (hasServerSession()) {
-      void serverRespondVideoDate(inviteId, 'decline').catch(() => {});
+      // False-success fix: the old code swallowed every outcome and always
+      // announced a successful decline, leaving the invitation pending for the
+      // sender. Local/demo invite ids are not server rows and 404 — tolerated,
+      // exactly like the accept path — but a real failure is surfaced.
+      void serverRespondVideoDate(inviteId, 'decline')
+        .then((rv) => {
+          if (!rv.ok && rv.error !== 'no-server' && !/not found/i.test(rv.error || '')) {
+            toast({ title: "Could not decline", description: rv.error || "Please try again.", variant: "destructive" });
+            return;
+          }
+          commitDecline();
+        })
+        .catch(() => {
+          toast({ title: "Could not reach the server", description: "The invitation was not declined. Please try again.", variant: "destructive" });
+        });
+      return;
     }
-    setInvites(prev => prev.map(iv => (iv.id === inviteId ? { ...iv, status: 'declined' as const } : iv)));
-    toast({ title: "Video Date Declined", description: "The invitation has been declined." });
+    commitDecline();
   };
 
   const handleRescheduleInvite = (inviteId: string) => {
@@ -499,23 +517,34 @@ const VideoDatePage: React.FC = () => {
                             </Button>
                             <Button variant="outline" className="w-full sm:w-auto" onClick={() => { setSelectedDoctor(doctorSelectValueFor(date.doctorName)); setActiveTab('new'); toast({ title: "Reschedule", description: `Pick a new time for ${date.doctorName}.` }); }}>Reschedule</Button>
                             <Button variant="ghost" className="w-full sm:w-auto text-red-600 hover:bg-red-50 hover:text-red-700" onClick={() => {
+                              // False-success fix: only drop the row and claim the
+                              // refund AFTER the server confirms. The old code
+                              // removed the row and toasted "quota was refunded"
+                              // before the request resolved, so a failed cancel
+                              // hid a live booking behind a phantom refund.
                               if ((date as { _src?: string })._src === 'server') {
-                                // Server-backed date: the DB refunds the quota
-                                // atomically with the cancellation (M1/M5 fix).
-                                void serverCancelVideoDate(date.id).then((ok) => {
-                                  if (!ok) toast({ title: 'Could not cancel', description: 'Please try again.', variant: 'destructive' });
-                                }).catch(() => {});
-                                setServerDates(prev => prev.filter(d => d.id !== date.id));
-                              } else {
-                                if (date._src === 'scheduled') {
-                                  saveScheduled(loadScheduled().filter(s => s.id !== date.id));
-                                }
-                                // A cancelled upcoming date does not spend quota —
-                                // refund the slot it consumed when scheduled/accepted
-                                // (product default; audit M1).
-                                refundVideoDate();
+                                void serverCancelVideoDate(date.id)
+                                  .then((ok) => {
+                                    if (!ok) {
+                                      toast({ title: 'Could not cancel', description: 'The date is still scheduled — please try again.', variant: 'destructive' });
+                                      return;
+                                    }
+                                    setServerDates(prev => prev.filter(d => d.id !== date.id));
+                                    setScheduledVersion(v => v + 1);
+                                    toast({ title: "Date cancelled", description: `Video date with ${date.doctorName} has been cancelled. Your video date quota was refunded.` });
+                                  })
+                                  .catch(() => {
+                                    toast({ title: 'Could not cancel', description: 'The date is still scheduled — please try again.', variant: 'destructive' });
+                                  });
+                                return;
                               }
-                              // Force a re-render so the cancelled date disappears immediately.
+                              if (date._src === 'scheduled') {
+                                saveScheduled(loadScheduled().filter(s => s.id !== date.id));
+                              }
+                              // A cancelled upcoming date does not spend quota —
+                              // refund the slot it consumed when scheduled/accepted
+                              // (product default; audit M1).
+                              refundVideoDate();
                               setScheduledVersion(v => v + 1);
                               toast({ title: "Date cancelled", description: `Video date with ${date.doctorName} has been cancelled. Your video date quota was refunded.` });
                             }}>Cancel</Button>

@@ -1,5 +1,9 @@
 # MedicoMatch — Production Ship Plan (Phase 3)
 
+> [!NOTE]
+> **SUPERSEDED / HISTORICAL ARCHIVE**
+> This ship plan represents the phase 3 snapshot from 2026-08-27. For current deployment documentation and live production operations, refer to [DEPLOYMENT.md](file:///d:/cls/medico-match-visions/DEPLOYMENT.md).
+
 Role model used below (as in a professional release-engagement setup): **EM** (approver), **BE** (backend), **FE** (frontend), **SRE/DevOps**, **QA**.
 Evidence basis: Phase 1 audit (`docs/AUDIT-PHASE1.md`) + Phase 2 fixes (commits f7d1d09..7e4ede5). All gates listed were executed and passed on 2026-08-27 unless marked PENDING.
 

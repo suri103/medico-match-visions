@@ -210,6 +210,11 @@ export async function browseProfiles({
 export async function getProfile(id, viewerId = null) {
   let sql = `SELECT ${PROFILE_PUBLIC_COLS} FROM profiles p WHERE p.id = $1`;
   const params = [id];
+  // Audit B1: Suppress sample/fixture profiles from direct lookup by ID unless
+  // explicitly enabled (e.g. in test suites).
+  if (process.env.HIDE_SAMPLE_PROFILES !== "false") {
+    sql += ` AND p.is_sample = FALSE`;
+  }
   if (viewerId) {
     sql += ` AND (p.user_id = $2 OR (
       -- H-3 FIX: verified_only requires a verified viewer; public needs no
@@ -1053,6 +1058,11 @@ export async function cancelVideoDate(userId, videoDateId) {
     const row = res.rows[0];
     const originalRequesterId = row.requester_id;
     if (row.kind === "consultation") {
+      // Give the booking credit back on a cancel — but NEVER resurrect a
+      // refunded row (audit X3). The refund path can only mark active/canceling
+      // rows 'refunded', so a consumed consultation stayed 'expired' through a
+      // full refund and the next cancel flipped it back to 'active' with a
+      // fresh credit: money returned, product delivered again.
       await c.query(
         `UPDATE subscriptions
             SET status = 'active',
@@ -1060,7 +1070,8 @@ export async function cancelVideoDate(userId, videoDateId) {
                   WHEN status = 'active' THEN GREATEST(COALESCE(credits_remaining, 0), 0) + 1
                   ELSE 1
                 END
-         WHERE user_id = $1 AND sku = 'astrologer-consultation' AND current_period_end > NOW()`,
+         WHERE user_id = $1 AND sku = 'astrologer-consultation' AND current_period_end > NOW()
+           AND status <> 'refunded'`,
         [originalRequesterId]
       );
     } else {
@@ -1140,7 +1151,20 @@ export async function reportUser(userId, reportedProfileId, reason, details) {
 
 export async function revealContact(viewerId, profileId) {
   return withTx(async (c) => {
-    const prof = await c.query(`SELECT user_id, phone, email FROM profiles WHERE id = $1`, [profileId]);
+    const prof = await c.query(
+      // Audit M1: honour profile_visibility (the SAME rule getProfile and
+      // getKundaliReport apply). Contact was the one egress that ignored it, so
+      // a member who set 'hidden' (or 'verified_only' while the viewer is
+      // unverified) could still have their phone/email bought by anyone holding
+      // the profile id. The owner always sees their own row.
+      `SELECT p.user_id, p.phone, p.email FROM profiles p
+        WHERE p.id = $1
+          AND (p.user_id = $2
+               OR p.profile_visibility = 'public'
+               OR (p.profile_visibility = 'verified_only'
+                   AND EXISTS (SELECT 1 FROM profiles me WHERE me.user_id = $2 AND me.is_verified)))`,
+      [profileId, viewerId]
+    );
     const row = prof.rows[0];
     if (!row) throw Object.assign(new Error("Profile not found."), { status: 404 });
     if (row.user_id === viewerId) {
@@ -1357,6 +1381,26 @@ export async function getActiveMembershipSku(userId) {
     [userId]
   );
   return res.rows[0]?.sku ?? null;
+}
+
+/** Plan row (kind/rank) for a sku, or null when the sku is not in `plans`. */
+export async function getPlan(sku) {
+  const res = await query(`SELECT sku, kind, rank FROM plans WHERE sku = $1`, [sku]);
+  return res.rows[0] ?? null;
+}
+
+/** Top active membership {sku, rank} for a user, or null (basic). Used to refuse
+ *  a downgrade purchase at create-order time (audit X4) — `recordCapturedPayment`
+ *  only skips the grant, which captured the money and granted nothing. */
+export async function getActiveMembership(userId) {
+  const res = await query(
+    `SELECT p.sku, p.rank FROM subscriptions s JOIN plans p ON p.sku = s.sku
+     WHERE s.user_id = $1 AND s.status IN ('active','canceling') AND s.current_period_end > NOW()
+       AND p.kind = 'membership'
+     ORDER BY p.rank DESC LIMIT 1`,
+    [userId]
+  );
+  return res.rows[0] ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -1607,17 +1651,38 @@ export async function recordRefund({ refundId, paymentId, orderId, amountPaise, 
     // refund revokes. Unknown amount revokes (fail-closed for money).
     const paidPaise = typeof tx?.amount_paise === "number" ? tx.amount_paise : null;
     const refundPaise = typeof amountPaise === "number" ? amountPaise : null;
-    const isFullRefund = refundPaise == null || paidPaise == null || refundPaise >= paidPaise;
+    // Audit X7: judge "full refund" on the SUM of refunds for this payment, not
+    // on the single event in hand. Two half-refunds (2 x ₹1,499 of ₹2,999) used
+    // to never trip the revoke, so 100% of the money went back and the member
+    // kept the plan. The row for this event is already inserted above, so the
+    // sum includes it.
+    let refundedTotalPaise = null;
+    if (paymentId) {
+      const sum = await c.query(
+        `SELECT COALESCE(SUM(amount_paise), 0)::bigint AS total FROM refunds WHERE payment_id = $1`,
+        [paymentId]
+      );
+      refundedTotalPaise = Number(sum.rows[0]?.total || 0);
+    }
+    const isFullRefund =
+      refundPaise == null ||
+      paidPaise == null ||
+      refundedTotalPaise == null ||
+      refundedTotalPaise >= paidPaise;
     // Policy: money returned ⇒ access revoked immediately. The effective plan
     // falls back to basic because status != 'active' (see activePlanTx).
+    // 'expired' is included so a CONSUMED consultation credit is also marked
+    // (audit X3) — otherwise a later cancel would reactivate the refunded row.
     if (effectiveUser && effectiveSku && isFullRefund) {
       await c.query(
         `UPDATE subscriptions SET status = 'refunded', cancel_at_period_end = FALSE
-         WHERE user_id = $1 AND sku = $2 AND status IN ('active','canceling')`,
+         WHERE user_id = $1 AND sku = $2 AND status IN ('active','canceling','expired')`,
         [effectiveUser, effectiveSku]
       );
     }
-    return { result: "applied", userId: effectiveUser, refundedSku: effectiveSku };
+    // `revoked` is the only signal a caller may act on: a partial refund is
+    // bookkept but the plan (and its UI mirror) must stay exactly as it was.
+    return { result: "applied", userId: effectiveUser, refundedSku: effectiveSku, revoked: isFullRefund };
   });
 }
 
@@ -2168,7 +2233,16 @@ export async function deleteMyAccount(userId) {
 // Parity increment: trust, engagement, monetization (Shaadi/BharatMatrimony).
 // All helpers are per-user scoped; admin variants are audit-logged by callers.
 // ---------------------------------------------------------------------------
-const otpHash = (code) => crypto.createHash("sha256").update(String(code)).digest("hex");
+// Audit M5: keyed hash for codes at rest. A bare SHA-256 of a 6-digit code is
+// brute-forced instantly from a leaked row (10^6 candidates); the HMAC needs the
+// server's signing key as well. ACTIVATION_SECRET is mandatory in every
+// deployment (fail-closed boot check), and the fallback only ever applies to a
+// local process that also uses the dev session secret.
+const otpHash = (code) =>
+  crypto
+    .createHmac("sha256", process.env.ACTIVATION_SECRET || "dev-only-insecure-activation-secret")
+    .update(String(code))
+    .digest("hex");
 
 /** P0-1: issue a 6-digit OTP (hashed at rest, 10-min TTL, attempts reset). */
 export async function requestPhoneOtp(userId, phone) {
@@ -2176,7 +2250,9 @@ export async function requestPhoneOtp(userId, phone) {
   if (clean.replace(/\D/g, "").length < 10) {
     throw Object.assign(new Error("A valid 10+ digit mobile number is required."), { status: 400 });
   }
-  const code = String(Math.floor(100000 + Math.random() * 900000));
+  // crypto.randomInt (not Math.random — audit M5): Math.random is not a CSPRNG
+  // and its state is recoverable, so issued codes were predictable.
+  const code = String(crypto.randomInt(100000, 1000000));
   const expires = new Date(Date.now() + 10 * 60 * 1000).toISOString();
   await query(
     `INSERT INTO phone_otps (user_id, phone, code_hash, expires_at, attempts)
@@ -2326,7 +2402,9 @@ export async function markMessagesRead(userId, channelId) {
 
 /** P0-6: events + RSVP + approved stories. */
 export async function listEvents() {
-  const r = await query(`SELECT id, title, event_date, event_time, location, description, created_at FROM events ORDER BY created_at DESC LIMIT 100`);
+  // Audit B1: hide fabricated sample events in production unless explicitly enabled.
+  const filterSample = process.env.HIDE_SAMPLE_PROFILES !== "false" ? "WHERE is_sample = FALSE" : "";
+  const r = await query(`SELECT id, title, event_date, event_time, location, description, created_at FROM events ${filterSample} ORDER BY created_at DESC LIMIT 100`);
   return r.rows.map((x) => ({ id: x.id, title: x.title, date: x.event_date, time: x.event_time, location: x.location, description: x.description, createdAt: x.created_at }));
 }
 
@@ -2554,6 +2632,11 @@ export async function validateCoupon(code, userId = null) {
   const row = r.rows[0];
   if (!row || row.used >= row.max_uses || (row.expires_at && new Date(row.expires_at).getTime() <= Date.now())) return null;
   // M-1 FIX: once-per-user coupons reject accounts that already redeemed.
+  // NOTE (audit M2, residual): this is a read, so N parallel create-order calls
+  // can all pass it. Closing that fully needs the redemption to be RESERVED at
+  // order time (and released if the order is abandoned) — a product decision
+  // this pass did not take. The global pool (`used < max_uses`) IS atomic, and
+  // consumeCoupon below now refuses to tick it twice for the same account.
   if (userId && row.once_per_user) {
     const seen = await query(`SELECT 1 FROM coupon_redemptions WHERE code=$1 AND user_id=$2`, [c, userId]);
     if (seen.rowCount > 0) return null;
@@ -2568,7 +2651,17 @@ export async function consumeCoupon(code, userId = null) {
   // for pool accounting.
   if (userId) {
     try {
-      await query(`INSERT INTO coupon_redemptions (code, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [c, userId]);
+      // Audit M2: the PK is only a backstop if its result is INSPECTED. With
+      // ON CONFLICT DO NOTHING a repeated (or concurrent) redemption silently
+      // succeeded, so the same account could tick the global pool twice.
+      const claimed = await query(
+        `INSERT INTO coupon_redemptions (code, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING RETURNING code`,
+        [c, userId]
+      );
+      if (claimed.rowCount === 0) {
+        console.warn(JSON.stringify({ level: "warn", msg: "coupon_already_redeemed_by_user", code: c, userId }));
+        return null;
+      }
     } catch { /* honor the purchase on ledger race */ }
   }
   const r = await query(`UPDATE coupons SET used = used + 1 WHERE code=$1 AND used < max_uses RETURNING percent_off`, [c]);
