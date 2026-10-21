@@ -460,7 +460,7 @@ const HelpPage = () => {
                       <p className="text-gray-600 text-sm mb-4">
                         Chat with our support team for immediate assistance.
                       </p>
-                      <Button onClick={() => { toast({ title: "Opening live chat", description: "Start a conversation with your matches to resolve questions together." }); navigate('/messages'); }}>Start Live Chat</Button>
+                      <Button onClick={() => { toast({ title: "Opening live chat", description: "Start a conversation with your matches to resolve questions together." }); void navigate('/messages'); }}>Start Live Chat</Button>
                     </CardContent>
                   </Card>
                 </div>

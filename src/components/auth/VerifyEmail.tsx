@@ -21,7 +21,7 @@ const VerifyEmail: React.FC = () => {
       return;
     }
     let cancelled = false;
-    verifyEmail(token).then((res) => {
+    void verifyEmail(token).then((res) => {
       if (cancelled) return;
       // H-1: cookie-first — browsers get token:null (cookie carries session).
       if (res.ok && res.user) {
@@ -37,7 +37,7 @@ const VerifyEmail: React.FC = () => {
         toast({ title: 'Email verified', description: 'Your account is now active. Welcome!' });
         // Onboarding gap-fix #1: a brand-new member has no profile yet — send
         // them into the setup wizard rather than an empty Matches grid.
-        navigate(hasCreatedProfile() ? '/matches' : '/onboarding');
+        void navigate(hasCreatedProfile() ? '/matches' : '/onboarding');
       } else {
         setStatus('error');
         setError(res.error || 'Verification failed. The link may have expired.');

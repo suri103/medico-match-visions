@@ -286,7 +286,7 @@ const EditProfilePage = () => {
         description: "Your doctor profile and biodata have been updated successfully."
       });
     }
-    navigate('/profile');
+    void navigate('/profile');
   };
   
   const handleAddInterest = () => {

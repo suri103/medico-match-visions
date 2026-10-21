@@ -68,7 +68,7 @@ const AdminPage = () => {
   }, []);
 
   useEffect(() => {
-    (async () => {
+    void (async () => {
       const me = await adminMe();
       if (me?.admin) {
         setIsAdmin(true);

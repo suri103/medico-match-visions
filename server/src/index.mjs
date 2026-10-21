@@ -10,6 +10,29 @@ import { dbEnabled, DATABASE_URL, getPool, migrate, query, withTx } from "./db.m
 import { addClient, closeUser as kickSse, publishToUser, initEventsPubSub, connectionCount } from "./events.mjs";
 import * as domain from "./domain.mjs";
 
+/**
+ * Fire-and-forget email with an EXPLICIT error log.
+ *
+ * Audit M-2: `sendEmail` now rejects when delivery fails (it used to swallow
+ * every error, which made the callers' try/catch blocks dead code). These
+ * call sites deliberately do not block the HTTP response — a member's
+ * password was changed whether or not the notice email arrived — but the
+ * rejection must be handled rather than surfacing as an unhandled rejection
+ * that the process-level handler has to absorb.
+ */
+const sendEmailInBackground = (args) => {
+  void sendEmail(args).catch((err) => {
+    console.error(
+      JSON.stringify({
+        level: "error",
+        msg: "email_send_failed",
+        subject: args?.subject || "",
+        error: String(err),
+      })
+    );
+  });
+};
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 
@@ -134,7 +157,14 @@ if (process.env.NODE_ENV === "production") {
   if (!razorpayConfigured) {
     bootErrors.push("RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET are required in production.");
   }
-  if (simulatePayments) {
+  // Audit M-43: this check was DEAD CODE. It tested the combined
+  // `simulatePayments` flag, which is already `false` whenever
+  // NODE_ENV === "production" (see the definition above) — so the branch
+  // could never run and a production deploy with RAZORPAY_SIMULATE=true was
+  // accepted without complaint. Simulation is harmless in production (the
+  // flag is false), but the ENVIRONMENT must still be unambiguous, and the
+  // production-boot test matrix now asserts this refusal actually fires.
+  if (process.env.RAZORPAY_SIMULATE === "true") {
     bootErrors.push("RAZORPAY_SIMULATE must be unset/false in production.");
   }
   if (!process.env.APP_URL) {
@@ -656,6 +686,39 @@ const requireAdmin = (req, res, next) => {
   next();
 };
 
+/**
+ * Enforce the role hierarchy on the TARGET of a user-moderation action.
+ *
+ * Audit C-3 (privilege escalation): `/api/admin/users/:id/suspend` enforced
+ * the hierarchy — root admins are untouchable, and only a root admin may act
+ * on another admin — but `/warn` and `/unsuspend` did NOT. A regular admin
+ * could therefore issue three warnings against a ROOT admin (the 3rd strike
+ * auto-suspends them and kills every one of their sessions), and could
+ * un-suspend any suspended admin, undoing an operator's moderation decision.
+ *
+ * Every user-moderation route now goes through this guard, so the rule
+ * cannot drift between them again.
+ *
+ * Resolves the target and attaches it as `req.adminTarget`.
+ */
+const requireAdminTargetHierarchy = async (req, res, next) => {
+  try {
+    const target = users[req.params.id] || (await hydrateUserById(req.params.id));
+    if (!target) return res.status(404).json({ error: "User not found." });
+    const [targetIsAdmin, targetIsRootAdmin] = await resolveAdminFlags(target);
+    if (targetIsRootAdmin) {
+      return res.status(403).json({ error: "Root admins are managed via ADMIN_EMAILS." });
+    }
+    if (targetIsAdmin && !req.isRootAdmin) {
+      return res.status(403).json({ error: "Only root admins can moderate other admins." });
+    }
+    req.adminTarget = target;
+    next();
+  } catch (err) {
+    next(err);
+  }
+};
+
 // H-2 FIX (safe default = OPEN with an explicit switch): email verification is
 // a trust badge, not a product gate, unless REQUIRE_VERIFIED_INTERACT is set
 // to "true". When enabled, unverified accounts can still sign in / read their
@@ -1007,25 +1070,12 @@ const userRateLimited = (userId) => {
   return hits.length > USER_RATE_LIMIT_MAX;
 };
 
-const hitsByEmail = new Map();
-const emailRateLimited = async (email, max = 15) => {
-  const key = String(email || "").trim().toLowerCase();
-  if (!key) return false;
-  if (dbEnabled) {
-    const dbBlocked = await checkDbRateLimit(`email:${key}`, max);
-    if (dbBlocked) return true;
-  }
-  const now = Date.now();
-  const hits = (hitsByEmail.get(key) || []).filter((t) => now - t < RATE_WINDOW_MS);
-  hits.push(now);
-  hitsByEmail.set(key, hits);
-  if (hitsByEmail.size > 5000) {
-    for (const [k, val] of hitsByEmail) {
-      if (val[val.length - 1] <= now - RATE_WINDOW_MS) hitsByEmail.delete(k);
-    }
-  }
-  return hits.length > max;
-};
+// Audit M-33/L-*: `emailRateLimited` was DEFINED but never CALLED — the
+// per-recipient request throttle that was supposed to backstop the auth
+// endpoints was dead code. The outbound-mail throttle is `emailSendAllowed`
+// below (3 sends / 15 min per recipient), which is the control that matters
+// for token-spam; this request-level limiter is removed rather than left as
+// dead code that reads like a protection that does not exist.
 
 // Express middleware form of the limiter. Asynchronous with fail-open safety.
 const rateLimitMiddleware = async (req, res, next) => {
@@ -1164,6 +1214,17 @@ app.post(
         notesSource && typeof notesSource.user_id === "string" && notesSource.user_id.trim()
           ? notesSource.user_id.trim().slice(0, 64)
           : null;
+      // Audit C-2: the sku is echoed into the SAME server-set notes at
+      // create-order time (index.mjs razorpayNotes). It is the fallback used
+      // to attribute a captured payment when the `payment_orders` row is
+      // missing (the create-order write failed, or the webhook raced ahead of
+      // it). Without it the payment could not be tied to a plan, the grant
+      // was silently skipped, and the idempotency gate committed — locking out
+      // every retry. The value is server-set, so a client cannot spoof it.
+      const notesSku =
+        notesSource && typeof notesSource.sku === "string" && notesSource.sku.trim()
+          ? notesSource.sku.trim().slice(0, 64)
+          : null;
 
       if (!dbEnabled) {
         console.warn(JSON.stringify({ level: "warn", msg: "webhook_no_db_ignored", type }));
@@ -1239,6 +1300,7 @@ app.post(
         amountPaise,
         source: "webhook",
         notesUserId,
+        notesSku,
       });
       console.log(
         JSON.stringify({
@@ -1267,19 +1329,12 @@ app.post(
           persistEntitlements();
         }
 
-        // P0-10: consume associated coupon if applied
-        const couponCode =
-          out.couponCode ||
-          liveOrders.get(orderId)?.couponCode ||
-          simOrders.get(orderId)?.couponCode ||
-          (dbEnabled && orderId ? (await domain.getOrder(orderId).catch(() => null))?.coupon_code : null);
-        if (couponCode && dbEnabled) {
-          try {
-            await domain.consumeCoupon(couponCode, out.userId || null);
-          } catch (err) {
-            console.error(JSON.stringify({ level: "warn", msg: "webhook_coupon_consume_failed", couponCode, error: String(err) }));
-          }
-        }
+        // P0-10: the coupon's global pool counter is advanced INSIDE
+        // domain.recordCapturedPayment (audit H-15) — i.e. inside the
+        // payment-idempotent transaction, exactly once per captured payment.
+        // It used to be ticked from here by a separate consumeCoupon() call
+        // whose null result this block discarded, so the pool under-counted
+        // while users took N discounted orders.
       }
       return res.json({ ok: true });
     } catch (err) {
@@ -1505,7 +1560,7 @@ app.post("/api/auth/register", async (req, res) => {
     hashPassword(password, crypto.randomBytes(16).toString("hex"));
     if (existing.verified) {
       if (emailSendAllowed(normalizedEmail)) {
-        sendEmail({
+        sendEmailInBackground({
           to: existing.email,
           subject: "Your MedicoMatch account already exists",
           text: "You already have a MedicoMatch account. Sign in at " + APP_URL + "/sign-in",
@@ -1519,7 +1574,7 @@ app.post("/api/auth/register", async (req, res) => {
     const resent = emailSendAllowed(normalizedEmail);
     const token = mintEmailToken(existing.id, "verify");
     if (resent) {
-      sendEmail({
+      sendEmailInBackground({
         to: existing.email,
         subject: "Verify your MedicoMatch account",
         text: "Verify your email: " + APP_URL + "/verify-email?token=" + encodeURIComponent(token),
@@ -1573,14 +1628,27 @@ app.post("/api/auth/register", async (req, res) => {
         { full_name: `${mayUseDrTitle(user) ? "Dr. " : ""}${user.firstName} ${user.lastName}`.trim(), specialty: user.specialty || null, degree: user.degree || null, career_stage: user.careerStage || null }
       );
     } catch (err) {
+      // Audit M-14: `app_users.email` is UNIQUE, so this is exactly where a
+      // concurrent duplicate registration is caught. The error used to be
+      // swallowed, which left TWO in-memory accounts with the same email and
+      // different ids — and login (which scans the in-memory map) would pick
+      // whichever it found first, so one of them could never sign in and the
+      // other could take its place.
+      //
+      // Fail CLOSED: drop the half-created account and tell the caller. The
+      // unique constraint is the race backstop; this is what makes it mean
+      // something.
       console.error(JSON.stringify({ level: "error", msg: "user_mirror_failed", userId: user.id, error: String(err) }));
+      delete users[user.id];
+      persistUsers();
+      return res.status(503).json({ error: "Could not create your account. Please try again." });
     }
   }
 
   const token = mintEmailToken(user.id, "verify");
   const sent = emailSendAllowed(user.email);
   if (sent) {
-    sendEmail({
+    sendEmailInBackground({
       to: user.email,
       subject: "Verify your MedicoMatch account",
       text: "Verify your email: " + APP_URL + "/verify-email?token=" + encodeURIComponent(token),
@@ -1743,7 +1811,7 @@ app.post("/api/auth/forgot-password", async (req, res) => {
       const sent = emailSendAllowed(normalizedEmail);
       const token = mintEmailToken(user.id, "reset");
       if (sent) {
-        sendEmail({
+        sendEmailInBackground({
           to: user.email,
           subject: "Reset your MedicoMatch password",
           text: "Reset your password: " + APP_URL + "/reset-password?token=" + encodeURIComponent(token),
@@ -1754,7 +1822,7 @@ app.post("/api/auth/forgot-password", async (req, res) => {
     }
     if (emailSendAllowed(normalizedEmail)) {
       const token = mintEmailToken(user.id, "verify");
-      sendEmail({
+      sendEmailInBackground({
         to: user.email,
         subject: "Verify your MedicoMatch account",
         text: "Verify your email: " + APP_URL + "/verify-email?token=" + encodeURIComponent(token),
@@ -1820,7 +1888,7 @@ app.post("/api/auth/reset-password", async (req, res) => {
     }
   }
   // Professional hygiene: tell the user their password changed (and where).
-  sendEmail({
+  sendEmailInBackground({
     to: user.email,
     subject: "Your MedicoMatch password was changed",
     text:
@@ -1864,7 +1932,7 @@ app.post("/api/auth/change-password", async (req, res) => {
       console.error(JSON.stringify({ level: "error", msg: "change_password_db_sync_failed", error: String(err) }));
     }
   }
-  sendEmail({
+  sendEmailInBackground({
     to: user.email,
     subject: "Your MedicoMatch password was changed",
     text:
@@ -1929,6 +1997,10 @@ app.post("/api/razorpay/create-order", async (req, res) => {
     return res.status(401).json({ error: "Sign in to start a purchase." });
   }
 
+  // Audit H-15: the coupon reservation taken below must be released if the
+  // order never gets created (Razorpay unreachable, order write failed).
+  let reservedCoupon = null;
+
   try {
     const {
       sku,
@@ -1946,25 +2018,35 @@ app.post("/api/razorpay/create-order", async (req, res) => {
       return res.status(400).json({ error: "A positive amount is required." });
     }
 
-    // Audit X4: never take money for a plan the account cannot use. Buying a
-    // lower tier while a higher one is active captured the payment, skipped the
-    // grant (recordCapturedPayment's rank guard) and still reported success.
-    // Refuse it before an order exists; that guard stays as a backstop for
-    // webhook/redeem replays.
+    // Audit X4 / M-11: never take money for a plan the account cannot use.
+    // Buying a lower tier while a higher one is active captured the payment,
+    // skipped the grant (recordCapturedPayment's rank guard) and still
+    // reported success.
+    //
+    // `premium` and `premium-annual` share a rank, so the old "strictly lower
+    // rank" test let a member holding the ANNUAL plan buy the MONTHLY one —
+    // ₹1,499 for 30 days of access they already had for 365 — and left two
+    // equal-rank subscription rows that `getActiveMembership` picked between
+    // non-deterministically.
+    //
+    // PRODUCT DECISION (safe default): a membership may be bought only when
+    // it is a strict tier upgrade, or the same tier with the same billing
+    // period (a genuine renewal). Buying a shorter period at the same tier
+    // is refused.
+    const PLAN_PERIOD_DAYS = (s) => (String(s || "").endsWith("-annual") ? 365 : 30);
     if (dbEnabled && req.user) {
       const [activeMembership, requestedPlan] = await Promise.all([
         domain.getActiveMembership(req.user.id).catch(() => null),
         domain.getPlan(sku).catch(() => null),
       ]);
-      if (
-        activeMembership &&
-        requestedPlan &&
-        requestedPlan.kind === "membership" &&
-        Number(activeMembership.rank) > Number(requestedPlan.rank)
-      ) {
-        return res.status(409).json({
-          error: `Your ${activeMembership.sku} membership is already active and includes everything in this plan, so there is nothing to buy right now. It stays valid until it expires.`,
-        });
+      if (activeMembership && requestedPlan && requestedPlan.kind === "membership") {
+        const sameTier = Number(activeMembership.rank) === Number(requestedPlan.rank);
+        const shorterPeriod = PLAN_PERIOD_DAYS(activeMembership.sku) > PLAN_PERIOD_DAYS(sku);
+        if (Number(activeMembership.rank) > Number(requestedPlan.rank) || (sameTier && shorterPeriod)) {
+          return res.status(409).json({
+            error: `Your ${activeMembership.sku} membership is already active and includes everything in this plan, so there is nothing to buy right now. It stays valid until it expires.`,
+          });
+        }
       }
     }
     // P0-10 coupons: validated server-side; the payable amount must equal the
@@ -2001,6 +2083,28 @@ app.post("/api/razorpay/create-order", async (req, res) => {
       return res.status(400).json({ error: "Only INR is supported." });
     }
 
+    // Audit H-15: RESERVE the coupon NOW, before a discounted order exists.
+    //
+    // The reservation is an atomic INSERT on the primary key
+    // `coupon_redemptions(code, user_id)`, so two concurrent orders race on it
+    // and exactly one wins — the loser is rejected here instead of taking a
+    // second discount. Previously the DISCOUNT was applied at order time but
+    // the redemption was only recorded at capture time, and every call site
+    // discarded the null result: N parallel orders all took the discount, each
+    // extending the membership window by 30 days, while the global pool
+    // counter ticked exactly once.
+    //
+    // A stale reservation on an order that was never paid for is released
+    // after 30 minutes (see domain.reserveCoupon), so an abandoned checkout
+    // can be retried.
+    if (couponCode && dbEnabled && req.user?.id) {
+      const reserved = await domain.reserveCoupon(couponCode, req.user.id);
+      if (!reserved) {
+        return res.status(400).json({ error: "This coupon has already been used on your account." });
+      }
+      reservedCoupon = { code: couponCode, userId: req.user.id };
+    }
+
     const amountInPaise = Math.round(amount * 100);
 
     if (simulatePayments) {
@@ -2011,7 +2115,14 @@ app.post("/api/razorpay/create-order", async (req, res) => {
         try {
           await domain.recordOrder({ orderId: id, userId: req.user?.id ?? null, sku, amountPaise: amountInPaise, simulated: true, couponCode });
         } catch (err) {
+          // Audit C-2: the order row IS the binding that lets verify-payment
+          // prove a payment belongs to this sku. Losing it means the payment
+          // can never be verified or invoiced, so fail loudly NOW — before any
+          // money moves — instead of handing the client an order the server
+          // cannot honour later.
           console.error(JSON.stringify({ level: "error", msg: "order_record_failed", error: String(err) }));
+          await domain.releaseCouponReservation(reservedCoupon?.code, reservedCoupon?.userId);
+          return res.status(503).json({ error: "Could not reserve the order. Please try again." });
         }
       }
       return res.json({
@@ -2025,6 +2136,7 @@ app.post("/api/razorpay/create-order", async (req, res) => {
     }
 
     if (!razorpayConfigured) {
+      await domain.releaseCouponReservation(reservedCoupon?.code, reservedCoupon?.userId);
       return res
         .status(500)
         .json({ error: "Razorpay is not configured on the server." });
@@ -2061,6 +2173,7 @@ app.post("/api/razorpay/create-order", async (req, res) => {
     }
 
     if (!response.ok) {
+      await domain.releaseCouponReservation(reservedCoupon?.code, reservedCoupon?.userId);
       return res.status(response.status).json({
         error: orderData?.error?.description || "Could not create the Razorpay order.",
       });
@@ -2072,13 +2185,19 @@ app.post("/api/razorpay/create-order", async (req, res) => {
         try {
           await domain.recordOrder({ orderId: orderData.id, userId: req.user?.id ?? null, sku, amountPaise: amountInPaise, simulated: false, couponCode });
         } catch (err) {
+          // Audit C-2: same reasoning as the simulated path above. No payment
+          // has been taken yet, so failing here is free and keeps the
+          // order -> payment -> entitlement chain verifiable end to end.
           console.error(JSON.stringify({ level: "error", msg: "order_record_failed", error: String(err) }));
+          await domain.releaseCouponReservation(reservedCoupon?.code, reservedCoupon?.userId);
+          return res.status(503).json({ error: "Could not reserve the order. Please try again." });
         }
       }
     }
     return res.json(orderData);
   } catch (error) {
     console.error(JSON.stringify({ level: "error", msg: "order_creation_failed", error: String(error) }));
+    await domain.releaseCouponReservation(reservedCoupon?.code, reservedCoupon?.userId);
     res.status(500).json({ error: "Could not create the Razorpay order." });
   }
 });
@@ -2186,12 +2305,9 @@ app.post("/api/razorpay/verify-payment", wrap(async (req, res) => {
           persistEntitlements();
         }
       }
-      if (out.result === "applied") {
-        const couponCode = out.couponCode || liveOrders.get(razorpay_order_id)?.couponCode || simOrders.get(razorpay_order_id)?.couponCode || null;
-        if (couponCode) {
-          try { await domain.consumeCoupon(couponCode, out.userId || req.user?.id || null); } catch { /* honor purchase on race */ }
-        }
-      }
+      // Audit H-15: the coupon pool counter is advanced inside
+      // domain.recordCapturedPayment (payment-idempotent transaction), so no
+      // separate consumption call is needed here.
     } catch (err) {
       console.error(JSON.stringify({ level: "error", msg: "verify_grant_failed", error: String(err) }));
     }
@@ -2329,26 +2445,11 @@ app.post("/api/razorpay/redeem", async (req, res) => {
     };
     persistEntitlements();
   }
-  // H2: consume the coupon only when this redeem applied the payment. Verify
-  // and webhook already consume on their own 'applied' path; without this gate
-  // one payment burned up to 3 coupon uses.
-  if (parsed.orderId && dbEnabled && req._redeemApplied !== false) {
-    // In JSON-store mode _redeemApplied is undefined (no DB gate) — still
-    // consume once here since verify/webhook do not run without a DB.
-    // In DB mode, skip when another path already applied (duplicate).
-    const shouldConsume = !dbEnabled || req._redeemApplied === true;
-    if (shouldConsume) {
-      const couponCode =
-        liveOrders.get(parsed.orderId)?.couponCode ||
-        simOrders.get(parsed.orderId)?.couponCode ||
-        (await domain.getOrder(parsed.orderId).catch(() => null))?.coupon_code;
-      if (couponCode) {
-        try {
-          await domain.consumeCoupon(couponCode, req.user?.id || null);
-        } catch {}
-      }
-    }
-  }
+  // Audit H-15: the coupon pool counter is advanced inside
+  // domain.recordCapturedPayment, which is idempotent per payment id — so a
+  // single payment can never burn more than one coupon use, whichever of the
+  // verify / webhook / redeem paths applies it first. The old block ticked it
+  // from here as well, so one payment burned up to three coupon uses.
   res.json({ plan: parsed.sku });
 });
 
@@ -2887,7 +2988,7 @@ app.post("/api/support", rateLimitMiddleware, wrap(async (req, res) => {
       subject: `[Support] ${String(subject || "Help request").slice(0, 120)} — ${name.trim().slice(0, 80)}`,
       text: `From: ${name.trim().slice(0, 80)} <${email.trim().toLowerCase()}>\nUser: ${req.user?.id ?? "guest"}\n\n${message.trim().slice(0, 4000)}`,
     });
-  } catch (err) {
+  } catch {
     return res.status(503).json({ error: "Support is unavailable right now. Please email us directly." });
   }
   res.json({ ok: true });
@@ -2908,7 +3009,7 @@ app.post("/api/refund-request", rateLimitMiddleware, requireDbUser, wrap(async (
   let ctx;
   try {
     ctx = await domain.requestRefund(req.user.id, reason);
-  } catch (err) {
+  } catch {
     return res.status(503).json({ error: "Refund requests are unavailable right now. Email us directly." });
   }
   if (!ctx?.ok) return res.status(404).json({ error: "Account not found." });
@@ -2925,7 +3026,7 @@ app.post("/api/refund-request", rateLimitMiddleware, requireDbUser, wrap(async (
         `\nPayments on account: ${ctx.paymentsCount}` +
         `\n\nReason: ${ctx.reason}`,
     });
-  } catch (err) {
+  } catch {
     return res.status(503).json({ error: "Refund requests are unavailable right now. Email us directly." });
   }
   res.json({ ok: true, message: "Your refund request has been sent. Our billing team will reach out within 2 business days." });
@@ -2949,12 +3050,32 @@ app.post("/api/kundali/report", rateLimitMiddleware, requireDbUser, requireVerif
   if (!REPORTS_ENABLED) return res.status(503).json({ error: "Kundali reports are not enabled on this server." });
   const { profileId } = req.body || {};
   if (typeof profileId !== "string" || !profileId) return res.status(400).json({ error: "profileId is required." });
+  // Purchase + generate. POST is covered by the CSRF guard.
   res.json(await domain.getKundaliReport(req.user.id, profileId));
 }));
 
+// Audit M-31: this GET performed a PAID WRITE — it inserted the
+// `kundali_reports` row, decremented `subscriptions.credits_remaining` and
+// flipped the subscription to 'expired'. The CSRF guard skips GET/HEAD/OPTIONS
+// and production sets SameSite=None on the session cookie (so the cookie IS
+// attached to a cross-site GET), which meant any third-party page containing
+// `<img src=".../api/kundali/report/<profileId>">` burned the victim's ₹499
+// credit. The victim saw no report and lost the entitlement.
+//
+// A GET must never have side effects, so this route is now READ-ONLY: it
+// returns a report the buyer already owns, and answers 402 when they have not
+// purchased one. Generation happens on the POST route above.
 app.get("/api/kundali/report/:profileId", requireDbUser, requireVerifiedInteract, wrap(async (req, res) => {
   if (!REPORTS_ENABLED) return res.status(503).json({ error: "Kundali reports are not enabled on this server." });
-  res.json(await domain.getKundaliReport(req.user.id, req.params.profileId));
+  const stored = await domain.readKundaliReport(req.user.id, req.params.profileId);
+  if (!stored) {
+    return res.status(402).json({
+      error: "Purchase the Detailed Kundali Match Report to view this breakdown.",
+      code: "purchase_required",
+      sku: "kundali-report",
+    });
+  }
+  res.json(stored);
 }));
 
 // ---------------------------------------------------------------------------
@@ -2996,11 +3117,11 @@ app.post("/api/phone/request", rateLimitMiddleware, requireDbUser, wrap(async (r
   const sms = await sendOtpSms(phone, out.code);
   const email = req.user?.email || users[req.user.id]?.email || (await query(`SELECT email FROM app_users WHERE id=$1`, [req.user.id])).rows[0]?.email;
   if (!sms.sent && email) {
-    sendEmail({
+    sendEmailInBackground({
       to: email,
       subject: "Your MedicoMatch verification code",
       text: `Your verification code is ${out.code}. It expires in 10 minutes. Enter it in the app to verify your number.`,
-    }).catch(() => {});
+    });
   }
   console.log(JSON.stringify({ level: "info", msg: "otp_delivery", provider: sms.sent ? "msg91" : "email_fallback", userId: req.user.id }));
   const returnCode = process.env.NODE_ENV === "test" || process.env.NODE_ENV === "development";
@@ -3121,11 +3242,21 @@ app.post("/api/admin/verifications/:id/review", rateLimitMiddleware, requireDbUs
   ));
 }));
 
-app.post("/api/admin/users/:id/warn", rateLimitMiddleware, requireDbUser, requireAdmin, wrap(async (req, res) => {
+// Audit C-3: the target hierarchy is checked BEFORE the database check, so an
+// unauthorised caller is refused with 403 regardless of deployment mode — the
+// privilege decision must not depend on whether a database happens to be
+// configured. requireDbUser still applies (the strike counter lives in
+// app_users), so /warn remains a DB-mode-only action.
+app.post("/api/admin/users/:id/warn", rateLimitMiddleware, requireAdmin, requireAdminTargetHierarchy, requireDbUser, wrap(async (req, res) => {
+  // Audit C-3: the target hierarchy is enforced by requireAdminTargetHierarchy
+  // above. Without it a regular admin could strike a ROOT admin three times
+  // and auto-suspend them (killing their sessions) — the 3rd-strike path
+  // below is therefore only reachable for a target the caller is allowed to
+  // moderate.
   const out = await domain.warnUser(req.user.id, req.params.id, req.body?.reason);
   if (out.autoSuspend) {
     // 3rd strike: suspend canonically (same path as manual suspend).
-    const target = users[req.params.id] || (await hydrateUserById(req.params.id));
+    const target = req.adminTarget;
     if (target && !target.suspended) {
       target.suspended = true;
       target.tokenVersion = (target.tokenVersion ?? 0) + 1;
@@ -3424,12 +3555,20 @@ app.post("/api/consultations", rateLimitMiddleware, requireDbUser, wrap(async (r
 // middleware flag; every mutation is audit-logged in admin_audit_log.
 // Root admins (env-seeded via ADMIN_EMAILS) additionally manage the admin
 // roster itself — promote/demote from the console, fully audited.
+//
+// The role hierarchy on the moderation TARGET is enforced by
+// requireAdminTargetHierarchy (defined next to requireAdmin, above).
 // ---------------------------------------------------------------------------
+
 app.get("/api/admin/me", requireAdmin, wrap(async (req, res) => {
   res.json({ admin: true, root: Boolean(req.isRootAdmin), userId: req.user.id, email: req.user.email });
 }));
 
-app.post("/api/admin/users/:id/promote-admin", requireAdmin, wrap(async (req, res) => {
+// Audit M-4: the admin roster routes work in BOTH modes — the DB write is
+// added when DATABASE_URL is set and the JSON mirror is always updated — so
+// they deliberately do NOT carry requireDbUser (which would 503 in JSON mode).
+// They DO carry the rate limiter, which every sibling admin mutation has.
+app.post("/api/admin/users/:id/promote-admin", rateLimitMiddleware, requireAdmin, wrap(async (req, res) => {
   if (!req.isRootAdmin) return res.status(403).json({ error: "Root admin required." });
   const target = users[req.params.id] || (await hydrateUserById(req.params.id));
   if (!target) return res.status(404).json({ error: "User not found." });
@@ -3453,7 +3592,7 @@ app.post("/api/admin/users/:id/promote-admin", requireAdmin, wrap(async (req, re
   res.json({ isAdmin: true });
 }));
 
-app.post("/api/admin/users/:id/demote-admin", requireAdmin, wrap(async (req, res) => {
+app.post("/api/admin/users/:id/demote-admin", rateLimitMiddleware, requireAdmin, wrap(async (req, res) => {
   if (!req.isRootAdmin) return res.status(403).json({ error: "Root admin required." });
   const target = users[req.params.id] || (await hydrateUserById(req.params.id));
   if (!target) return res.status(404).json({ error: "User not found." });
@@ -3495,17 +3634,16 @@ app.get("/api/admin/users", requireDbUser, requireAdmin, wrap(async (req, res) =
   res.json({ users: enriched });
 }));
 
-app.post("/api/admin/users/:id/suspend", requireAdmin, wrap(async (req, res) => {
-  const target = users[req.params.id] || (await hydrateUserById(req.params.id));
-  if (!target) return res.status(404).json({ error: "User not found." });
+// The suspend/unsuspend routes work in BOTH modes (the JSON mirror is the
+// canonical auth store; the DB write is added when DATABASE_URL is set), so
+// they deliberately do NOT carry requireDbUser.
+app.post("/api/admin/users/:id/suspend", rateLimitMiddleware, requireAdmin, requireAdminTargetHierarchy, wrap(async (req, res) => {
+  // Audit C-3: the role hierarchy is now enforced by the shared
+  // requireAdminTargetHierarchy guard (root admins are untouchable; only a
+  // root admin may suspend another admin) — the same rule the warn and
+  // unsuspend routes use.
+  const target = req.adminTarget;
   if (target.id === req.user.id) return res.status(400).json({ error: "You cannot suspend yourself." });
-  // Role hierarchy: root accounts are env-managed and untouchable here;
-  // regular admins need ROOT to suspend another admin.
-  const [targetIsAdmin, targetIsRootAdmin] = await resolveAdminFlags(target);
-  if (targetIsRootAdmin) return res.status(403).json({ error: "Root admins are managed via ADMIN_EMAILS." });
-  if ((targetIsAdmin || targetIsRootAdmin) && !req.isRootAdmin) {
-    return res.status(403).json({ error: "Only root admins can suspend other admins." });
-  }
   target.suspended = true;
   // Audit H-10: bump the user's tokenVersion so EVERY session issued before
   // this suspension dies immediately at verifySessionToken (defence in depth —
@@ -3533,9 +3671,11 @@ app.post("/api/admin/users/:id/suspend", requireAdmin, wrap(async (req, res) => 
   res.json({ suspended: true });
 }));
 
-app.post("/api/admin/users/:id/unsuspend", requireAdmin, wrap(async (req, res) => {
-  const target = users[req.params.id] || (await hydrateUserById(req.params.id));
-  if (!target) return res.status(404).json({ error: "User not found." });
+app.post("/api/admin/users/:id/unsuspend", rateLimitMiddleware, requireAdmin, requireAdminTargetHierarchy, wrap(async (req, res) => {
+  // Audit C-3: the target hierarchy is enforced by requireAdminTargetHierarchy
+  // above — without it a regular admin could un-suspend any admin, including
+  // a root admin suspended by an operator.
+  const target = req.adminTarget;
   target.suspended = false;
   persistUsers();
   if (dbEnabled) {
@@ -3577,7 +3717,7 @@ app.get("/api/admin/stats", requireDbUser, requireAdmin, wrap(async (req, res) =
   res.json({ stats: await domain.adminStats() });
 }));
 
-app.post("/api/admin/samples/hide-all", requireDbUser, requireAdmin, wrap(async (req, res) => {
+app.post("/api/admin/samples/hide-all", rateLimitMiddleware, requireAdmin, wrap(async (req, res) => {
   const hidden = req.body?.hidden !== false;
   res.json(await domain.setSamplesHidden(req.user.id, hidden));
 }));

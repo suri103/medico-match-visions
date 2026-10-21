@@ -33,6 +33,7 @@ import { BlockProfileModal } from '@/components/BlockProfileModal';
 import { usePersistedState } from '@/hooks/usePersistedState';
 import { EMPTY_PROFILE, profileToDoctor } from '@/lib/profile';
 import { localAvatar } from '@/lib/avatar';
+import { recordLocalVideoRequest } from '@/lib/videoDate';
 import { syncInboxForChat } from '@/features/messages/hooks/useChatSync';
 
 const PublicProfilePage = () => {
@@ -143,7 +144,7 @@ const PublicProfilePage = () => {
 
   const handleOpenContact = async () => {
     if (isSelf) {
-      navigate('/account');
+      void navigate('/account');
       return;
     }
     // Wired path: the server's reveal endpoint is the ONLY source of contact
@@ -225,32 +226,19 @@ const PublicProfilePage = () => {
   // Deliver the video-date invite into the outgoing requests store shown on
   // the Video Dates page — previously the chosen date/slot were discarded
   // while the modal toasted success (audit H5).
-  const deliverProfileInvite = (doctorId: string, date: string, time: string) => {
-    try {
-      const key = 'mm:sentVideoRequests';
-      const raw = localStorage.getItem(key);
-      const arr: Array<{ id: string; doctorName: string; date: string; duration: string }> = raw ? JSON.parse(raw) : [];
-      arr.push({ id: `vdr${Date.now()}`, doctorName: `Dr. ${doctor.name}`, date: new Date(`${date}T00:00:00`).toISOString(), duration: time });
-      localStorage.setItem(key, JSON.stringify(arr));
-      window.dispatchEvent(new CustomEvent('mm:persisted-state-changed', { detail: { key } }));
-    } catch {
-      toast({ title: 'Invite not saved', description: 'Could not save your video date request. Please try again.', variant: 'destructive' });
-    }
-
-    // Backend dispatch: if profile ID is known, request video date on server
-    // (api.ts exports createVideoDate — requestVideoDate never existed).
-    const targetId = doctorId || doctor.id;
-    if (targetId) {
-      import('@/services/api').then(async ({ createVideoDate }) => {
-        try {
-          const timeSlot = time.includes(':') ? time : '10:00';
-          const scheduledFor = new Date(`${date}T${timeSlot}:00`).toISOString();
-          await createVideoDate(targetId, scheduledFor, 30);
-        } catch (err) {
-          console.warn('Could not dispatch video date request to server', err);
-        }
-      }).catch(() => {});
-    }
+  const deliverProfileInvite = (date: string, time: string) => {
+    // Audit H-3: the server-side booking is created by
+    // DoctorVideoInviteModal (it owns the date + slot and parses them into a
+    // valid ISO datetime). The old code built the datetime HERE from the UI
+    // slot LABEL ("07:00 PM - 07:30 PM"), so `new Date(...)` was Invalid and
+    // `.toISOString()` threw a RangeError that was swallowed by a
+    // `console.warn` — no booking was ever created.
+    //
+    // This function now only records the request in the local ledger so the
+    // /video-dates page shows it immediately. The record is idempotent, so
+    // the modal and this page cannot double-count it.
+    const recorded = recordLocalVideoRequest(`Dr. ${doctor.name}`, date, time);
+    if (!recorded) return;
   };
 
   const handleShareProfile = () => {
@@ -272,7 +260,7 @@ const PublicProfilePage = () => {
     }
   };
 
-  const handleToggleLike = () => {
+  const handleToggleLike = async () => {
     if (isLiked) {
       // Mirror the Matches page behaviour: unliking withdraws the interest too,
       // otherwise the "hearts" and "My Interests" would disagree.
@@ -285,13 +273,18 @@ const PublicProfilePage = () => {
       return;
     }
     // Quota is enforced centrally inside sendInterest (single source = usePlan).
-    const accepted = sendInterest(doctor);
-    if (!accepted) {
-      toast({
-        title: "Interest limit reached",
-        description: "Your plan's monthly interest limit is reached. Upgrade for more.",
-        variant: "destructive",
-      });
+    // Audit H-6: the result is AWAITED, so the success toast below is only
+    // shown once the server has actually accepted the interest. The context
+    // toasts the honest failure and rolls the optimistic state back.
+    const accepted = await sendInterest(doctor);
+    if (!accepted.ok) {
+      if (!accepted.error) {
+        toast({
+          title: "Interest limit reached",
+          description: "Your plan's monthly interest limit is reached. Upgrade for more.",
+          variant: "destructive",
+        });
+      }
       return;
     }
     // Only reflect the like when the interest was actually accepted.
@@ -321,16 +314,16 @@ const PublicProfilePage = () => {
                   onClick={() => {
                     const navState = location.state as { returnTo?: string; returnTab?: string; returnChatId?: string; fromPage?: string } | undefined;
                     if (navState?.returnTo) {
-                      navigate(navState.returnTo, {
+                      void navigate(navState.returnTo, {
                         state: {
                           activeTab: navState.returnTab,
                           openChatId: navState.returnChatId,
                         }
                       });
                     } else if (window.history.length > 2) {
-                      navigate(-1);
+                      void navigate(-1);
                     } else {
-                      navigate('/matches');
+                      void navigate('/matches');
                     }
                   }}
                 >
@@ -857,7 +850,7 @@ const PublicProfilePage = () => {
                               setReportPurchaseRequired(true);
                               // Route the buyer through the standard checkout
                               // (sku kundali-report, ₹499) — same Razorpay path.
-                              navigate(`/plan?sku=kundali-report&profileId=${encodeURIComponent(doctor.id)}`);
+                              void navigate(`/plan?sku=kundali-report&profileId=${encodeURIComponent(doctor.id)}`);
                             } else {
                               setReportError(r.error);
                             }
@@ -1055,9 +1048,11 @@ const PublicProfilePage = () => {
         isOpen={isVideoModalOpen}
         onClose={() => setIsVideoModalOpen(false)}
         doctor={doctor}
-        onInviteSent={(id, date, time) => {
-          deliverProfileInvite(id, date, time);
-          if (!isLiked) toggleFavorite(doctor);
+        onInviteSent={(_id, date, time) => {
+          deliverProfileInvite(date, time);
+          // Audit H-3: the invite no longer sends a matrimonial interest as a
+          // side effect — a video-date request is its own action, and the
+          // interest flow has its own explicit button.
         }}
       />
 

@@ -43,7 +43,7 @@ const SavedMatchesPage: React.FC = () => {
       toast({ title: "Match to video chat", description: "Like each other first to unlock video calls.", variant: "destructive" });
       return;
     }
-    navigate('/video-dates');
+    void navigate('/video-dates');
   };
 
   const handleChat = (id: string) => {
@@ -51,7 +51,7 @@ const SavedMatchesPage: React.FC = () => {
       toast({ title: "Match to chat", description: "Like each other first to unlock chat.", variant: "destructive" });
       return;
     }
-    navigate('/messages', { state: { openChatId: id } } as never);
+    void navigate('/messages', { state: { openChatId: id } } as never);
   };
 
   const filteredShortlist = shortlist.filter((doctor: Doctor) =>

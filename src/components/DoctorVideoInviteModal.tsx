@@ -6,12 +6,17 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Doctor } from '@/features/matches/types';
 import { toast } from '@/hooks/use-toast';
 import { useNavigate } from 'react-router-dom';
+import { buildScheduledFor, recordLocalVideoRequest } from '@/lib/videoDate';
 
 interface DoctorVideoInviteModalProps {
   isOpen: boolean;
   onClose: () => void;
   doctor: Doctor | null;
-  onInviteSent?: (doctorId: string, date: string, time: string) => void;
+  /**
+   * Called AFTER the server booking succeeded.
+   * `scheduledFor` is the server-facing ISO value (already parsed).
+   */
+  onInviteSent?: (doctorId: string, date: string, time: string, scheduledFor: string) => void;
 }
 
 const TIME_SLOTS = [
@@ -29,6 +34,7 @@ export const DoctorVideoInviteModal: React.FC<DoctorVideoInviteModalProps> = ({
 }) => {
   const navigate = useNavigate();
   const [selectedSlot, setSelectedSlot] = useState(TIME_SLOTS[1]);
+  const [isSending, setIsSending] = useState(false);
   // Local-calendar date helpers — toISOString() is UTC and can shift the
   // "tomorrow" default by a day depending on the user's timezone.
   const toLocalDateInput = (d: Date) =>
@@ -39,18 +45,59 @@ export const DoctorVideoInviteModal: React.FC<DoctorVideoInviteModalProps> = ({
 
   if (!doctor) return null;
 
-  const handleSendInvite = () => {
-    onInviteSent?.(doctor.id, dateStr, selectedSlot);
-    toast({
-      title: "Video Date Request Sent! 📹",
-      description: `Invitation sent to Dr. ${doctor.name} for ${dateStr} at ${selectedSlot}.`,
-    });
-    onClose();
+  const handleSendInvite = async () => {
+    // Audit H-3: the booking is created on the SERVER and the result is
+    // checked before anything is claimed. The old handler only called
+    // `onInviteSent` (which merely created an interest) and toasted "Video
+    // Date Request Sent!" — no `POST /api/video-dates` was ever made, so the
+    // member was told a date was booked when nothing existed for the peer.
+    const scheduledFor = buildScheduledFor(dateStr, selectedSlot);
+    if (!scheduledFor) {
+      toast({
+        title: "Could not schedule the date",
+        description: "That time slot could not be read. Please pick another slot.",
+        variant: "destructive",
+      });
+      return;
+    }
+    setIsSending(true);
+    try {
+      const { createVideoDate, hasServerSession } = await import('@/services/api');
+      if (hasServerSession()) {
+        const res = await createVideoDate(doctor.id, scheduledFor, 30);
+        if (!res.ok) {
+          toast({
+            title: "Video date request not sent",
+            description:
+              res.error ||
+              "We could not reach the server, so the request was NOT created. Please try again.",
+            variant: "destructive",
+          });
+          return;
+        }
+      }
+      recordLocalVideoRequest(`Dr. ${doctor.name}`, dateStr, selectedSlot);
+      onInviteSent?.(doctor.id, dateStr, selectedSlot, scheduledFor);
+      toast({
+        title: "Video Date Request Sent! 📹",
+        description: `Invitation sent to Dr. ${doctor.name} for ${dateStr} at ${selectedSlot}.`,
+      });
+      onClose();
+    } catch {
+      toast({
+        title: "Video date request not sent",
+        description:
+          "We could not reach the server, so the request was NOT created. Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsSending(false);
+    }
   };
 
   const handleInstantDate = () => {
     onClose();
-    navigate('/video-dates');
+    void navigate('/video-dates');
   };
 
   return (
@@ -134,8 +181,9 @@ export const DoctorVideoInviteModal: React.FC<DoctorVideoInviteModalProps> = ({
             className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs"
             size="sm"
             onClick={handleSendInvite}
+            disabled={isSending}
           >
-            <Video size={13} className="mr-1.5" /> Send Video Date Invite
+            <Video size={13} className="mr-1.5" /> {isSending ? 'Sending…' : 'Send Video Date Invite'}
           </Button>
         </DialogFooter>
       </DialogContent>

@@ -43,7 +43,7 @@ export const ErrorState: React.FC<ErrorStateProps> = ({
   const Icon = ICONS[variant];
   const handle = () => {
     if (onAction) onAction();
-    else if (actionTo) navigate(actionTo);
+    else if (actionTo) void navigate(actionTo);
   };
   return (
     <div className="flex flex-col items-center justify-center text-center py-10 px-4">

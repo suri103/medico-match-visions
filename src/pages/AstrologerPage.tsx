@@ -173,7 +173,7 @@ const AstrologerPage = () => {
       title: "Last step: pick your time",
       description: "Choose a slot for your consultation on the Video Dates page.",
     });
-    navigate('/video-dates?mode=consultation');
+    void navigate('/video-dates?mode=consultation');
   });
   
   const handleStartChat = () => {

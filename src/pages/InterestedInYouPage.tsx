@@ -23,7 +23,7 @@ const InterestedInYouPage = () => {
     toast({ title: "You liked this profile!", description: "They have been added to your favorites." });
   };
   const handleMessage = (doctorId: string) => {
-    navigate('/messages', { state: { openChatId: doctorId } });
+    void navigate('/messages', { state: { openChatId: doctorId } });
   };
 
   return (
@@ -88,7 +88,43 @@ const InterestedInYouPage = () => {
                 />
               ))}
             </div>
-          ) : null}
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+              {interestedInYou.map((item, idx) => (
+                <div
+                  key={item.id || idx}
+                  className="relative overflow-hidden bg-white rounded-2xl shadow-sm border border-slate-200/80 p-6 flex flex-col items-center text-center"
+                >
+                  <div className="relative mb-4">
+                    <div className="w-24 h-24 rounded-full bg-slate-100 flex items-center justify-center filter blur-[6px] select-none pointer-events-none">
+                      <span className="text-3xl text-slate-400">🩺</span>
+                    </div>
+                    <div className="absolute inset-0 flex items-center justify-center">
+                      <div className="bg-amber-500 text-white p-2 rounded-full shadow-md">
+                        <Crown className="w-4 h-4" />
+                      </div>
+                    </div>
+                  </div>
+                  <h3 className="text-base font-semibold text-slate-800">
+                    {item.doctor.specialty || "Verified Doctor"}
+                  </h3>
+                  <p className="text-xs text-slate-500 mb-4">
+                    {item.doctor.city ? `Practicing in ${item.doctor.city}` : "Medical Professional"}
+                  </p>
+                  <div className="w-full pt-4 border-t border-slate-100 flex items-center justify-center">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="rounded-full text-mediblue-600 border-mediblue-200 hover:bg-mediblue-50 text-xs"
+                      onClick={() => navigate('/plan')}
+                    >
+                      Unlock with Premium
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </main>
     </div>

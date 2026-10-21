@@ -88,8 +88,9 @@ curl -X POST http://localhost:3001/api/razorpay/redeem \
 - POST endpoints are rate limited (30 req/min/IP, proxy-aware); outbound
   verification/reset emails are additionally throttled per recipient
   (3 per 15 min) with responses kept identical to prevent enumeration.
-- GST invoices use sequential numbers persisted in `invoice_seq.json` and are
-  dated in Asia/Kolkata.
+- GST invoices use sequential numbers persisted in Postgres `invoice_sequences`
+  in DB mode (`server/data/invoice_seq.json` is only the no-DB dev fallback) and
+  are dated in Asia/Kolkata.
 
 ## Run locally
 

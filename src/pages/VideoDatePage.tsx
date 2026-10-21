@@ -157,7 +157,12 @@ const dateHistory: VideoDateHistoryItem[] = demoModeEnabled ? [
   }
 ] : [];
 
-const notifications = [
+// Audit M-21: this array was NOT gated by demoModeEnabled, so every
+// production member saw an "Alerts" tab with two unread notifications about
+// Dr. Priya Sharma, Dr. Ananya Patel and Dr. Rajiv Mehta — people who do
+// not exist. The sibling fixtures (upcomingDates, pendingInvites,
+// dateHistory) are all demo-gated; these were not.
+const notifications = demoModeEnabled ? [
   {
     id: '1',
     type: 'reminder',
@@ -185,7 +190,7 @@ const notifications = [
     isRead: false,
     relatedId: '2' // references upcomingDates[1].id
   }
-];
+] : [];
 
 // Map a doctor display name to the matching "Schedule a New Video Date" select value.
 const doctorSelectValueFor = (name: string): string => {
@@ -510,7 +515,7 @@ const VideoDatePage: React.FC = () => {
                               // charged when the date was scheduled or accepted.
                               // Charging again here double-billed the same event (audit M1).
                               toast({ title: "Joining Video Date", description: `Connecting live video call with ${date.doctorName}...` });
-                              navigate('/video-match');
+                              void navigate('/video-match');
                             }}>
                               <Phone className="h-4 w-4" />
                               Join Video Date

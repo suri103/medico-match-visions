@@ -47,10 +47,16 @@ const PlanPage = () => {
         sku: 'kundali-report',
       });
     } else if (skuParam === 'astrologer-consultation') {
+      // Audit M-4: the server's price catalog sells the TIERED astrologer
+      // SKUs (`astrologer-consultation-1499 | -1699 | -1999`) — there is no
+      // bare `astrologer-consultation` sku. Posting the bare sku made
+      // `create-order` answer 400 "Unknown plan.", so a deep link to the
+      // consultation could never complete a purchase. Map it to the entry
+      // tier, which IS in the catalog.
       setSelectedPlan({
         name: 'Astrology Consultation',
         amount: 1499,
-        sku: 'astrologer-consultation',
+        sku: 'astrologer-consultation-1499',
       });
     }
   }, [searchParams]);
@@ -395,7 +401,7 @@ const PlanPage = () => {
                 description: "Your detailed compatibility report has been activated.",
               });
               if (profileId) {
-                navigate(`/profile/${encodeURIComponent(profileId)}`);
+                void navigate(`/profile/${encodeURIComponent(profileId)}`);
               }
             } else {
               toast({

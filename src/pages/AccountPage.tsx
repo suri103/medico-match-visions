@@ -28,7 +28,7 @@ function PhoneVerificationCard() {
   const [sent, setSent] = useState(false);
   const [verified, setVerified] = useState<boolean | null>(null);
   useEffect(() => {
-    (async () => {
+    void (async () => {
       try {
         const { phoneStatus, hasServerSession } = await import('@/services/api');
         if (!hasServerSession()) return;
@@ -367,7 +367,7 @@ const AccountPage = () => {
       description: "For your security you've been signed out — please sign in with your new password.",
     });
     await signOut();
-    navigate('/sign-in');
+    void navigate('/sign-in');
   };
 
   const handleSavePreferences = () => {

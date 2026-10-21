@@ -36,7 +36,7 @@ const ResetPassword: React.FC = () => {
       return;
     }
     toast({ title: 'Password updated', description: 'You can now sign in with your new password.' });
-    navigate('/sign-in');
+    void navigate('/sign-in');
   };
 
   return (

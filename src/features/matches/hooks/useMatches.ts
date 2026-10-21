@@ -5,6 +5,7 @@ import { usePersistedState } from '@/hooks/usePersistedState';
 import { useAuthSessionKey } from '@/hooks/useAuthSessionKey';
 import { doctorProfiles } from '../data/sampleData';
 import { defaultSavedSearches, statesByCountry, citiesByState } from '../data/constants';
+import { demoModeEnabled } from '@/lib/devAuth';
 import { useFavoritesContext } from '@/features/favorites/FavoritesContext';
 import { Doctor, SavedSearch } from '../types';
 import { computeMatchScore } from '@/lib/matchScore';
@@ -162,7 +163,20 @@ export const useMatches = (initialSearch?: MatchSearchCriteria) => {
   const [onlineOnly, setOnlineOnly] = useState(Boolean(initialSearch?.onlineOnly));
   const [selectedDoctor, setSelectedDoctor] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<'matches' | 'video' | 'chat'>('matches');
-  const [savedSearches, setSavedSearches] = usePersistedState<SavedSearch[]>('mm:savedSearches', defaultSavedSearches);
+  // Audit M-24: the saved-search ledger was seeded with TWO fabricated
+  // searches ("Cardiologists in Mumbai" pinned to a city, religion "Hindu"
+  // and caste "Brahmin"), so every member — including a brand-new one who
+  // had never saved anything — opened the Saved Searches panel to searches
+  // they never made. There is also no server-side saved-search store, so the
+  // feature is local-only and one member's searches bleed into the next
+  // account on a shared browser.
+  //
+  // SAFE DEFAULT: start EMPTY. A member who has saved nothing sees nothing.
+  // (The fixtures remain available for demo mode via `demoModeEnabled`.)
+  const [savedSearches, setSavedSearches] = usePersistedState<SavedSearch[]>(
+    'mm:savedSearches',
+    demoModeEnabled ? defaultSavedSearches : []
+  );
   const [searchName, setSearchName] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
@@ -570,7 +584,7 @@ export const useMatches = (initialSearch?: MatchSearchCriteria) => {
     setActiveView('chat');
   };
 
-  const handleLike = (id: string) => {
+  const handleLike = async (id: string) => {
     const doctor = scoredProfiles.find(d => d.id === id) || filteredDoctors.find(d => d.id === id);
     if (!doctor) return;
     if (blockedIds.includes(id)) {
@@ -587,9 +601,18 @@ export const useMatches = (initialSearch?: MatchSearchCriteria) => {
     const theyLikedMe = interestedInYou.some(i => i.doctor.id === id);
     const wasMatchedBefore = connections.some(c => c.doctorId === id && c.status === 'matched');
     // Quota is enforced centrally inside sendInterest (single source = usePlan).
-    const accepted = sendInterest(doctor);
-    if (!accepted) {
-      toast({ title: "Interest limit reached", description: "Your plan's monthly interest limit is reached. Upgrade for more.", variant: "destructive" });
+    // Audit H-6: the result is AWAITED — the success toast below is only shown
+    // once the server has actually accepted the interest. Previously the call
+    // returned `true` synchronously while the request was still in flight, so
+    // the member saw "Interest sent!" followed by "Interest not sent" when the
+    // server rejected it (quota, the 24h resend cooldown, a block, a 5xx).
+    const accepted = await sendInterest(doctor);
+    if (!accepted.ok) {
+      // The context already rolls the optimistic state back and toasts the
+      // server's reason; nothing more to do here.
+      if (!accepted.error) {
+        toast({ title: "Interest limit reached", description: "Your plan's monthly interest limit is reached. Upgrade for more.", variant: "destructive" });
+      }
       return;
     }
     if (!wasMatchedBefore && theyLikedMe) {

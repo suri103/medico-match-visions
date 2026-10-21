@@ -1,0 +1,10 @@
+# Keep the root Docker build context free of local state.
+node_modules
+dist
+.git
+.github
+.env
+.env.*
+!.env.example
+!.env.production.example
+*.log

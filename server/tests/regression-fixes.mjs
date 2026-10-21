@@ -173,7 +173,7 @@ const main = async () => {
   const verifyRes = await api("POST", "/api/auth/verify-email", { token: verifyToken, mobile: true });
   check("email verification succeeds and issues session token", verifyRes.status === 200 && verifyRes.json?.token);
   const userToken = verifyRes.json.token;
-  const userId = verifyRes.json.user.id;
+  const _userId = verifyRes.json.user.id;
 
   // 5. Create payment order with discount coupon calculation
   // Without coupon: base price 1499
@@ -227,6 +227,46 @@ const main = async () => {
   });
   check("root admin login succeeds", rootLogin.status === 200 && rootLogin.json?.token);
   const rootToken = rootLogin.json.token;
+
+  // 8b. Audit C-3 (privilege escalation): the role hierarchy must be enforced
+  // on the moderation TARGET of EVERY user-moderation route.
+  //
+  // Before the fix, `/api/admin/users/:id/suspend` enforced the hierarchy
+  // but `/warn` and `/unsuspend` did not — so a regular admin could strike a
+  // ROOT admin three times (the 3rd strike auto-suspends them and kills
+  // every one of their sessions) and could un-suspend any admin, undoing an
+  // operator's moderation decision.
+  //
+  // This runs BEFORE the normal admin is demoted, so the caller really is a
+  // non-root ADMIN (not merely a non-admin) — otherwise the 403 would come
+  // from `requireAdmin` and the hierarchy guard would never be exercised.
+  {
+    const normalAdminLogin = await api("POST", "/api/auth/login", {
+      email: "admin2@example.com",
+      password: "Password123!",
+      mobile: true,
+    });
+    check("normal admin login succeeds", normalAdminLogin.status === 200 && normalAdminLogin.json?.token);
+    const normalAdminToken = normalAdminLogin.json?.token;
+
+    if (normalAdminToken) {
+      const warnRoot = await api("POST", `/api/admin/users/${rootAdminId}/warn`, { reason: "privilege escalation probe" }, normalAdminToken);
+      check("C-3: a non-root admin cannot warn a root admin", warnRoot.status === 403);
+
+      const unsuspendRoot = await api("POST", `/api/admin/users/${rootAdminId}/unsuspend`, {}, normalAdminToken);
+      check("C-3: a non-root admin cannot un-suspend a root admin", unsuspendRoot.status === 403);
+
+      const suspendRoot = await api("POST", `/api/admin/users/${rootAdminId}/suspend`, { reason: "probe" }, normalAdminToken);
+      check("C-3: a non-root admin cannot suspend a root admin", suspendRoot.status === 403);
+
+      // A non-root admin must not be able to moderate ANOTHER admin either.
+      const otherAdminId = Object.entries(initialUsers).find(([id]) => id !== rootAdminId && id !== normalAdminId)?.[0];
+      if (otherAdminId) {
+        const warnOtherAdmin = await api("POST", `/api/admin/users/${otherAdminId}/warn`, { reason: "probe" }, normalAdminToken);
+        check("C-3: a non-root admin cannot warn another admin", warnOtherAdmin.status === 403);
+      }
+    }
+  }
 
   // Demote normal admin using demote-admin
   const demoteRes = await api("POST", `/api/admin/users/${normalAdminId}/demote-admin`, {}, rootToken);
@@ -326,7 +366,7 @@ const main = async () => {
 
   const indexSource = fs.readFileSync(path.join(__dirname, "..", "src", "index.mjs"), "utf8");
   check(
-    "index.mjs sendOtpSms uses single-escaped digits regex /[^\d]/g",
+    "index.mjs sendOtpSms uses single-escaped digits regex /[^d]/g",
     indexSource.includes("replace(/[^\\d]/g, \"\")") && !indexSource.includes("replace(/[^\\\\d]/g")
   );
 

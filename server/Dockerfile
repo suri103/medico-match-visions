@@ -22,5 +22,17 @@ COPY migrations ./migrations
 ENV NODE_ENV=production
 EXPOSE 3001
 
-# Railway injects $PORT (3001); /health stays liveness-only, /readyz gates.
+# Run as a non-root user (audit L-1). The node image ships a `node` user for
+# exactly this purpose; the API process has no reason to be uid 0.
+USER node
+
+# Container-level liveness probe. Railway uses the `healthcheckPath` in
+# railway.json (which points at /readyz, the readiness endpoint), but a
+# HEALTHCHECK keeps the container honest when it is run by another runtime
+# (docker run, Compose, k8s). /health is liveness-only and always 200 once
+# the process is listening; /readyz additionally requires migrations to have
+# applied and a successful SELECT 1.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3001)+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+
 CMD ["node", "src/index.mjs"]

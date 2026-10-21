@@ -102,9 +102,23 @@ describe('wired backend client (services/api)', () => {
     expect(data!.sent[0].profile.id).toBe('9');
   });
 
-  it('cancelVideoDate returns false when the server rejects', async () => {
+  // Audit H-2 / H-5 / H-7 / H-17 / H-18: mutating calls return a
+  // MutationResult, not a bare boolean. The old boolean contract lost the
+  // reason for a failure, and every caller that did not check it reported
+  // success anyway — a safety report that was never filed, a block that never
+  // reached the server, a favourite that reappeared.
+  it('cancelVideoDate reports the failure instead of a bare false', async () => {
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'not cancellable' }), { status: 404 }));
-    expect(await cancelVideoDate('v1')).toBe(false);
+    const res = await cancelVideoDate('v1');
+    expect(res.ok).toBe(false);
+    expect(res.error).toBeTruthy();
+  });
+
+  it('cancelVideoDate reports success when the server accepts', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ status: 'cancelled' }), { status: 200 }));
+    const res = await cancelVideoDate('v1');
+    expect(res.ok).toBe(true);
+    expect(res.error).toBeNull();
   });
 
   // H1 regression: Shaadi-style advanced filters must reach SQL query params.
@@ -158,8 +172,9 @@ describe('wired backend client (services/api)', () => {
 
   it('blockUser posts userId and profileId to /api/blocks', async () => {
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ blocked: true }), { status: 200 }));
-    const ok = await blockUser('u-456', 'p-789');
-    expect(ok).toBe(true);
+    const res = await blockUser('u-456', 'p-789');
+    expect(res.ok).toBe(true);
+    expect(res.error).toBeNull();
     const [url, init] = fetchMock.mock.calls[0];
     expect(String(url)).toBe('https://api.test/api/blocks');
     expect(JSON.parse(init!.body as string)).toEqual({ userId: 'u-456', profileId: 'p-789' });

@@ -41,7 +41,7 @@ export const useFavorites = () => {
     });
   };
 
-  const handleLike = (id: string) => {
+  const handleLike = async (id: string) => {
     const doctor = favorites.find(d => d.id === id) || likedBy.find(d => d.id === id);
     if (!doctor) return;
     const wasFavorite = isFavorite(id);
@@ -49,9 +49,13 @@ export const useFavorites = () => {
       withdrawInterest(doctor.id);
       toast({ title: "Removed from favorites", description: `Dr. ${doctor.name} has been removed from your favorites and interests.` });
     } else {
-      const accepted = sendInterest(doctor);
-      if (!accepted) {
-        toast({ title: "Interest limit reached", description: "Your plan's monthly interest limit is reached. Upgrade for more.", variant: "destructive" });
+      // Audit H-6: await the server before claiming success. The context
+      // toasts the honest failure; this branch only reports success.
+      const accepted = await sendInterest(doctor);
+      if (!accepted.ok) {
+        if (!accepted.error) {
+          toast({ title: "Interest limit reached", description: "Your plan's monthly interest limit is reached. Upgrade for more.", variant: "destructive" });
+        }
         return;
       }
       toast({ title: "Added to favorites", description: `Dr. ${doctor.name} has been saved to your favorites and interests.` });
@@ -64,7 +68,7 @@ export const useFavorites = () => {
       toast({ title: "Match to video chat", description: "Like each other first to unlock video calls.", variant: "destructive" });
       return;
     }
-    navigate('/video-dates');
+    void navigate('/video-dates');
   };
 
   const handleChat = (id: string) => {
@@ -77,7 +81,7 @@ export const useFavorites = () => {
       title: "Opening chat",
       description: doctor ? `Opening conversation with Dr. ${doctor.name}` : "Opening messages",
     });
-    navigate('/messages', { state: { openChatId: id } } as never);
+    void navigate('/messages', { state: { openChatId: id } } as never);
   };
 
   const filterDoctors = (doctors: Doctor[], searchTerm: string) => {

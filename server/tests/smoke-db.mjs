@@ -168,6 +168,10 @@ async function main() {
   const inboxB = await api("GET", "/api/interests", undefined, userB);
   const received = inboxB.json?.received?.[0];
   check("B sees A's pending interest", !!received);
+  check("M-25: received interest is server-redacted for non-premium user",
+    received.profile.name === "Verified Doctor" &&
+    received.profile.imageUrl === null &&
+    received.profile.id.startsWith("locked-"));
   const acc = await api("POST", `/api/interests/${received.id}/respond`, { action: "accept" }, userB);
   check("accept transitions interest to accepted", acc.status === 200 && acc.json?.status === "accepted");
 
@@ -483,7 +487,7 @@ async function main() {
     `got ${loginWhileSuspended.status}`);
   // B's pre-suspension session token must NOT survive the suspension even
   // after unsuspend — the tokenVersion bump already invalidated it.
-  const unsusp = await api("POST", `/api/admin/users/${userIdB}/unsuspend`, {}, userA);
+  const _unsusp = await api("POST", `/api/admin/users/${userIdB}/unsuspend`, {}, userA);
   const bTokenAfterUnsuspend = await api("GET", "/api/quota", undefined, bTokenPreSuspend);
   check(
     "H-10: pre-suspension session token remains invalid after unsuspend",
@@ -758,6 +762,88 @@ async function main() {
     typeof statsAdmin.json?.stats?.total_users === "number" &&
     typeof statsAdmin.json?.stats?.verified_doctors === "number" &&
     typeof statsAdmin.json?.stats?.open_reports === "number");
+
+  // =====================================================================
+  // Audit H-10: the data-portability export must include the requester's
+  // most sensitive records. Before the fix the export omitted every one of
+  // them, so a member could NOT obtain a copy of their own identity
+  // documents, GST invoices, kundali reports, view history or contact
+  // purchases (DPDP Act Sec. 11 / GDPR Art. 20 gap).
+  // =====================================================================
+  const exportRes = await api("GET", "/api/me/export", undefined, userB);
+  const exported = exportRes.json || {};
+  const EXPORT_KEYS = [
+    "verificationDocuments", "invoices", "kundaliReports", "profileViews",
+    "contactViews", "eventRsvps", "successStories", "paymentOrders",
+    "couponRedemptions", "profileBoosts", "adminActionsOnAccount",
+  ];
+  const missingKeys = EXPORT_KEYS.filter((k) => !(k in exported));
+  check("H-10: export includes every sensitive table", exportRes.status === 200 && missingKeys.length === 0,
+    missingKeys.length ? `missing: ${missingKeys.join(", ")}` : "");
+  check("H-10: export carries the requester's invoices",
+    Array.isArray(exported.invoices) && exported.invoices.length >= 1);
+  check("H-10: export carries the requester's payment orders",
+    Array.isArray(exported.paymentOrders) && exported.paymentOrders.length >= 1);
+
+  // =====================================================================
+  // Audit H-9: account deletion must erase the PERSONAL data on the retained
+  // GST invoice row (full legal name, GSTIN, billing address) while the
+  // financial record itself is kept for statutory tax retention.
+  //
+  // The invoice row is inserted directly so the assertion does not depend on
+  // the activation-token / redemption flow.
+  // =====================================================================
+  {
+    const emailD = `dbc_del_${Date.now()}@example.com`;
+    const regD = await api("POST", "/api/auth/register", { email: emailD, password: "Doctor@123", firstName: "Dee", lastName: "Roy", specialty: "Oncology" });
+    const userD = (await api("POST", "/api/auth/verify-email", { token: regD.json?.verificationToken, mobile: true })).json?.token;
+    check("H-9: compliance test account created", Boolean(userD));
+
+    const pgMod2 = await import("pg");
+    const dbc5 = new pgMod2.Client({ connectionString: DATABASE_URL });
+    await dbc5.connect();
+    const idRow = await dbc5.query(`SELECT id FROM app_users WHERE email = $1`, [emailD]);
+    const userDId = idRow.rows[0]?.id;
+    check("H-9: compliance test account row exists", Boolean(userDId));
+
+    const invNumber = `MM-INV-TEST-${Date.now()}`;
+    await dbc5.query(
+      `INSERT INTO invoices (invoice_number, user_id, token_hash, sku, amount_paise, gst_paise, doctor_name, gstin, billing_address)
+       VALUES ($1,$2,$3,'premium',149900,21200,'Dr. Dee Roy','29ABCDE1234F1Z5','12 Test Street, Bengaluru 560001')`,
+      [invNumber, userDId, `hash_${invNumber}`]
+    );
+
+    // Make sure the per-user rate-limit bucket exists before the deletion.
+    await api("GET", "/api/quota", undefined, userD);
+    const bucketBefore = await dbc5.query(
+      `SELECT count(*)::int AS n FROM rate_limit_buckets WHERE bucket_key = $1`,
+      [`user:${userDId}`]
+    );
+    check("H-9: the per-user rate-limit bucket exists before deletion",
+      (bucketBefore.rows[0]?.n ?? 0) >= 1);
+
+    const delRes = await api("POST", "/api/me/delete", { currentPassword: "Doctor@123" }, userD);
+    check("H-9: account deletion succeeds", delRes.status === 200 && delRes.json?.ok === true);
+
+    const invRow = await dbc5.query(
+      `SELECT doctor_name, gstin, billing_address, amount_paise FROM invoices WHERE invoice_number = $1`,
+      [invNumber]
+    );
+    const row = invRow.rows[0] || {};
+    check("H-9: the invoice row is RETAINED for statutory tax audit",
+      row.amount_paise === 149900, JSON.stringify(row));
+    check("H-9: the invoice personal identifiers are ERASED on deletion",
+      row.doctor_name === "Deleted User" && row.gstin === null && row.billing_address === null,
+      JSON.stringify(row));
+
+    const bucketAfter = await dbc5.query(
+      `SELECT count(*)::int AS n FROM rate_limit_buckets WHERE bucket_key = $1`,
+      [`user:${userDId}`]
+    );
+    check("H-9: the per-user rate-limit bucket is deleted",
+      (bucketAfter.rows[0]?.n ?? 0) === 0);
+    await dbc5.end();
+  }
 }
 
 main()

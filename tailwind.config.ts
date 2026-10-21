@@ -87,11 +87,20 @@ export default {
 					800: '#115a6b',
 					900: '#134a5a',
 				},
-				accent: {
-					light: '#fff3e0',
-					DEFAULT: '#ff9d5c',
-					dark: '#e87928',
-				}
+				// Audit M-35: this file was never type-checked, so a DUPLICATE
+				// `accent` key went unnoticed. The second definition silently
+				// overrode the shadcn CSS-variable accent above, so every
+				// `bg-accent` / `text-accent-foreground` in the shadcn
+				// components (dialog, dropdown, command palette, calendar,
+				// context menu) resolved to the hard-coded palette instead of
+				// `hsl(var(--accent))` / `hsl(var(--accent-foreground))` — the
+				// background was the same orange, but the FOREGROUND became
+				// #e87928 (medium orange on orange) instead of the
+				// --accent-foreground dark tone defined in src/index.css.
+				//
+				// The CSS variables already provide exactly this orange
+				// (--accent: 30 100% 68%), so the duplicate block is simply
+				// removed and the token resolves to the theme variable again.
 			},
 			borderRadius: {
 				lg: 'var(--radius)',

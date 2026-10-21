@@ -46,7 +46,7 @@ const Header = () => {
       title: "Signed out",
       description: "You have been successfully signed out.",
     });
-    navigate('/');
+    void navigate('/');
   };
 
   const toggleMenu = () => setIsMenuOpen(!isMenuOpen);

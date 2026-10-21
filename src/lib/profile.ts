@@ -1,7 +1,10 @@
 export const EMPTY_PROFILE = {
   name: "",
   specialty: "",
-  degree: "MBBS",
+  // Audit M-23: a brand-new account must not be PERSISTED with a made-up
+  // qualification. The old default ("MBBS") was written to the server by
+  // EditProfilePage for any member who never chose a degree.
+  degree: "",
   hospital: "",
   location: "",
   experience: "",
@@ -22,13 +25,16 @@ export const EMPTY_PROFILE = {
   registrationNumber: "",
   maritalStatus: "Never Married",
   motherTongue: "Hindi",
-  religion: "Hindu",
+  // Audit M-23: religion is a matching fact — default it to the explicit
+  // "No preference" the form already offers rather than asserting "Hindu".
+  religion: "No preference",
   caste: "",
   subcaste: "",
   gotra: "",
   rashi: "",
   nakshatra: "",
-  manglik: "Non-Manglik",
+  // Audit M-23: same principle for the horoscope attribute.
+  manglik: "Don't Know",
   prefAgeMin: "24",
   prefAgeMax: "36",
   prefLocation: "",
@@ -67,21 +73,29 @@ export function profileToDoctor(profile: ProfileData, imageUrl: string, userInte
   const cleanIdName = rawName.replace(/^dr\.?\s+/i, '') || 'user';
   const specialty = profile.specialty.trim() || 'General Physician';
   const parts = (profile.location || '').split(',').map(s => s.trim()).filter(Boolean);
-  const city = parts[0] || 'Mumbai';
-  const state = parts[1] || 'Maharashtra';
+  // Audit M-23: no invented location either.
+  const city = parts[0] || '';
+  const state = parts[1] || '';
   return {
     id: `me-${cleanIdName.toLowerCase().replace(/\s+/g, '-')}`,
     name: rawName,
     age: ageFromDob(profile.dob),
     specialty,
-    degree: profile.degree || 'MBBS, MD',
-    hospital: profile.hospital || 'Apollo Hospitals',
+    // Audit M-23: NEVER fabricate a member's own credentials, community or
+    // horoscope. The old fallbacks invented "MBBS, MD", "Apollo Hospitals",
+    // Hindu/Brahmin/Saraswat/Kashyap, Mesha (Aries)/Ashwini and a 28/36
+    // kundali score for a member who had answered nothing — on a matrimonial
+    // platform, where caste, gotra and horoscope are the facts people are
+    // matching ON. An unset field is now simply unset; the UI renders
+    // nothing rather than a confident fabrication.
+    degree: profile.degree || '',
+    hospital: profile.hospital || '',
     city,
     state,
     country: 'India',
     imageUrl,
     matchPercentage: 100,
-    interests: userInterests && userInterests.length > 0 ? userInterests : ['Reading', 'Travel', 'Medical Research', 'Fitness'],
+    interests: userInterests && userInterests.length > 0 ? userInterests : [],
     isOnline: true,
     sexualOrientation: 'Straight',
     isVerified: profile.verificationStatus === 'verified',
@@ -93,23 +107,25 @@ export function profileToDoctor(profile: ProfileData, imageUrl: string, userInte
     registrationYear: profile.registrationYear ? parseInt(profile.registrationYear, 10) : undefined,
     verificationStatus: profile.verificationStatus || 'unverified',
     verificationDocumentName: profile.verificationDocumentName || undefined,
-    aboutMe: profile.about || 'Dedicated medical professional passionate about healthcare excellence, continuous learning, and balanced living. Looking for a partner who values mutual respect, family values, and professional ambition.',
-    lookingFor: profile.lookingFor || 'Seeking a thoughtful, understanding doctor partner who values family companionship, shared values, and mutual support in life and career.',
+    aboutMe: profile.about || undefined,
+    lookingFor: profile.lookingFor || undefined,
     prefAgeMin: profile.prefAgeMin ? parseInt(profile.prefAgeMin, 10) : 24,
     prefAgeMax: profile.prefAgeMax ? parseInt(profile.prefAgeMax, 10) : 36,
-    prefLocation: profile.prefLocation || 'Mumbai, Pune, Delhi NCR',
+    prefLocation: profile.prefLocation || '',
     heightCm: profile.heightCm ? parseInt(profile.heightCm, 10) : 175,
-    maritalStatus: profile.maritalStatus || 'Never Married',
-    motherTongue: profile.motherTongue || 'Hindi',
-    religion: profile.religion || 'Hindu',
-    caste: profile.caste || 'Brahmin',
-    cast: profile.caste || 'Brahmin',
-    subcaste: profile.subcaste || 'Saraswat',
-    gotra: profile.gotra || 'Kashyap',
-    rashi: profile.rashi || 'Mesha (Aries)',
-    nakshatra: profile.nakshatra || 'Ashwini',
-    manglik: profile.manglik || 'Non-Manglik',
-    kundaliGunas: profile.minGunas || 28,
+    maritalStatus: profile.maritalStatus || '',
+    motherTongue: profile.motherTongue || '',
+    religion: profile.religion || '',
+    caste: profile.caste || '',
+    cast: profile.caste || '',
+    subcaste: profile.subcaste || '',
+    gotra: profile.gotra || '',
+    rashi: profile.rashi || '',
+    nakshatra: profile.nakshatra || '',
+    manglik: profile.manglik || '',
+    // 0 means "not provided" — the UI renders a dash rather than a score
+    // the member never earned.
+    kundaliGunas: profile.minGunas || 0,
   };
 }
 

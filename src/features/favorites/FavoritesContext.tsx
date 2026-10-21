@@ -20,6 +20,20 @@ import {
 } from "@/services/api";
 
 export type ConnectionStatus = 'pending' | 'matched' | 'passed' | 'blocked';
+
+/**
+ * The outcome of sending an interest.
+ *
+ * Audit H-6: `sendInterest` used to return a plain `boolean` synchronously
+ * while the server call ran in a detached IIFE, so callers toasted success
+ * before the server had accepted the send. It now resolves with the real
+ * outcome, so a caller can only claim success when the server agreed.
+ */
+export interface InterestSendResult {
+  ok: boolean;
+  error: string | null;
+}
+
 export interface Connection {
   doctorId: string;
   status: ConnectionStatus;
@@ -56,7 +70,7 @@ interface FavoritesContextValue {
   addFavoriteById: (id: string) => void;
   shortlistDoctor: (doctor: Doctor) => void;
   unshortlistDoctor: (id: string) => void;
-  sendInterest: (doctor: Doctor) => boolean;
+  sendInterest: (doctor: Doctor) => Promise<InterestSendResult>;
   withdrawInterest: (doctorId: string) => void;
   passInterest: (id: string) => void;
   likeFromInterested: (id: string) => void;
@@ -320,11 +334,44 @@ export const FavoritesProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     [setFavorites]
   );
 
+  // Audit H-17: removing a favourite NEVER reached the server — only
+  // toggleFavorite called the remote, so the row stayed in the `favorites`
+  // table and the hydrate effect (which merges server -> local as a union)
+  // brought it straight back on the next mount. The member removed a
+  // favourite, was told it was removed, and it reappeared.
   const removeFavorite = useCallback(
     (id: string) => {
       setFavorites((prev) => prev.filter((d) => d.id !== id));
+      if (hasServerSession()) {
+        queueMicrotask(() => {
+          void removeFavoriteRemote(id)
+            .then((res) => {
+              if (res.ok) return;
+              // Roll the local state back — the server still holds the row.
+              setFavorites((prev) => {
+                const doctor =
+                  likedBy.find((d) => d.id === id) || doctorProfiles.find((d) => d.id === id);
+                if (!doctor) return prev;
+                return prev.some((d) => d.id === id) ? prev : [...prev, { ...doctor, isFavorite: true }];
+              });
+              toast({
+                title: "Could not remove favourite",
+                description:
+                  res.error || "The change did not reach the server. Please try again.",
+                variant: "destructive",
+              });
+            })
+            .catch(() => {
+              toast({
+                title: "Could not remove favourite",
+                description: "The change did not reach the server. Please try again.",
+                variant: "destructive",
+              });
+            });
+        });
+      }
     },
-    [setFavorites]
+    [setFavorites, likedBy]
   );
 
   const toggleFavorite = useCallback(
@@ -374,11 +421,11 @@ export const FavoritesProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   }, [setShortlist]);
 
   const sendInterest = useCallback(
-    (doctor: Doctor): boolean => {
-      if (blockedIds.includes(doctor.id)) return false;
+    async (doctor: Doctor): Promise<InterestSendResult> => {
+      if (blockedIds.includes(doctor.id)) return { ok: false, error: "You have blocked this profile." };
       // Duplicate check BEFORE consuming quota: a resend must neither burn an
       // interest slot nor double-append (the ledger never refunds).
-      if (interests.some((i) => i.doctor.id === doctor.id)) return true;
+      if (interests.some((i) => i.doctor.id === doctor.id)) return { ok: true, error: null };
 
       // Photo gate (onboarding gap-fix #3): a generated initials avatar must
       // never represent a real member on a matrimonial platform. When the
@@ -404,7 +451,7 @@ export const FavoritesProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           window.setTimeout(() => {
             window.location.assign('/onboarding?step=photo');
           }, 600);
-          return false;
+          return { ok: false, error: "Add a profile photo before sending an interest." };
         }
       } catch { /* storage unavailable — proceed (server still validates) */ }
 
@@ -422,14 +469,24 @@ export const FavoritesProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         });
         setInterests(prev => prev.some(i => i.doctor.id === doctor.id) ? prev : [...prev, { id: tempId, doctor, note: "You showed interest in this profile", createdAt: new Date() }]);
 
-        void (async () => {
+        // Audit H-6: the server call is AWAITED and its result is returned.
+        // It used to run in a detached IIFE while `sendInterest` returned
+        // `true` immediately, so every caller toasted "Interest sent!" BEFORE
+        // the server had accepted it — and the member then saw a second,
+        // contradictory "Interest not sent" toast when the server rejected the
+        // send (quota, the 24h resend cooldown, a block, a 5xx).
+        //
+        // The rollback + the honest error toast stay here (this is where the
+        // optimistic state lives); the caller now toasts SUCCESS only when
+        // this resolves ok.
+        try {
           const r = await serverSendInterest(doctor.id);
           if (!r.ok) {
             // C-NEW-2: only "ok" guarantees the server recorded the interest.
             // Rollback optimistic state AND do NOT burn the local quota unit
             // (the server may have rejected for quota / auth / never received
             //  the request at all — the local ledger was never a binding
-            //  counter).
+            // counter).
             setConnections(prev => prev.filter(c => c.doctorId !== doctor.id || c.status === 'matched' || c.status === 'blocked'));
             setInterests(prev => prev.filter(i => i.doctor.id !== doctor.id));
             setFavorites(prev => prev.filter(d => d.id !== doctor.id));
@@ -438,7 +495,7 @@ export const FavoritesProvider: React.FC<{ children: React.ReactNode }> = ({ chi
               description: r.error || "Please try again.",
               variant: "destructive",
             });
-            return;
+            return { ok: false, error: r.error };
           }
           consumeInterest();
           // Audit H8: remember the durable server id so withdrawInterest can
@@ -457,12 +514,22 @@ export const FavoritesProvider: React.FC<{ children: React.ReactNode }> = ({ chi
               }
             });
           }
-        })().catch(() => {});
-        return true;
+          return { ok: true, error: null };
+        } catch {
+          setConnections(prev => prev.filter(c => c.doctorId !== doctor.id || c.status === 'matched' || c.status === 'blocked'));
+          setInterests(prev => prev.filter(i => i.doctor.id !== doctor.id));
+          setFavorites(prev => prev.filter(d => d.id !== doctor.id));
+          toast({
+            title: "Interest not sent",
+            description: "We could not reach the server. Please try again.",
+            variant: "destructive",
+          });
+          return { ok: false, error: "network" };
+        }
       }
 
       // Local/demo mode: quota before mutation (single source = usePlan).
-      if (!consumeInterest()) return false;
+      if (!consumeInterest()) return { ok: false, error: "Interest limit reached." };
       setConnections(prev => {
         const existing = prev.find(c => c.doctorId === doctor.id);
         if (existing?.status === 'matched' || existing?.status === 'blocked') return prev;
@@ -475,7 +542,7 @@ export const FavoritesProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         if (prev.some((i) => i.doctor.id === doctor.id)) return prev;
         return [...prev, { id: `myint${Date.now()}`, doctor, note: "You showed interest in this profile", createdAt: new Date() }];
       });
-      return true;
+      return { ok: true, error: null };
     },
     [blockedIds, interests, interestedInYou, setConnections, setInterests, setFavorites, consumeInterest]
   );
@@ -525,6 +592,14 @@ export const FavoritesProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     [interestedInYou, setConnections, setInterests, setInterestedInYou, setFavorites]
   );
 
+  // Audit H-5: a block is a SAFETY action. It used to be fire-and-forget —
+  // the local state updated instantly and the server write's result was
+  // discarded — so a failed POST left the peer able to browse, view and
+  // message the member, and still holding their contact row, while the modal
+  // asserted "has been blocked".
+  //
+  // Now the local state is rolled back and the member is told when the block
+  // did not reach the server.
   const blockDoctor = useCallback((doctorId: string) => {
     setBlockedIds(prev => prev.includes(doctorId) ? prev : [...prev, doctorId]);
     setConnections(prev => {
@@ -537,13 +612,53 @@ export const FavoritesProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setInterests(prev => prev.filter(i => i.doctor.id !== doctorId));
     setInterestedInYou(prev => prev.filter(i => i.doctor.id !== doctorId));
     const ownerId = ownerUserIdsRef.current[doctorId];
-    void serverBlockUser(ownerId || doctorId, doctorId).catch(() => {});
+    if (!hasServerSession()) return;
+    void serverBlockUser(ownerId || doctorId, doctorId)
+      .then((res) => {
+        if (res.ok) return;
+        setBlockedIds(prev => prev.filter(id => id !== doctorId));
+        setConnections(prev => prev.filter(c => !(c.doctorId === doctorId && c.status === 'blocked')));
+        toast({
+          title: "Could not block this profile",
+          description:
+            res.error || "The block did not reach the server, so it is NOT active. Please try again.",
+          variant: "destructive",
+        });
+      })
+      .catch(() => {
+        setBlockedIds(prev => prev.filter(id => id !== doctorId));
+        setConnections(prev => prev.filter(c => !(c.doctorId === doctorId && c.status === 'blocked')));
+        toast({
+          title: "Could not block this profile",
+          description: "The block did not reach the server, so it is NOT active. Please try again.",
+          variant: "destructive",
+        });
+      });
   }, [setBlockedIds, setConnections, setFavorites, setShortlist, setInterests, setInterestedInYou]);
+
   const unblockDoctor = useCallback((doctorId: string) => {
     setBlockedIds(prev => prev.filter(id => id !== doctorId));
     setConnections(prev => prev.filter(c => !(c.doctorId === doctorId && c.status === 'blocked')));
     const ownerId = ownerUserIdsRef.current[doctorId];
-    void serverUnblockUser(ownerId || doctorId, doctorId).catch(() => {});
+    if (!hasServerSession()) return;
+    void serverUnblockUser(ownerId || doctorId, doctorId)
+      .then((res) => {
+        if (res.ok) return;
+        setBlockedIds(prev => (prev.includes(doctorId) ? prev : [...prev, doctorId]));
+        toast({
+          title: "Could not unblock this profile",
+          description: res.error || "The change did not reach the server. Please try again.",
+          variant: "destructive",
+        });
+      })
+      .catch(() => {
+        setBlockedIds(prev => (prev.includes(doctorId) ? prev : [...prev, doctorId]));
+        toast({
+          title: "Could not unblock this profile",
+          description: "The change did not reach the server. Please try again.",
+          variant: "destructive",
+        });
+      });
   }, [setBlockedIds, setConnections]);
 
   const markViewed = useCallback((id: string) => {

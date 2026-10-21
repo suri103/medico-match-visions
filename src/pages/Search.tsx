@@ -122,7 +122,7 @@ const Search = () => {
     if (selectedIncomeBand !== 'No preference') params.set('incomeBand', selectedIncomeBand);
     if (selectedDiet !== 'No preference') params.set('diet', selectedDiet);
     toast({ title: "Search criteria applied", description: "Navigating to matches with your search criteria" });
-    navigate(`/matches?${params.toString()}`, {
+    void navigate(`/matches?${params.toString()}`, {
       state: {
         search: {
           searchTerm, usernameSearch, keywordSearch, minAge, maxAge, specialties, degrees: selectedDegrees, onlineOnly,

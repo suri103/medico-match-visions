@@ -68,7 +68,7 @@ const NotificationCard: React.FC<NotificationCardProps> = ({
   const handleSendInterest = (e: React.MouseEvent) => {
     e.stopPropagation();
     onMarkRead?.(notification.id);
-    sendInterest(matchedDoctor);
+    void sendInterest(matchedDoctor);
     toast({
       title: "Interest Sent!",
       description: `You expressed interest in Dr. ${notification.from}. They have been notified.`
@@ -78,7 +78,7 @@ const NotificationCard: React.FC<NotificationCardProps> = ({
   const handleAcceptInterest = (e: React.MouseEvent) => {
     e.stopPropagation();
     onMarkRead?.(notification.id);
-    sendInterest(matchedDoctor);
+    void sendInterest(matchedDoctor);
     toast({
       title: "Connection Accepted!",
       description: `You are now connected with Dr. ${notification.from}. You can start chatting.`
@@ -103,7 +103,7 @@ const NotificationCard: React.FC<NotificationCardProps> = ({
       specialty: notification.specialty,
       imageUrl: notification.imageUrl,
     });
-    navigate('/messages', { 
+    void navigate('/messages', { 
       state: { 
         openChatId: doctorId, 
         activeTab: 'messages',
@@ -117,12 +117,12 @@ const NotificationCard: React.FC<NotificationCardProps> = ({
   const handleVideoDate = (e: React.MouseEvent) => {
     e.stopPropagation();
     onMarkRead?.(notification.id);
-    navigate('/video-dates');
+    void navigate('/video-dates');
   };
 
   const handleCardClick = () => {
     onMarkRead?.(notification.id);
-    navigate(`/doctor/${doctorId}`, {
+    void navigate(`/doctor/${doctorId}`, {
       state: {
         returnTo: '/messages?tab=whats-new',
         returnTab: 'whats-new',
@@ -231,7 +231,7 @@ const NotificationCard: React.FC<NotificationCardProps> = ({
               onClick={(e) => { 
                 e.stopPropagation(); 
                 onMarkRead?.(notification.id);
-                navigate(`/doctor/${doctorId}`, {
+                void navigate(`/doctor/${doctorId}`, {
                   state: {
                     returnTo: '/messages?tab=whats-new',
                     returnTab: 'whats-new',
@@ -265,7 +265,7 @@ const NotificationCard: React.FC<NotificationCardProps> = ({
               onClick={(e) => { 
                 e.stopPropagation(); 
                 onMarkRead?.(notification.id);
-                navigate(`/doctor/${doctorId}`, {
+                void navigate(`/doctor/${doctorId}`, {
                   state: {
                     returnTo: '/messages?tab=whats-new',
                     returnTab: 'whats-new',
@@ -292,7 +292,7 @@ const NotificationCard: React.FC<NotificationCardProps> = ({
               onClick={(e) => { 
                 e.stopPropagation(); 
                 onMarkRead?.(notification.id);
-                navigate(`/doctor/${doctorId}`, {
+                void navigate(`/doctor/${doctorId}`, {
                   state: {
                     returnTo: '/messages?tab=whats-new',
                     returnTab: 'whats-new',
@@ -326,7 +326,7 @@ const NotificationCard: React.FC<NotificationCardProps> = ({
               onClick={(e) => { 
                 e.stopPropagation(); 
                 onMarkRead?.(notification.id);
-                navigate(`/doctor/${doctorId}`, {
+                void navigate(`/doctor/${doctorId}`, {
                   state: {
                     returnTo: '/messages?tab=whats-new',
                     returnTab: 'whats-new',

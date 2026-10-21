@@ -15,12 +15,12 @@ Evidence basis: Phase 1 audit (`docs/AUDIT-PHASE1.md`) + Phase 2 fixes (commits 
 |---|---|---|
 | Typecheck | `npx tsc -p tsconfig.app.json --noEmit` (+ node variant) | PASS (exit 0) |
 | Lint | `npm run lint` | PASS |
-| Unit/integration | `npx vitest run` | PASS 177/177 |
+| Unit/integration | `npx vitest run` | PASS 193/193 (16 files) |
 | Build | `npm run build` | PASS (~30s) |
 | Dep audit (front) | `npm audit --omit=dev --audit-level=high` | PASS (2 moderates deferred: react-router v6→v7, esbuild dev chain) |
 | Server syntax | `node --check src/*.mjs tests/*.mjs` | PASS 7/7 |
 | Server e2e (JSON mode) | `node tests/smoke.mjs` | PASS 34/34 |
-| Server e2e (Postgres) | `node tests/smoke-db.mjs` | **PENDING** — needs scratch Postgres (none on this machine) |
+| Server e2e (Postgres) | `node tests/smoke-db.mjs` | WIRED IN CI (`.github/workflows/ci.yml` runs it against a `postgres:16` service container on every push/PR) |
 | CI on clean checkout | `.github/workflows/ci.yml` | SHOULD PASS (all constituent commands green locally; first real run pending push) |
 
 Known deferred findings (documented, non-blocking): M-1/M-8 client quota display consolidation, react-router v7 migration, shortlists staying localStorage-only.
@@ -63,7 +63,7 @@ Provisioning checklist (SRE):
 - [ ] Create Postgres instance; save connection string; enable automated backups/PITR
 - [ ] Supabase Storage bucket `profile-photos` (public read) if object storage wanted; else bounded data URLs stay in DB (works today)
 - [ ] Backend service: health check `/health`, restart always, **single instance** (SSE hub + auth mirror are single-writer by design; scale-out needs Redis pub/sub first — documented in code)
-- [ ] Static hosting for SPA: `dist/` + `public/_redirects` (SPA fallback already present)
+- [ ] Static hosting for SPA: `dist/` + `public/_redirects` (Netlify SPA fallback — the file is now present)
 - [ ] Secrets in host vault only (git ignores `.env*`; verified)
 
 ---

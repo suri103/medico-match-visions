@@ -23,7 +23,10 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog';
 
-const DEMO_DOCTORS = [
+// Audit L-10: gated so the third-party image CDN (randomuser.me) reference
+// is eliminated from a production bundle — serving one leaks the visitor's
+// IP address to that CDN. The demo cards are also gated at the render site.
+const DEMO_DOCTORS = demoModeEnabled ? [
   {
     name: "Dr. Aditya Sharma",
     email: "dr.aditya@demo.medicomatch.in",
@@ -42,7 +45,7 @@ const DEMO_DOCTORS = [
     role: "Orthopedic Surgeon · Fortis, Bangalore",
     avatar: "https://randomuser.me/api/portraits/men/68.jpg",
   },
-];
+] : [];
 
 const SignIn: React.FC = () => {
   const navigate = useNavigate();
@@ -118,7 +121,7 @@ const SignIn: React.FC = () => {
         });
         // Onboarding gap-fix #1: members without a profile go to the setup
         // wizard first; everyone else lands on Matches.
-        navigate(hasCreatedProfile() ? '/matches' : '/onboarding');
+        void navigate(hasCreatedProfile() ? '/matches' : '/onboarding');
         return;
       }
       if (res.status === 401) {
@@ -160,7 +163,7 @@ const SignIn: React.FC = () => {
           title: `Welcome back, Dr. ${doctorName}! 🩺`,
           description: "Signed in successfully. Redirecting to your matrimonial matches...",
         });
-        navigate('/matches');
+        void navigate('/matches');
       }, 600);
       return;
     }
@@ -196,7 +199,7 @@ const SignIn: React.FC = () => {
         title: `Logged in as ${doc.name} 🩺`,
         description: "Loaded verified doctor matrimonial profile.",
       });
-      navigate('/matches');
+      void navigate('/matches');
     }, 400);
   };
 

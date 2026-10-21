@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { usePersistedState } from '@/hooks/usePersistedState';
+import { demoModeEnabled } from '@/lib/devAuth';
 import { useToast } from '@/hooks/use-toast';
 import { createServerEvent } from '@/services/api';
 
@@ -90,7 +91,13 @@ const EventsPage = () => {
     description: '',
   });
 
-  const allEvents = [...(serverEvents ?? INITIAL_EVENTS), ...customEvents];
+  // Audit M-22: the fixture events (five hardcoded US-city meetups with
+  // invented attendee counts) were NOT gated by demoModeEnabled, so whenever
+  // `GET /api/events` failed — unreachable API, 5xx, no server configured —
+  // every production visitor saw plausible events in Boston, New York and
+  // San Francisco on a page that is in the sitemap and therefore indexed.
+  // The product is India-first; those fixtures are demo content only.
+  const allEvents = [...(serverEvents ?? (demoModeEnabled ? INITIAL_EVENTS : [])), ...customEvents];
 
   // P0-6: real server events replace fixtures when the backend is wired.
   // Fixtures remain the offline fallback only when the API cannot be reached.
@@ -110,19 +117,42 @@ const EventsPage = () => {
     if (isRegistered(event.id)) {
       setRegisteredIds(prev => prev.filter(id => id !== event.id));
       toast({ title: "RSVP cancelled", description: `You are no longer registered for ${event.title}.` });
-    } else {
-      setRegisteredIds(prev => [...prev, event.id]);
-      // P0-6: durable server RSVP when wired (best-effort; local state is truth for UI).
-      void (async () => {
-        try {
-          const { rsvpEvent, hasServerSession } = await import('@/services/api');
-          if (hasServerSession() && !event.id.startsWith('ce-') && !INITIAL_EVENTS.some((e) => e.id === event.id)) {
-            await rsvpEvent(event.id);
-          }
-        } catch { /* local RSVP stands */ }
-      })();
-      toast({ title: "You're in! 🎉", description: `You have registered for ${event.title} on ${event.date}.` });
+      return;
     }
+    setRegisteredIds(prev => [...prev, event.id]);
+    // P0-6: durable server RSVP when wired.
+    // Audit H-18: the result was DISCARDED — `rsvpEvent` resolved a boolean
+    // that nobody read — so a 401/404/500 still produced "You're in! 🎉" and
+    // the registration existed only in the local `mm:eventsRegistered` array.
+    // The organiser's attendee count never moved and the RSVP was lost on the
+    // next device.
+    void (async () => {
+      try {
+        const { rsvpEvent, hasServerSession } = await import('@/services/api');
+        if (hasServerSession() && !event.id.startsWith('ce-') && !INITIAL_EVENTS.some((e) => e.id === event.id)) {
+          const res = await rsvpEvent(event.id);
+          if (!res.ok) {
+            // Roll the local registration back — the server never recorded it.
+            setRegisteredIds(prev => prev.filter(id => id !== event.id));
+            toast({
+              title: "RSVP not registered",
+              description: res.error || "We could not reach the server, so your RSVP was NOT recorded. Please try again.",
+              variant: "destructive",
+            });
+            return;
+          }
+        }
+      } catch {
+        setRegisteredIds(prev => prev.filter(id => id !== event.id));
+        toast({
+          title: "RSVP not registered",
+          description: "We could not reach the server, so your RSVP was NOT recorded. Please try again.",
+          variant: "destructive",
+        });
+        return;
+      }
+      toast({ title: "You're in! 🎉", description: `You have registered for ${event.title} on ${event.date}.` });
+    })();
   };
 
   const toggleExpand = (id: string) => {

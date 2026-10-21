@@ -347,7 +347,7 @@ const VideoMatchPage: React.FC = () => {
                                       <Check className="h-4 w-4 mr-1" />
                                       Accept & Join Now
                                     </Button>
-                                    <Button variant="outline" className="sm:w-auto" onClick={() => { toast({ title: "Reschedule", description: "Pick a new time on the Video Dates page." }); navigate('/video-dates'); }}>
+                                    <Button variant="outline" className="sm:w-auto" onClick={() => { toast({ title: "Reschedule", description: "Pick a new time on the Video Dates page." }); void navigate('/video-dates'); }}>
                                       Schedule for Later
                                     </Button>
                                     <Button 

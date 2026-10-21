@@ -23,7 +23,7 @@ const pg = new EmbeddedPostgres({
   persistent: false,
 });
 
-const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const _wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 try {
   await pg.initialise();

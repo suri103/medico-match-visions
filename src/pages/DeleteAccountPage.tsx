@@ -67,7 +67,7 @@ const DeleteAccountPage: React.FC = () => {
           title: "Account deleted",
           description: "Your data has been removed. We're sorry to see you go.",
         });
-        navigate("/", { replace: true });
+        void navigate("/", { replace: true });
       } else {
         toast({ title: "Deletion failed", description: r.error || "Please try again.", variant: "destructive" });
       }

@@ -1,3 +1,24 @@
+-- ===========================================================================
+-- ⛔ ARCHIVED — DO NOT RUN THIS FILE AGAINST A DATABASE.
+--
+-- This migration set is NOT wired to the application. The live schema is
+-- server/migrations/schema.sql, applied at boot by migrate() in
+-- server/src/db.mjs behind a Postgres advisory lock.
+--
+-- Applying this file would create a parallel schema (different table names,
+-- enum types and column shapes), and its RLS policies + SECURITY DEFINER
+-- RPC would expose the tables to direct authenticated access and bypass every
+-- quota check in server/src/domain.mjs.
+--
+-- The guard below aborts the transaction immediately. Removing it is a
+-- deliberate, reviewed act. See ../README.md.
+-- ===========================================================================
+DO $$
+BEGIN
+  RAISE EXCEPTION 'MedicoMatch: this migration file is ARCHIVED and must not be applied. The live schema is server/migrations/schema.sql.';
+END
+$$;
+
 -- =============================================================================
 -- MedicoMatch Supabase Migration: 006_rls_security_and_functions.sql
 -- Description: Row Level Security Policies, Auto-provisioning Triggers & RPCs

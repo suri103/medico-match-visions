@@ -12,16 +12,33 @@ export const devAuthBypass = import.meta.env.DEV && import.meta.env.VITE_DEV_SKI
 // VITE_DEV_SKIP_AUTH, statically false in production builds.
 export const demoModeEnabled = import.meta.env.DEV;
 
-// Belt-and-braces: if a misconfigured CI ever ships a prod build that somehow
-// retained the VITE_DEV_SKIP_AUTH=true flag, refuse to evaluate demo code at
-// module load. DEV is statically false in a prod build so this branch is
-// unreachable; if it ever isn't, the app crashes loudly rather than minting
-// sessions for arbitrary credentials.
+// ---------------------------------------------------------------------------
+// Production safety net (audit C-1 / H-14).
+//
+// PRODUCT DECISION (safe default): a misconfigured build flag is NEVER fatal.
+// The previous version threw at module load whenever VITE_DEV_SKIP_AUTH was
+// present in a production build. Vite folds `import.meta.env.DEV` to `false`
+// and substitutes the flag value from `.env` — and because `.env` is loaded
+// in EVERY mode, that value was always "true" — so the `if` folded to a
+// constant and the minifier left an UNCONDITIONAL `throw` at module scope in
+// the entry chunk. Every page then failed to boot (blank screen) before
+// rendering a single route: a total outage caused by a harmless
+// misconfiguration.
+//
+// The invariant that actually matters is "`import.meta.env.DEV` must be false
+// in a shipped bundle". `vite.config.ts` guarantees it by pinning
+// NODE_ENV=production for `vite build` (Vite only DEFAULTS NODE_ENV when it
+// is unset, so a shell that pre-set NODE_ENV=development used to produce a
+// DEV=true bundle that re-enabled this bypass) and by stripping the flag from
+// the production bundle.
+//
+// So: no throw. The bypass above stays off, and the build-time strip keeps
+// the flag out of the artifact entirely.
+// ---------------------------------------------------------------------------
 if (!import.meta.env.DEV && import.meta.env.VITE_DEV_SKIP_AUTH === "true") {
-  // Throwing at module load is intentional: every page imports this file
-  // transitively, so the entire app fails to render instead of silently
-  // bypassing auth.
-  throw new Error(
-    "VITE_DEV_SKIP_AUTH must not be set in a production build. Refusing to start."
+  console.error(
+    "[medicomatch] VITE_DEV_SKIP_AUTH reached a production bundle. The demo " +
+      "auth bypass is still OFF (it is gated on import.meta.env.DEV), but the " +
+      "flag must not be present in a shipped artifact."
   );
 }

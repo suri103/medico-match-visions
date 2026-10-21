@@ -31,7 +31,7 @@ const NavItem: React.FC<NavItemProps> = ({
     // Paths like "#" are used for non-navigation actions (e.g. Sign Out)
     // and would otherwise resolve to a 404 route.
     if (path && !path.startsWith('#')) {
-      navigate(path, { state });
+      void navigate(path, { state });
     }
     if (onClick) onClick();
   };

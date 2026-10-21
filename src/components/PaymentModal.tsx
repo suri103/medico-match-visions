@@ -156,7 +156,7 @@ const PaymentModal: React.FC<PaymentModalProps> = ({
     if (isProcessing) return;
 
     if (!razorpayConfigured) {
-      handleSimulatedPayment();
+      void handleSimulatedPayment();
       return;
     }
 

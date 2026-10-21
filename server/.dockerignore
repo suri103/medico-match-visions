@@ -1,0 +1,21 @@
+# Keep the Docker build context small and free of local secrets/state.
+#
+# Audit M-39: without this file the ENTIRE server/ directory was uploaded to
+# the Docker daemon on every build — including server/node_modules (hundreds
+# of MB), any local server/.env (real Razorpay / Supabase / Resend secrets)
+# and server/data/ (the JSON account store). None of those are copied into the
+# final image, but they are transmitted, can land in builder cache layers and
+# are visible to any build-time hook or remote builder.
+node_modules
+npm-debug.log*
+.env
+.env.*
+!.env.example
+!.env.production.example
+data
+tests
+.git
+.gitignore
+Dockerfile
+.dockerignore
+*.md

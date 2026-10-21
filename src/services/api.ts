@@ -331,6 +331,27 @@ export async function refreshLocalPlanFromServer(): Promise<string | null> {
 // Interests
 // ---------------------------------------------------------------------------
 
+/**
+ * The outcome of a MUTATING API call.
+ *
+ * Audit H-2 / H-4 / H-5 / H-7 / H-17 / H-18: a mutation that returned a bare
+ * `boolean` lost the reason for the failure, and every caller that did not
+ * check the boolean reported success anyway — a safety report that was never
+ * filed, a block that never reached the server, a favourite that reappeared.
+ * `ok === false` means the mutation did NOT happen; `error` carries the
+ * server's message (or a transport message) so the member is told what
+ * actually went wrong.
+ */
+export interface MutationResult {
+  ok: boolean;
+  error: string | null;
+}
+
+const mutation = (out: { error: string | null }): MutationResult => ({
+  ok: out.error === null,
+  error: out.error,
+});
+
 export async function listInterests(): Promise<{
   sent: InterestRecord[]; received: InterestRecord[]; matched: InterestRecord[];
 } | null> {
@@ -357,17 +378,17 @@ export async function sendInterest(
   };
 }
 
-export async function respondInterest(interestId: string, action: "accept" | "decline"): Promise<boolean> {
+export async function respondInterest(interestId: string, action: "accept" | "decline"): Promise<MutationResult> {
   const out = await callOrError(`/api/interests/${encodeURIComponent(interestId)}/respond`, {
     method: "POST",
     body: JSON.stringify({ action }),
   });
-  return out.error === null;
+  return mutation(out);
 }
 
-export async function withdrawInterest(interestId: string): Promise<boolean> {
+export async function withdrawInterest(interestId: string): Promise<MutationResult> {
   const out = await callOrError(`/api/interests/${encodeURIComponent(interestId)}`, { method: "DELETE" });
-  return out.error === null;
+  return mutation(out);
 }
 
 // ---------------------------------------------------------------------------
@@ -379,19 +400,19 @@ export async function listFavoriteIds(): Promise<string[] | null> {
   return out?.favorites ?? null;
 }
 
-export async function addFavoriteRemote(profileId: string): Promise<boolean> {
+export async function addFavoriteRemote(profileId: string): Promise<MutationResult> {
   const out = await callOrError("/api/favorites", {
     method: "POST",
     body: JSON.stringify({ profileId }),
   });
-  return out.error === null;
+  return mutation(out);
 }
 
-export async function removeFavoriteRemote(profileId: string): Promise<boolean> {
+export async function removeFavoriteRemote(profileId: string): Promise<MutationResult> {
   const out = await callOrError(`/api/favorites/${encodeURIComponent(profileId)}`, {
     method: "DELETE",
   });
-  return out.error === null;
+  return mutation(out);
 }
 
 export async function listShortlistIds(): Promise<string[] | null> {
@@ -399,47 +420,47 @@ export async function listShortlistIds(): Promise<string[] | null> {
   return out?.shortlists ?? null;
 }
 
-export async function addShortlistRemote(profileId: string): Promise<boolean> {
+export async function addShortlistRemote(profileId: string): Promise<MutationResult> {
   const out = await callOrError("/api/shortlists", {
     method: "POST",
     body: JSON.stringify({ profileId }),
   });
-  return out.error === null;
+  return mutation(out);
 }
 
-export async function removeShortlistRemote(profileId: string): Promise<boolean> {
+export async function removeShortlistRemote(profileId: string): Promise<MutationResult> {
   const out = await callOrError(`/api/shortlists/${encodeURIComponent(profileId)}`, {
     method: "DELETE",
   });
-  return out.error === null;
+  return mutation(out);
 }
 export async function listBlockedUsers(): Promise<{ id: string; name: string; imageUrl?: string | null }[] | null> {
   const out = await call<{ blocked: { id: string; name: string; imageUrl?: string | null }[] }>("/api/blocks");
   return out?.blocked ?? null;
 }
 
-export async function blockUser(userId: string, profileId?: string): Promise<boolean> {
+export async function blockUser(userId: string, profileId?: string): Promise<MutationResult> {
   const out = await callOrError("/api/blocks", {
     method: "POST",
     body: JSON.stringify({ userId, profileId: profileId || userId }),
   });
-  return out.error === null;
+  return mutation(out);
 }
 
-export async function unblockUser(userId: string, profileId?: string): Promise<boolean> {
+export async function unblockUser(userId: string, profileId?: string): Promise<MutationResult> {
   const out = await callOrError("/api/blocks/unblock", {
     method: "POST",
     body: JSON.stringify({ userId, profileId: profileId || userId }),
   });
-  return out.error === null;
+  return mutation(out);
 }
 
-export async function reportProfile(profileId: string, reason: string, details = ""): Promise<boolean> {
+export async function reportProfile(profileId: string, reason: string, details = ""): Promise<MutationResult> {
   const out = await callOrError("/api/reports", {
     method: "POST",
     body: JSON.stringify({ profileId, reason, details }),
   });
-  return out.error === null;
+  return mutation(out);
 }
 
 // ---------------------------------------------------------------------------
@@ -474,12 +495,12 @@ export async function listMessages(channelId: string, limit?: number): Promise<S
   return out?.messages ?? null;
 }
 
-export async function sendChatMessage(channelId: string, body: string): Promise<boolean> {
+export async function sendChatMessage(channelId: string, body: string): Promise<MutationResult> {
   const out = await callOrError(`/api/channels/${encodeURIComponent(channelId)}/messages`, {
     method: "POST",
     body: JSON.stringify({ body }),
   });
-  return out.error === null;
+  return mutation(out);
 }
 
 // ---------------------------------------------------------------------------
@@ -511,9 +532,9 @@ export async function createVideoDate(
   return { ok: out.error === null, error: out.error };
 }
 
-export async function cancelVideoDate(videoDateId: string): Promise<boolean> {
+export async function cancelVideoDate(videoDateId: string): Promise<MutationResult> {
   const out = await callOrError(`/api/video-dates/${encodeURIComponent(videoDateId)}/cancel`, { method: "POST" });
-  return out.error === null;
+  return mutation(out);
 }
 
 export async function respondVideoDate(
@@ -616,9 +637,14 @@ export interface AdminProfileRow {
   updatedAt: string;
 }
 
-export async function adminMe(): Promise<{ admin: boolean; email?: string } | null> {
+export async function adminMe(): Promise<{ admin: boolean; root?: boolean; email?: string; userId?: string } | null> {
   if (!hasServerSession()) return null;
-  return call<{ admin: boolean; email?: string }>("/api/admin/me");
+  // Audit M-26: the server returns `{admin, root, userId, email}` but the
+  // client type omitted `root`, so the admin console read
+  // `(me as {root?: boolean}).root` — always undefined, always false. The
+  // root-only affordances (promote/demote admin, the audit log) were
+  // therefore hidden from a legitimate root admin.
+  return call<{ admin: boolean; root?: boolean; email?: string; userId?: string }>("/api/admin/me");
 }
 
 export async function listAdminReports(status: "open" | "resolved" | "dismissed" | "all" = "open"): Promise<AdminReport[] | null> {
@@ -843,9 +869,9 @@ export async function listServerEvents(): Promise<ServerEvent[] | null> {
   } catch { return null; }
 }
 
-export async function rsvpEvent(eventId: string): Promise<boolean> {
+export async function rsvpEvent(eventId: string): Promise<MutationResult> {
   const out = await callOrError(`/api/events/${encodeURIComponent(eventId)}/rsvp`, { method: "POST" });
-  return out.error === null;
+  return mutation(out);
 }
 
 export interface ServerStory { id: string; partnerName: string; story: string; photoUrl: string; createdAt: string }
@@ -879,9 +905,9 @@ export async function validateCoupon(code: string): Promise<{ code: string; perc
   return out ?? null;
 }
 
-export async function markMessagesRead(channelId: string): Promise<boolean> {
+export async function markMessagesRead(channelId: string): Promise<MutationResult> {
   const out = await callOrError(`/api/channels/${encodeURIComponent(channelId)}/read`, { method: "POST" });
-  return out.error === null;
+  return mutation(out);
 }
 
 // ---------------------------------------------------------------------------
@@ -902,14 +928,14 @@ export async function listNotifications(unreadOnly = false): Promise<{ notificat
   return call(`/api/notifications${unreadOnly ? "?unread=1" : ""}`);
 }
 
-export async function markNotificationRead(id: string): Promise<boolean> {
+export async function markNotificationRead(id: string): Promise<MutationResult> {
   const out = await callOrError(`/api/notifications/${encodeURIComponent(id)}/read`, { method: "POST" });
-  return out.error === null;
+  return mutation(out);
 }
 
-export async function markAllNotificationsRead(): Promise<boolean> {
+export async function markAllNotificationsRead(): Promise<MutationResult> {
   const out = await callOrError("/api/notifications/read-all", { method: "POST" });
-  return out.error === null;
+  return mutation(out);
 }
 
 // ---------------------------------------------------------------------------
@@ -1096,10 +1122,20 @@ export type KundaliReportResult =
   | { ok: true; report: KundaliReport; alreadyOwned: boolean }
   | { ok: false; error: string; purchaseRequired: boolean };
 
-/** Fetch (or first-generate) the detailed report for a profile pair. 402 means
- *  the buyer must purchase the `kundali-report` SKU first. */
+/** Fetch (or first-purchase + generate) the detailed report for a profile
+ *  pair. 402 means the buyer must purchase the `kundali-report` SKU first.
+ *
+ *  Audit M-31: this used to be a GET, but the server route it called
+ *  GENERATED the report and consumed a paid credit — a side effect on a safe
+ *  method, which a cross-site `<img>` tag could trigger because the session
+ *  cookie is SameSite=None in production. The generation now happens on the
+ *  POST route (which the CSRF guard covers); the GET route is read-only.
+ */
 export async function getKundaliReport(profileId: string): Promise<KundaliReportResult> {
-  const out = await callOrError<{ report: KundaliReport; alreadyOwned: boolean }>(`/api/kundali/report/${encodeURIComponent(profileId)}`);
+  const out = await callOrError<{ report: KundaliReport; alreadyOwned: boolean }>(
+    "/api/kundali/report",
+    { method: "POST", body: JSON.stringify({ profileId }) }
+  );
   if (out.error) {
     return { ok: false, error: out.error, purchaseRequired: out.status === 402 };
   }

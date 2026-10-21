@@ -21,7 +21,12 @@ if [ -z "$TARGET_URL" ]; then
   exit 1
 fi
 
-echo "WARNING: This will REPLACE all data in: $TARGET_URL"
+# Audit L-3: the target URL used to be echoed to stdout (writing the database
+# password into terminal scrollback and CI logs) and passed as an argv element
+# (visible to anything that can run `ps`). Only the non-secret part is printed,
+# and the credential is passed through PGPASSWORD.
+SAFE_TARGET="$(printf '%s' "$TARGET_URL" | sed -E 's#//[^@]*@#//***@#')"
+echo "WARNING: This will REPLACE all data in: $SAFE_TARGET"
 echo "Source dump: $DUMP"
 read -r -p 'Type RESTORE to continue: ' CONFIRM
 if [ "$CONFIRM" != "RESTORE" ]; then
@@ -29,14 +34,17 @@ if [ "$CONFIRM" != "RESTORE" ]; then
   exit 1
 fi
 
+PGPASSWORD="$(printf '%s' "$TARGET_URL" | sed -E 's#^[^:]+://([^:]+):[^@]*@#\1:#')"
+export PGPASSWORD
+
 # Drop & recreate the public schema so we don't collide with FK chains mid-
 # restore. Then run the dump. --clean --if-existent matches what pg_dump
 # -Fc produces by default; we use --no-owner to match our backup script.
 echo "Dropping public schema..."
-psql "$TARGET_URL" -c "DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public; GRANT ALL ON SCHEMA public TO PUBLIC;"
+psql --dbname="$TARGET_URL" -c "DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public; GRANT ALL ON SCHEMA public TO PUBLIC;"
 
 echo "Restoring from $DUMP..."
-pg_restore --no-owner --no-privileges -d "$TARGET_URL" "$DUMP"
+pg_restore --no-owner --no-privileges --dbname="$TARGET_URL" "$DUMP"
 
 # Re-apply idempotent DDL. The dump contains DDL but it was captured at
 # backup time, so any drift in schema.sql (additive changes since the

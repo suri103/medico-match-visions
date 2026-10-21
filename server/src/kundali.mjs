@@ -80,6 +80,8 @@ export function computeKundaliMilan(personA, personB) {
   const nakshatraB = cleanStr(personB.nakshatra) || "Uttara Phalguni";
   const manglikA = personA.manglik || "Non-Manglik";
   const manglikB = personB.manglik || "Non-Manglik";
+  void manglikA;
+  void manglikB;
 
   const varnaScore = 1;
   const vashyaScore = rashiA === rashiB ? 2 : 1.5;

@@ -60,9 +60,40 @@ export const ReportProfileModal: React.FC<ReportProfileModalProps> = ({
 
     setIsSubmitting(true);
 
+    // Audit H-2: the server call's result used to be DISCARDED — the API
+    // client resolved `false` on every failure and the `catch` was dead
+    // code — so a 401/403/429/500 (or "no server configured") still wrote a
+    // local row and toasted "Our compliance team will review this case within
+    // 24 hours". A safety report was silently lost while the member was told
+    // it had been filed.
+    //
+    // Now the mutation is verified BEFORE anything is written locally or
+    // claimed to the member.
+    let reported = true;
     try {
-      await reportProfile(doctor.id, selectedReason, details.trim());
-    } catch { /* ignore */ }
+      const res = await reportProfile(doctor.id, selectedReason, details.trim());
+      reported = res.ok;
+      if (!reported) {
+        setIsSubmitting(false);
+        toast({
+          title: "Report not sent",
+          description:
+            res.error ||
+            "We could not reach the moderation service. Your report was NOT filed — please try again.",
+          variant: "destructive",
+        });
+        return;
+      }
+    } catch {
+      setIsSubmitting(false);
+      toast({
+        title: "Report not sent",
+        description:
+          "We could not reach the moderation service. Your report was NOT filed — please try again.",
+        variant: "destructive",
+      });
+      return;
+    }
 
     try {
       const raw = localStorage.getItem('mm:reports');

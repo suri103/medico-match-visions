@@ -137,7 +137,7 @@ export const useAuth = () => {
     // Always refresh the CSRF token on app boot — it survives the cookie's
     // 12h lifetime but may have been rotated by a prior tab's sign-out.
     void fetchCsrfToken();
-    serverMe().then((me) => {
+    void serverMe().then((me) => {
       if (!me.valid) {
         // The server rejected our cookie — that is a session end exactly like
         // sign-out, so the previous member's local state must go too (audit H6).

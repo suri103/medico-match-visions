@@ -17,5 +17,20 @@ Disallow: /matches
 Disallow: /messages
 Disallow: /account
 Disallow: /admin
+Disallow: /favorites
+Disallow: /saved-matches
+Disallow: /my-interests
+Disallow: /interested-in-you
+Disallow: /video-dates
+Disallow: /video-match
+Disallow: /online
+Disallow: /profile
+Disallow: /profile/edit
+Disallow: /onboarding
+Disallow: /delete-account
+# Member profile pages are behind ProtectedRoute; crawling them only ever
+# produces a redirect to /sign-in (a soft 404) while burning crawl budget on
+# the member-id space (audit L-7).
+Disallow: /doctor/
 
 Sitemap: https://medicomatch.in/sitemap.xml

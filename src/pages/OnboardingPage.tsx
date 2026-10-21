@@ -191,7 +191,7 @@ const OnboardingPage = () => {
         title: 'Profile saved',
         description: `You are ${completeness.percent}% complete. You can refine everything from My Profile.`,
       });
-      navigate('/profile');
+      void navigate('/profile');
       return;
     }
     if (skipped) {

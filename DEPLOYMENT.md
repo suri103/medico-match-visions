@@ -4,10 +4,23 @@
 
 - **Frontend**: React + TS + Vite SPA (`npm run build` -> `dist/`). Static
   hosting (Netlify/Vercel/Cloudflare). SPA deep links are handled by the host
-  config: `vercel.json` rewrites everything to `/index.html`, and
+  config: `vercel.json` rewrites everything to `/index.html`,
   `wrangler.jsonc` sets `not_found_handling: single-page-application` for
-  Cloudflare. Build with the production `VITE_*` values baked in — a `dist/`
-  built against a local `.env` ships an API base of `localhost`.
+  Cloudflare, and `public/_redirects` covers Netlify. Build with the production
+  `VITE_*` values baked in — a `dist/` built against a local `.env` ships an API
+  base of `localhost`.
+  - **Requires npm >= 11** (`packageManager` is pinned to `npm@11.21.1`).
+    npm 10.x crashes with an arborist peer-resolution error on the
+    `vite >= 8.2.4` dependency graph.
+  - `vite.config.ts` pins `NODE_ENV=production` for `vite build` and strips
+    `VITE_DEV_SKIP_AUTH` from production bundles, so a developer's local
+    `.env` can never enable the demo auth bypass in a shipped artifact.
+  - `npm run build` also runs `postbuild`, which regenerates `dist/_headers`
+    (CSP `connect-src` + `report-uri` from `VITE_API_BASE_URL`, plus
+    `Cache-Control` rules) and then runs `scripts/verify-prod-build.mjs`. That
+    verifier **fails the build** if the bundle contains the demo sign-in UI,
+    the dev-auth crash guard, published source maps, a bare-scheme CSP
+    wildcard, or a missing SPA fallback.
 - **Backend**: single Express process (`server/`) - auth, Razor orders,
   payment verification, single-use entitlement tokens, GST invoices.
   **Persistence lives in Postgres** (`DATABASE_URL`): profiles, quotas,
@@ -30,7 +43,7 @@
 | --- | --- | --- |
 | `VITE_API_BASE_URL` | prod: yes | Backend origin, e.g. `https://api.medicomatch.in` |
 | `VITE_RAZORPAY_KEY_ID` | prod: yes | Razorpay publishable key (safe in bundle) |
-| `VITE_DEV_SKIP_AUTH` | no | Dev-only; `import.meta.env.DEV` eliminates it from prod builds |
+| `VITE_DEV_SKIP_AUTH` | no | Dev-only. `vite.config.ts` strips it from production bundles, so it can never reach a shipped artifact. Set it only in a local `.env` for development. |
 | `VITE_SUPPORT_EMAIL` | no | Support inbox on the Help page |
 | `VITE_ASTROLOGY_ENABLED` | no | `true` to ship the astrology consultation UI (`/astrology`); off by default |
 
@@ -57,6 +70,9 @@
 | `TRUST_PROXY_HOPS` | no | Number of proxies in front of the API (default **1**). `req.ip` is the rate-limit bucket key — raise this only when you actually add another proxy hop, never to `true` |
 | `BROWSE_DAILY_MAX` | no | Daily profile-row budget (default 1000) |
 | `ADMIN_FLAG_TTL_MS` | no | Admin flag cache TTL ms (default 30000). Change the roster via the admin API, not raw SQL (M-5) |
+| `MAX_GLOBAL_SSE_CONNECTIONS` | no | Instance-wide cap on concurrent SSE streams (default 5000). Guards against FD/memory exhaustion. |
+| `TOKEN_RETENTION_DAYS` | no | How long redeemed/used token hashes are kept in Postgres (default 90). |
+| `PGSSLMODE` | no | `no-verify` disables Postgres certificate validation (transport encryption only, no server authentication). Leave unset in production. |
 | `REQUIRE_VERIFIED_INTERACT` | no | `true` hard-gates member interactions on verified email (403 `email_unverified`); default `false` (H-2) |
 | `DISABLE_POW` / `DISABLE_DIGEST` | no | Test-only; production boot refuses to start if set |
 | `PORT` | no | Default 3001 |
@@ -83,14 +99,18 @@
 
 1. **Supabase (once)**: create the project → run `supabase/storage-profile-photos.sql`
    in the SQL Editor (creates the public `profile-photos` bucket, 2 MB image
-   limit) → copy the **pooler URI** (port 6543, Settings → Database) and the
+   limit) → copy the **session pooler URI** (port **5432**, Settings → Database;
+   NOT the transaction pooler on 6543 — see the `DATABASE_URL` row above) and the
    `SUPABASE_URL` + `SUPABASE_SERVICE_KEY` (service-role, server side only).
 2. **Railway (backend)**: new service from `server/` (Dockerfile + `railway.json`
    already in the repo; single instance — `numReplicas: 1`, health probe
-   `GET /health`). Paste `server/.env.production.example` into the service's
+   `GET /readyz` — the READINESS endpoint, which stays 503 until the boot
+   migration has applied and a `SELECT 1` against Postgres succeeds, so a
+   still-migrating container is never routed traffic). Paste
+   `server/.env.production.example` into the service's
    Variables tab and fill in the secrets. The first boot runs `schema.sql`
    automatically (advisory-locked migration). `PORT` is injected by Railway;
-   the code honors it (`server/src/index.mjs:70`).
+   the code honors it (`server/src/index.mjs:115`).
 3. **Vercel (frontend)**: import the repo root, build `npm run build` →
    output `dist/`, paste `.env.production.example` into the Vercel
    Environment Variables for Production. Set the backend domain into

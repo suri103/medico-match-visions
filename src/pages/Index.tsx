@@ -9,6 +9,7 @@ import {
   Stethoscope, ChevronRight
 } from 'lucide-react';
 import { hasCreatedProfile } from '@/lib/profile';
+import { localAvatar } from '@/lib/avatar';
 import Header from '@/components/Header';
 import { useAuth } from '@/hooks/useAuth';
 import { toast } from '@/hooks/use-toast';
@@ -42,7 +43,13 @@ const CITIES = [
   "Ahmedabad"
 ];
 
-const DEMO_DOCTORS = [
+// Audit L-10: the demo avatars point at randomuser.me, a THIRD-PARTY image
+// CDN — serving one leaks the visitor's IP address to that CDN. The demo
+// login cards are already gated by `demoModeEnabled` at the render site, but
+// this module-level constant was still emitted into the production bundle
+// (the URL strings survived the dead-code elimination). Gating the constant
+// itself removes the third-party reference from a shipped artifact.
+const DEMO_DOCTORS = demoModeEnabled ? [
   {
     name: "Dr. Aditya Sharma",
     email: "dr.aditya@demo.medicomatch.in",
@@ -55,7 +62,7 @@ const DEMO_DOCTORS = [
     role: "Neurologist · Delhi",
     avatar: "https://randomuser.me/api/portraits/women/44.jpg",
   },
-];
+] : [];
 
 const Index = () => {
   const navigate = useNavigate();
@@ -75,6 +82,35 @@ const Index = () => {
   const [loginPassword, setLoginPassword] = useState('');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [showHeroPassword, setShowHeroPassword] = useState(false);
+
+  // Audit L-10: the landing page used to render three INVENTED testimonials
+  // ("Dr. Sarah J.", "Dr. Michael R.", "Dr. Priya T." with quotes about
+  // finding love) as if they were real members — on a trust-sensitive
+  // matrimonial platform, that is a false claim to a prospective member. The
+  // avatars were also hot-linked from randomuser.me, which leaks every
+  // visitor's IP address to a third party (the exact thing
+  // src/lib/avatar.ts exists to avoid).
+  //
+  // The section now renders the REAL approved success stories from the
+  // backend (`GET /api/stories` returns approved rows only) with local
+  // avatars, and shows an honest invitation when there are none yet.
+  const [successStories, setSuccessStories] = useState<
+    Array<{ id: string; partnerName: string; story: string; photoUrl: string }>
+  >([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { listServerStories } = await import('@/services/api');
+        const rows = await listServerStories();
+        if (!cancelled && Array.isArray(rows)) setSuccessStories(rows.slice(0, 3));
+      } catch {
+        /* offline: the honest empty state stands */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     const onStorage = () => setHasProfile(hasCreatedProfile());
@@ -104,7 +140,7 @@ const Index = () => {
     if (criteria.specialties) params.set('spec', criteria.specialties.join(','));
     if (criteria.city) params.set('city', criteria.city);
     const qs = params.toString();
-    navigate(qs ? `/matches?${qs}` : '/matches', { state: { search: criteria } });
+    void navigate(qs ? `/matches?${qs}` : '/matches', { state: { search: criteria } });
   };
 
   const handleHeroLogin = async (e: React.FormEvent) => {
@@ -143,7 +179,7 @@ const Index = () => {
           title: `Welcome back, Dr. ${name}! 🩺`,
           description: "Signed in successfully. Redirecting to matches...",
         });
-        navigate('/matches');
+        void navigate('/matches');
         return;
       }
       if (res.status === 401) {
@@ -181,7 +217,7 @@ const Index = () => {
           title: "Signed In Successfully 🩺",
           description: "Welcome to MedicoMatch. Redirecting to matches...",
         });
-        navigate('/matches');
+        void navigate('/matches');
       }, 500);
       return;
     }
@@ -214,12 +250,12 @@ const Index = () => {
         title: `Logged in as ${doc.name} 🩺`,
         description: "Loaded doctor profile and matches.",
       });
-      navigate('/matches');
+      void navigate('/matches');
     }, 300);
   };
 
   const goMatches = () => {
-    navigate('/matches');
+    void navigate('/matches');
   };
 
   return (
@@ -616,56 +652,41 @@ const Index = () => {
           </div>
 
           <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-8">
-            <div className="bg-gray-50 rounded-xl p-6 border border-gray-100">
-              <div className="flex items-center mb-4">
-                <img
-                  src="https://randomuser.me/api/portraits/women/45.jpg"
-                  alt="Dr. Sarah"
-                  className="w-14 h-14 rounded-full mr-4"
-                />
-                <div>
-                  <h4 className="font-bold text-mediblue-800">Dr. Sarah J.</h4>
-                  <p className="text-sm text-gray-500">Neurologist</p>
+            {/* Audit L-10: REAL approved success stories only. The previous
+                three cards were invented testimonials presented as members. */}
+            {successStories.length > 0 ? (
+              successStories.map((story) => (
+                <div key={story.id} className="bg-gray-50 rounded-xl p-6 border border-gray-100">
+                  <div className="flex items-center mb-4">
+                    <img
+                      src={localAvatar(story.partnerName)}
+                      alt={story.partnerName}
+                      className="w-14 h-14 rounded-full mr-4"
+                    />
+                    <div>
+                      <h4 className="font-bold text-mediblue-800">{story.partnerName}</h4>
+                      <p className="text-sm text-gray-500">MedicoMatch member</p>
+                    </div>
+                  </div>
+                  <p className="text-gray-600 italic">&quot;{story.story}&quot;</p>
                 </div>
+              ))
+            ) : (
+              <div className="md:col-span-2 lg:col-span-3 bg-gray-50 rounded-xl p-10 border border-gray-100 text-center">
+                <h4 className="font-bold text-mediblue-800 mb-2">Be the first to share your story</h4>
+                <p className="text-gray-600 max-w-xl mx-auto">
+                  Every success story on this page is a real, verified member who chose to
+                  share theirs. There are none published yet — yours could be the first.
+                </p>
+                <Button
+                  variant="outline"
+                  className="mt-6 text-mediblue-600 border-mediblue-300 hover:bg-mediblue-50"
+                  onClick={() => navigate('/success-stories')}
+                >
+                  Share your story <ArrowRight className="ml-2 h-4 w-4" />
+                </Button>
               </div>
-              <p className="text-gray-600 italic">
-                "As a busy neurologist, I never had time to date. MedicoMatch connected me with someone who truly understands my schedule and passion for medicine."
-              </p>
-            </div>
-
-            <div className="bg-gray-50 rounded-xl p-6 border border-gray-100">
-              <div className="flex items-center mb-4">
-                <img
-                  src="https://randomuser.me/api/portraits/men/32.jpg"
-                  alt="Dr. Michael"
-                  className="w-14 h-14 rounded-full mr-4"
-                />
-                <div>
-                  <h4 className="font-bold text-mediblue-800">Dr. Michael R.</h4>
-                  <p className="text-sm text-gray-500">Cardiologist</p>
-                </div>
-              </div>
-              <p className="text-gray-600 italic">
-                "The video dating feature was a game-changer. I could connect with matches during my breaks without leaving the hospital."
-              </p>
-            </div>
-
-            <div className="bg-gray-50 rounded-xl p-6 border border-gray-100">
-              <div className="flex items-center mb-4">
-                <img
-                  src="https://randomuser.me/api/portraits/women/68.jpg"
-                  alt="Dr. Priya"
-                  className="w-14 h-14 rounded-full mr-4"
-                />
-                <div>
-                  <h4 className="font-bold text-mediblue-800">Dr. Priya T.</h4>
-                  <p className="text-sm text-gray-500">Pediatrician</p>
-                </div>
-              </div>
-              <p className="text-gray-600 italic">
-                "MedicoMatch made it easy to connect with a fellow doctor who understands unpredictable hospital shifts and patient duties. Now happily married!"
-              </p>
-            </div>
+            )}
           </div>
 
           <div className="text-center mt-12">

@@ -137,7 +137,7 @@ async function viewerContext(viewerId) {
 export async function browseProfiles({
   viewerId, city, specialty, q, minAge, maxAge, verifiedOnly,
   religion, caste, motherTongue, gotra, orientation, ethnicity, minGunas,
-  familyType, familyStatus, incomeBand, diet, boostedFirst = true,
+  familyType, familyStatus, incomeBand, diet,
   limit = 60, offset = 0,
 }) {
   // Sample profiles are fake members inserted only so the UI is never empty
@@ -602,6 +602,39 @@ export async function getQuotaSummary(userId, client = null) {
 // Interests (proposals). Server-enforced quota + DB-unique live pair.
 // ---------------------------------------------------------------------------
 
+/**
+ * Run `fn` inside a SAVEPOINT so that a failure inside it rolls back ONLY
+ * that work, never the enclosing transaction.
+ *
+ * Audit H-1: the "best-effort" notification INSERT used to run on the
+ * transaction client inside a plain try/catch. In PostgreSQL ANY error inside
+ * an open transaction ABORTS it; the swallowed catch let execution reach
+ * withTx's COMMIT, which PostgreSQL converts into a ROLLBACK. The interest
+ * INSERT and the quota consumption were therefore silently discarded while
+ * the API still answered 201 — and in respondToInterest the status update and
+ * the chat channel row rolled back while the SPA unlocked the chat.
+ *
+ * @param {any} c  the transaction client
+ * @param {string} name  a static identifier fragment (never user input)
+ * @param {() => Promise<any>} fn
+ */
+async function inSavepoint(c, name, fn) {
+  const sp = `sp_${name}`;
+  await c.query(`SAVEPOINT ${sp}`);
+  try {
+    const out = await fn();
+    await c.query(`RELEASE SAVEPOINT ${sp}`);
+    return out;
+  } catch (err) {
+    try {
+      await c.query(`ROLLBACK TO SAVEPOINT ${sp}`);
+    } catch {
+      /* the connection is already broken — the transaction is doomed anyway */
+    }
+    throw err;
+  }
+}
+
 export async function sendInterest(senderId, recipientProfileId, note) {
   return withTx(async (c) => {
     // Recipient PROFILE -> owning USER. Sample profiles have no owner and
@@ -683,23 +716,32 @@ export async function sendInterest(senderId, recipientProfileId, note) {
       };
     }
     // Realtime nudge + durable notification for the recipient.
+    // Audit H-1: the notification INSERT now runs inside a SAVEPOINT so a
+    // failure rolls back ONLY the notification — never the interest + quota
+    // change that share this transaction. The realtime publish happens after
+    // the savepoint so a publish failure cannot undo the durable row.
+    let senderProfile = null;
+    let senderName = "Someone";
     try {
       const senderProf = await c.query(
         `SELECT id, full_name FROM profiles WHERE user_id = $1`, [senderId]
       );
-      const rawName = senderProf.rows[0]?.full_name || "Someone";
-      const senderName = rawName.startsWith("Dr. ") || rawName === "Someone" ? rawName : `Dr. ${rawName}`;
-      await c.query(
-        `INSERT INTO notifications (user_id, type, title, body)
-         VALUES ($1,'interest_received','New interest',$2)`,
-        [recipient, `${senderName} showed interest in your profile.`]
+      senderProfile = senderProf.rows[0] || null;
+      const rawName = senderProfile?.full_name || "Someone";
+      senderName = rawName.startsWith("Dr. ") || rawName === "Someone" ? rawName : `Dr. ${rawName}`;
+      await inSavepoint(c, "interest_notify", () =>
+        c.query(
+          `INSERT INTO notifications (user_id, type, title, body)
+           VALUES ($1,'interest_received','New interest',$2)`,
+          [recipient, `${senderName} showed interest in your profile.`]
+        )
       );
-      safePublish(recipient, "interest_received", {
-        interestId: ins.rows[0]?.id ?? null,
-        fromProfile: senderProf.rows[0] ? { id: senderProf.rows[0].id, name: senderProf.rows[0].full_name } : null,
-        quota,
-      });
-    } catch { /* notification is best-effort */ }
+    } catch { /* notification is best-effort — the interest itself is committed */ }
+    safePublish(recipient, "interest_received", {
+      interestId: ins.rows[0]?.id ?? null,
+      fromProfile: senderProfile ? { id: senderProfile.id, name: senderProfile.full_name } : null,
+      quota,
+    });
 
     return {
       interestId: ins.rows[0]?.id ?? null,
@@ -710,6 +752,15 @@ export async function sendInterest(senderId, recipientProfileId, note) {
 }
 
 export async function respondToInterest(userId, interestId, action) {
+  // Audit M-29: the domain layer had NO allow-list, so any action that was
+  // not exactly "accept" silently became a DECLINE — a terminal, user-visible
+  // state transition on a wrong input, with no 400. The HTTP route validates
+  // the action today, but the domain function is exported and must not
+  // depend on its caller to be correct.
+  const allowed = new Set(["accept", "decline"]);
+  if (!allowed.has(action)) {
+    throw Object.assign(new Error("action must be accept or decline."), { status: 400 });
+  }
   const nextStatus = action === "accept" ? "accepted" : "declined";
   return withTx(async (c) => {
     const cur = await c.query(
@@ -730,22 +781,26 @@ export async function respondToInterest(userId, interestId, action) {
       await c.query(`INSERT INTO channels (user_a, user_b) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [a, b]);
     }
     // Realtime: tell the sender their proposal was answered (and chat unlocked).
+    // Audit H-1: SAVEPOINT around the notification so a failure cannot abort
+    // the transaction that holds the status change and the chat channel row.
     try {
-      await c.query(
-        `INSERT INTO notifications (user_id, type, title, body)
-         VALUES ($1,'interest_responded',$2,$3)`,
-        [
-          row.sender_id,
-          nextStatus === "accepted" ? "It's a match!" : "Interest declined",
-          nextStatus === "accepted"
-            ? "They said yes — chat is now unlocked."
-            : "They chose not to proceed. Wishing you the best.",
-        ]
+      await inSavepoint(c, "interest_responded_notify", () =>
+        c.query(
+          `INSERT INTO notifications (user_id, type, title, body)
+           VALUES ($1,'interest_responded',$2,$3)`,
+          [
+            row.sender_id,
+            nextStatus === "accepted" ? "It's a match!" : "Interest declined",
+            nextStatus === "accepted"
+              ? "They said yes — chat is now unlocked."
+              : "They chose not to proceed. Wishing you the best.",
+          ]
+        )
       );
-      safePublish(row.sender_id, "interest_responded", {
-        interestId, status: nextStatus, byUserId: userId,
-      });
     } catch { /* best-effort */ }
+    safePublish(row.sender_id, "interest_responded", {
+      interestId, status: nextStatus, byUserId: userId,
+    });
     return { status: nextStatus };
   });
 }
@@ -775,6 +830,28 @@ function interestRow(r) {
       id: r.profile_id, name: r.full_name, imageUrl: r.photo_url,
       specialty: r.specialty, city: r.city, age: r.age,
       ownerUserId: r.other_user_id,
+    },
+  };
+}
+
+// Audit M-25: server-enforced "See Who Liked You" privacy gate.
+// Non-premium recipients only receive teaser data (specialty, city, general age)
+// without identifiable name, photo, note, or real profile/user IDs.
+function redactedInterestRow(r) {
+  return {
+    id: r.id,
+    status: r.status,
+    note: null,
+    createdAt: r.created_at,
+    profile: {
+      id: `locked-${r.id}`,
+      name: 'Verified Doctor',
+      imageUrl: null,
+      specialty: r.specialty || 'Doctor',
+      city: r.city || '',
+      age: r.age || null,
+      ownerUserId: null,
+      isBlurred: true,
     },
   };
 }
@@ -810,7 +887,14 @@ export async function listMyInterests(userId) {
      WHERE i.recipient_id = $1 AND i.status = 'accepted'`,
     [userId]
   );
-  return { sent: sent.rows.map(interestRow), received: received.rows.map(interestRow), matched: matched.rows.map(interestRow) };
+  const activePlan = await getActiveMembership(userId);
+  const canSeeWhoLikedYou = Boolean(activePlan && activePlan.rank >= 1);
+
+  return {
+    sent: sent.rows.map(interestRow),
+    received: received.rows.map((r) => (canSeeWhoLikedYou ? interestRow(r) : redactedInterestRow(r))),
+    matched: matched.rows.map(interestRow),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1251,8 +1335,11 @@ export async function getOrder(orderId, userId = null) {
  * create-order time. When the order row has no user_id (anonymous
  * create-order / cookie-less redirect), it backfills the durable order row
  * so the captured payment can be reconciled to the right account (audit M-14).
+ *
+ * `notesSku` is the sku echoed into the same notes. It is the server-set
+ * fallback used when the `payment_orders` row is missing entirely (audit C-2).
  */
-export async function recordCapturedPayment({ paymentId, orderId, userId, sku, amountPaise, source, notesUserId }) {
+export async function recordCapturedPayment({ paymentId, orderId, userId, sku, amountPaise, source, notesUserId, notesSku }) {
   return withTx(async (c) => {
     const gate = await c.query(
       `INSERT INTO webhook_events (event_id, event_type) VALUES ($1,$2) ON CONFLICT DO NOTHING`,
@@ -1281,19 +1368,75 @@ export async function recordCapturedPayment({ paymentId, orderId, userId, sku, a
         await c.query(`UPDATE payment_orders SET status='paid' WHERE order_id=$1 AND status='created'`, [orderId]);
       }
     }
-    const effectiveUser = order?.user_id ?? userId ?? null;
-    const effectiveSku = order?.sku ?? sku ?? null;
+    let effectiveUser = order?.user_id ?? userId ?? null;
+    let effectiveSku = order?.sku ?? sku ?? null;
     const effectiveAmount = (typeof amountPaise === "number" && amountPaise >= 0)
       ? amountPaise
       : (order?.amount_paise ?? 0);
     const effectiveSource = (source === "redeem" ? "verify" : source) || "verify";
+
+    // -----------------------------------------------------------------------
+    // Audit C-2 — a captured payment must NEVER be reported as "applied"
+    // unless the entitlement it paid for was actually granted.
+    //
+    // The old code skipped the grant block when `effectiveUser` or
+    // `effectiveSku` was missing but still returned `{result:"applied"}`, and
+    // the `webhook_events` idempotency gate above had already committed. Every
+    // redelivery of the same `payment.captured` therefore returned
+    // `{result:"duplicate"}` and never granted — the customer was charged
+    // with no plan and no recovery path.
+    //
+    // Two defences, in order:
+    //
+    //  1. RECONCILE — the sku and the user id are echoed into the Razorpay
+    //     order notes at create-order time (server-set, so a client cannot
+    //     spoof them). When the `payment_orders` row is missing — because the
+    //     create-order write failed, or because the webhook raced ahead of it
+    //     — the payment is re-attributed from those notes, and the order row
+    //     is rebuilt so the GST invoice can resolve the authoritative amount
+    //     and the admin payments list stays complete.
+    //
+    //  2. FAIL LOUD — if the payment still cannot be attributed to a plan and
+    //     an account, THROW. The transaction rolls back (including the
+    //     idempotency gate), the webhook answers 500, and Razorpay
+    //     redelivers the event once the data is repaired.
+    // -----------------------------------------------------------------------
+    if (!effectiveSku && notesSku) effectiveSku = notesSku;
+    if (!effectiveUser && notesUserId) effectiveUser = notesUserId;
+
+    if (orderId && !order && effectiveSku && effectiveUser) {
+      await c.query(
+        `INSERT INTO payment_orders (order_id, user_id, sku, amount_paise, status, simulated)
+         VALUES ($1,$2,$3,$4,'paid',FALSE)
+         ON CONFLICT (order_id) DO NOTHING`,
+        [orderId, effectiveUser, effectiveSku, effectiveAmount]
+      );
+      order = {
+        order_id: orderId,
+        user_id: effectiveUser,
+        sku: effectiveSku,
+        coupon_code: null,
+        amount_paise: effectiveAmount,
+      };
+    }
+
+    if (!effectiveSku || !effectiveUser) {
+      throw Object.assign(
+        new Error(
+          `Cannot attribute captured payment ${paymentId} (order ${orderId || "none"}): ` +
+            `sku=${effectiveSku || "MISSING"} user=${effectiveUser || "MISSING"}. ` +
+            `No entitlement was granted; the payment must be re-delivered.`
+        ),
+        { status: 500 }
+      );
+    }
 
     await c.query(
       `INSERT INTO payment_transactions (payment_id, order_id, user_id, sku, amount_paise, status, source)
        VALUES ($1,$2,$3,$4,$5,'captured',$6) ON CONFLICT DO NOTHING`,
       [paymentId, orderId ?? null, effectiveUser, effectiveSku, effectiveAmount, effectiveSource]
     );
-    if (effectiveUser && effectiveSku) {
+    {
       // Grant for EVERY paid sku — memberships AND consultations (audit C1:
       // astrologer-* payments were excluded here, so buyers of the actively
       // sold consultation could never book — createConsultation requires an
@@ -1360,6 +1503,17 @@ export async function recordCapturedPayment({ paymentId, orderId, userId, sku, a
         );
       }
     }
+    // Audit H-15: the global coupon pool counter advances HERE, inside the
+    // payment-idempotent transaction, so it moves exactly once per captured
+    // payment. It used to be ticked by a separate consumeCoupon() call whose
+    // null result every call site discarded — which meant the pool
+    // under-counted while users took N discounted orders.
+    if (order?.coupon_code) {
+      await c.query(
+        `UPDATE coupons SET used = used + 1 WHERE code = $1 AND used < max_uses`,
+        [order.coupon_code]
+      );
+    }
     return { result: "applied", userId: effectiveUser, sku: effectiveSku, couponCode: order?.coupon_code ?? null };
   });
 }
@@ -1397,7 +1551,15 @@ export async function getActiveMembership(userId) {
     `SELECT p.sku, p.rank FROM subscriptions s JOIN plans p ON p.sku = s.sku
      WHERE s.user_id = $1 AND s.status IN ('active','canceling') AND s.current_period_end > NOW()
        AND p.kind = 'membership'
-     ORDER BY p.rank DESC LIMIT 1`,
+     -- Audit M-11: deterministic tie-break. premium and premium-annual share
+     -- rank 1, so ordering by rank alone left it to Postgres which of the
+     -- two equal-rank subscriptions was returned — and therefore which plan
+     -- the member was shown as having. The ANNUAL plan wins, because it is
+     -- the strictly better entitlement.
+     ORDER BY p.rank DESC,
+              (CASE WHEN s.sku LIKE '%-annual' THEN 365 ELSE 30 END) DESC,
+              s.current_period_end DESC
+     LIMIT 1`,
     [userId]
   );
   return res.rows[0] ?? null;
@@ -2116,7 +2278,7 @@ export async function setSamplesHidden(adminId, hidden) {
  * parallel) so one export never holds the whole pool (max 10) at once. */
 export async function exportMyData(userId) {
   const safe = (rows) => rows || [];
-  const q = async (text, params, limit = null) => safe((await query(text, params)).rows);
+  const q = async (text, params, _limit = null) => safe((await query(text, params)).rows);
   const profile = await q(`SELECT * FROM profiles WHERE user_id = $1`, [userId]);
   const interestsSent = await q(`SELECT id, recipient_id, status, note, created_at, responded_at FROM interests WHERE sender_id = $1 ORDER BY created_at DESC LIMIT 500`, [userId]);
   const interestsRecv = await q(`SELECT id, sender_id, status, note, created_at, responded_at FROM interests WHERE recipient_id = $1 ORDER BY created_at DESC LIMIT 500`, [userId]);
@@ -2135,6 +2297,21 @@ export async function exportMyData(userId) {
   const photos = await q(`SELECT url, is_primary, display_order, created_at FROM profile_photos WHERE profile_id IN (SELECT id FROM profiles WHERE user_id = $1) LIMIT 50`, [userId]);
   const appUserRows = await q(`SELECT id, email, first_name, last_name, verified, created_at FROM app_users WHERE id = $1`, [userId]);
   const appUser = appUserRows[0] || null;
+  // Audit H-10: the export omitted every table holding the requester's most
+  // sensitive records, so a member could NOT obtain a copy of their own
+  // identity documents, GST invoices, kundali reports, view history or
+  // contact purchases — a DPDP Act Sec. 11 / GDPR Art. 20 portability gap.
+  const verificationDocuments = await q(`SELECT id, doc_type, url, status, note, reviewed_at, created_at FROM verification_documents WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100`, [userId]);
+  const invoices = await q(`SELECT invoice_number, issued_at, sku, amount_paise, gst_paise, doctor_name, gstin, billing_address, payment_id FROM invoices WHERE user_id = $1 ORDER BY issued_at DESC LIMIT 200`, [userId]);
+  const kundaliReports = await q(`SELECT profile_id, report, created_at FROM kundali_reports WHERE buyer_id = $1 ORDER BY created_at DESC LIMIT 100`, [userId]);
+  const profileViews = await q(`SELECT pv.viewer_id, pv.profile_id, pv.viewed_on, pv.created_at FROM profile_views pv WHERE pv.profile_id IN (SELECT id FROM profiles WHERE user_id = $1) ORDER BY pv.created_at DESC LIMIT 500`, [userId]);
+  const contactViews = await q(`SELECT cv.profile_id, cv.created_at FROM contact_views cv WHERE cv.viewer_id = $1 ORDER BY cv.created_at DESC LIMIT 500`, [userId]);
+  const eventRsvps = await q(`SELECT event_id, created_at FROM event_rsvps WHERE user_id = $1 ORDER BY created_at DESC LIMIT 200`, [userId]);
+  const successStories = await q(`SELECT id, partner_name, story, photo_url, approved, created_at FROM success_stories WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100`, [userId]);
+  const paymentOrders = await q(`SELECT order_id, sku, amount_paise, status, coupon_code, simulated, created_at FROM payment_orders WHERE user_id = $1 ORDER BY created_at DESC LIMIT 200`, [userId]);
+  const couponRedemptions = await q(`SELECT code, redeemed_at FROM coupon_redemptions WHERE user_id = $1 ORDER BY redeemed_at DESC LIMIT 200`, [userId]);
+  const boosts = await q(`SELECT expires_at, created_at FROM profile_boosts WHERE user_id = $1 LIMIT 50`, [userId]);
+  const adminActionsOnAccount = await q(`SELECT action, target, details, created_at FROM admin_audit_log WHERE target = $1 ORDER BY created_at DESC LIMIT 200`, [userId]);
   return {
     exportedAt: new Date().toISOString(),
     requester: { id: userId },
@@ -2148,13 +2325,24 @@ export async function exportMyData(userId) {
     videoDates,
     subscriptions,
     paymentTransactions: transactions,
+    paymentOrders,
     refunds,
+    invoices,
+    couponRedemptions,
     notifications,
     reports,
     blocks,
     favorites,
     shortlists,
     photos,
+    verificationDocuments,
+    kundaliReports,
+    profileViews,
+    contactViews,
+    eventRsvps,
+    successStories,
+    profileBoosts: boosts,
+    adminActionsOnAccount,
   };
 }
 
@@ -2212,9 +2400,37 @@ export async function deleteMyAccount(userId) {
     // Drop social graph rows that reference the user (blocks, reports).
     await c.query(`DELETE FROM blocks WHERE blocker_id = $1 OR blocked_id = $1`, [userId]);
     await c.query(`DELETE FROM reports WHERE reporter_id = $1`, [userId]);
+    // Audit H-9: a report where the user was the REPORTED party survives
+    // (the moderation trail must be kept), but its free-text `details` is
+    // written by the reporter and can describe the reported member. Redact it
+    // so the retained moderation record carries no personal data.
+    await c.query(`UPDATE reports SET details = '[redacted]' WHERE reported_id = $1`, [userId]);
     await c.query(`DELETE FROM interests WHERE sender_id = $1 OR recipient_id = $1`, [userId]);
     await c.query(`DELETE FROM favorites WHERE user_id = $1`, [userId]);
     await c.query(`DELETE FROM shortlists WHERE user_id = $1`, [userId]);
+    // Audit H-9: the GST invoice row is RETAINED (statutory tax retention —
+    // the invoice number, amount and tax breakdown must stay auditable) but
+    // every personal identifier in it is erased: the full legal name, the
+    // GSTIN and the billing address. Previously the whole row survived
+    // verbatim, so a deleted member's name, tax id and street address were
+    // still readable and re-identifiable through `user_id`.
+    await c.query(
+      `UPDATE invoices
+          SET doctor_name = 'Deleted User',
+              gstin = NULL,
+              billing_address = NULL
+        WHERE user_id = $1`,
+      [userId]
+    );
+    // Audit H-9: the rate-limit buckets key on the raw email address
+    // (`email:<address>`), on the user id (`user:<id>`) and on the browse
+    // budget (`browse-daily:<id>:<date>`), so they are PII storage that
+    // outlived the account. Drop them.
+    await c.query(
+      `DELETE FROM rate_limit_buckets
+        WHERE bucket_key = $1 OR bucket_key = $2 OR bucket_key LIKE $3`,
+      [`email:${u.rows[0]?.email || ""}`, `user:${userId}`, `browse-daily:${userId}:%`]
+    );
     // Subscriptions: revoke access immediately, retain the row for billing audit.
     await c.query(
       `UPDATE subscriptions SET status = 'refunded', cancel_at_period_end = FALSE, credits_remaining = 0
@@ -2260,7 +2476,17 @@ export async function requestPhoneOtp(userId, phone) {
      ON CONFLICT (user_id) DO UPDATE SET phone=$2, code_hash=$3, expires_at=$4, attempts=0, created_at=NOW()`,
     [userId, clean, otpHash(code), expires]
   );
-  await query(`UPDATE app_users SET phone=$2 WHERE id=$1`, [userId, clean]);
+  // Audit H-8: replacing the phone number must INVALIDATE the verification
+  // that was earned for the PREVIOUS number. The old statement only wrote
+  // the new number, so `phone_verified` stayed TRUE and
+  // `GET /api/phone/status` reported an attacker-controlled number as
+  // verified — and `domain.reviewVerification` upgraded the trust badge on
+  // that stale flag. Possession must be proven for the number that is
+  // actually stored.
+  await query(
+    `UPDATE app_users SET phone=$2, phone_verified=FALSE, verification_level='unverified' WHERE id=$1`,
+    [userId, clean]
+  );
   // SMS provider hook: MSG91/Twilio procurement is a product call — until then
   // the code is emailed/logged in dev and returned in test mode only.
   return { expiresAt: expires, code };
@@ -2521,14 +2747,30 @@ export async function markRenewalNotified(userId, sku) {
 }
 
 /** P0-10: Spotlight boost grant + coupon validation. */
+/**
+ * The maximum total spotlight window a paid member can hold at once.
+ *
+ * PRODUCT DECISION (safe default): 30 days. Audit H-16: the ON CONFLICT
+ * branch ADDED the window on every call, so a premium member could call
+ * `/api/boost` 60 times in a minute (the per-user rate limit) and obtain a
+ * ~420-day boost — and repeat indefinitely — pinning their profile at the top
+ * of browse and daily matches for free. The perk is a 7-day window; this cap
+ * lets a member refresh it a few times over a month without turning it into
+ * an unbounded ranking advantage.
+ */
+const MAX_BOOST_DAYS = 30;
+
 export async function grantBoost(userId, days = 7) {
   const r = await query(
     `INSERT INTO profile_boosts (user_id, expires_at) VALUES ($1, NOW() + make_interval(days => $2::int))
-     ON CONFLICT (user_id) DO UPDATE SET expires_at = GREATEST(profile_boosts.expires_at, NOW()) + make_interval(days => $2::int)
+     ON CONFLICT (user_id) DO UPDATE SET expires_at = LEAST(
+       GREATEST(profile_boosts.expires_at, NOW()) + make_interval(days => $2::int),
+       NOW() + make_interval(days => $3::int)
+     )
      RETURNING expires_at`,
-    [userId, Math.min(Math.max(Number(days) || 7, 1), 30)]
+    [userId, Math.min(Math.max(Number(days) || 7, 1), 30), MAX_BOOST_DAYS]
   );
-  return { expiresAt: r.rows[0].expires_at };
+  return { expiresAt: r.rows[0].expires_at, maxDays: MAX_BOOST_DAYS };
 }
 
 export async function getBoost(userId) {
@@ -2541,6 +2783,30 @@ export async function getBoost(userId) {
 // the report is generated server-side from the SAME engine as the free
 // preview (computeKundaliMilan) so paid and free can never disagree.
 // ---------------------------------------------------------------------------
+/**
+ * READ-ONLY: return a kundali report the buyer already owns, or null.
+ *
+ * Audit M-31: the GET route used to call getKundaliReport(), which GENERATES
+ * the report and consumes a paid credit. A GET must never have side effects:
+ * with SameSite=None on the session cookie, a cross-site `<img>` tag could
+ * burn the victim's ₹499 credit without them ever seeing the report.
+ */
+export async function readKundaliReport(buyerId, profileId) {
+  const stored = await query(
+    `SELECT report, created_at FROM kundali_reports WHERE buyer_id = $1 AND profile_id = $2`,
+    [buyerId, profileId]
+  );
+  if (stored.rowCount === 0) return null;
+  const row = stored.rows[0];
+  const report = typeof row.report === "string" ? JSON.parse(row.report) : row.report;
+  return { report, createdAt: row.created_at, alreadyOwned: true };
+}
+
+/**
+ * Purchase (or re-read) a kundali match report for one (buyer, profile) pair.
+ * The first call consumes one credit; later calls return the stored report
+ * without consuming anything.
+ */
 export async function getKundaliReport(buyerId, profileId) {
   const target = await query(`SELECT id, user_id, profile_visibility, rashi, nakshatra, manglik, full_name FROM profiles WHERE id = $1`, [profileId]);
   const t = target.rows[0];
@@ -2595,6 +2861,24 @@ export async function getKundaliReport(buyerId, profileId) {
       });
     }
 
+    // Audit M-10: re-check the report AFTER the row lock. Two concurrent
+    // requests for the same (buyer, profile) both saw "not owned" in the
+    // pre-lock read, so the loser of the lock ran the ON CONFLICT no-op and
+    // decremented credits_remaining a second time — the buyer lost a credit
+    // for a report they already had. The lock is acquired above, so this
+    // second read is serialized against the first request's commit.
+    const storedAfterLock = await c.query(
+      `SELECT report, created_at FROM kundali_reports WHERE buyer_id = $1 AND profile_id = $2`,
+      [buyerId, profileId]
+    );
+    if (storedAfterLock.rowCount > 0) {
+      return {
+        report: storedAfterLock.rows[0].report,
+        createdAt: storedAfterLock.rows[0].created_at,
+        alreadyOwned: true,
+      };
+    }
+
     const me = await c.query(`SELECT rashi, nakshatra, manglik, full_name FROM profiles WHERE user_id = $1`, [buyerId]);
     const mine = me.rows[0] || {};
     const report = computeKundaliMilan(mine, t);
@@ -2632,11 +2916,10 @@ export async function validateCoupon(code, userId = null) {
   const row = r.rows[0];
   if (!row || row.used >= row.max_uses || (row.expires_at && new Date(row.expires_at).getTime() <= Date.now())) return null;
   // M-1 FIX: once-per-user coupons reject accounts that already redeemed.
-  // NOTE (audit M2, residual): this is a read, so N parallel create-order calls
-  // can all pass it. Closing that fully needs the redemption to be RESERVED at
-  // order time (and released if the order is abandoned) — a product decision
-  // this pass did not take. The global pool (`used < max_uses`) IS atomic, and
-  // consumeCoupon below now refuses to tick it twice for the same account.
+  // The authoritative once-per-user check is now the ATOMIC RESERVATION in
+  // reserveCoupon() below — this read only produces a friendlier early
+  // rejection; the reservation is what actually prevents parallel orders
+  // from all taking the same discount (audit H-15).
   if (userId && row.once_per_user) {
     const seen = await query(`SELECT 1 FROM coupon_redemptions WHERE code=$1 AND user_id=$2`, [c, userId]);
     if (seen.rowCount > 0) return null;
@@ -2644,26 +2927,78 @@ export async function validateCoupon(code, userId = null) {
   return { code: row.code, percentOff: Number(row.percent_off) };
 }
 
-export async function consumeCoupon(code, userId = null) {
+/**
+ * How long a coupon RESERVATION survives on an order that was never paid for.
+ *
+ * PRODUCT DECISION (safe default): 30 minutes. A member who abandons the
+ * Razorpay modal would otherwise hold their welcome coupon forever; after
+ * this window the reservation is released and they can start a new order. A
+ * PAID order holds its reservation permanently — that is the once-per-user
+ * guarantee.
+ */
+const COUPON_RESERVATION_TTL_MINUTES = 30;
+
+/**
+ * Reserve a once-per-user coupon for a new order. Returns true when the
+ * reservation was taken.
+ *
+ * Audit H-15: the per-user redemption ledger was only written at CAPTURE
+ * time, while the DISCOUNT was applied at ORDER time. N parallel
+ * create-order calls (60/min/user) all passed the `validateCoupon` READ and
+ * all created discounted orders; at capture only the first recorded the
+ * redemption — and every call site DISCARDED that null result — so the user
+ * received N discounted orders (each extending the membership window by 30
+ * days) while the global pool counter ticked exactly once.
+ *
+ * The reservation IS the INSERT (primary key `coupon_redemptions(code,
+ * user_id)`), so two concurrent orders race on the primary key and exactly
+ * one wins. The loser is rejected before a discounted order is created.
+ *
+ * A FRESH reservation is never released, so a concurrent order can never
+ * steal it. Only a STALE reservation on an order that was never paid for is
+ * released, which is what lets an abandoned checkout be retried.
+ */
+export async function reserveCoupon(code, userId) {
+  if (!code || !userId) return false;
   const c = String(code).trim().toUpperCase().slice(0, 32);
-  // M-1 FIX: record the per-user redemption first — the PK is the race
-  // backstop (concurrent double-use => one 23505). Global `used` still ticks
-  // for pool accounting.
-  if (userId) {
-    try {
-      // Audit M2: the PK is only a backstop if its result is INSPECTED. With
-      // ON CONFLICT DO NOTHING a repeated (or concurrent) redemption silently
-      // succeeded, so the same account could tick the global pool twice.
-      const claimed = await query(
-        `INSERT INTO coupon_redemptions (code, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING RETURNING code`,
-        [c, userId]
-      );
-      if (claimed.rowCount === 0) {
-        console.warn(JSON.stringify({ level: "warn", msg: "coupon_already_redeemed_by_user", code: c, userId }));
-        return null;
-      }
-    } catch { /* honor the purchase on ledger race */ }
+  return withTx(async (client) => {
+    // Release a STALE reservation: this account held the coupon on an order
+    // that was never paid for and has been sitting unpaid for longer than the
+    // TTL. `po.status = 'created'` means the order never captured, so a paid
+    // order's reservation is permanent.
+    await client.query(
+      `DELETE FROM coupon_redemptions cr
+         USING payment_orders po
+        WHERE cr.code = $1 AND cr.user_id = $2
+          AND po.user_id = $2 AND po.coupon_code = $1
+          AND po.status = 'created'
+          AND po.created_at < NOW() - ($3 || ' minutes')::interval`,
+      [c, userId, String(COUPON_RESERVATION_TTL_MINUTES)]
+    );
+    const ins = await client.query(
+      `INSERT INTO coupon_redemptions (code, user_id) VALUES ($1,$2)
+       ON CONFLICT (code, user_id) DO NOTHING
+       RETURNING code`,
+      [c, userId]
+    );
+    if (ins.rowCount === 0) {
+      console.warn(JSON.stringify({ level: "warn", msg: "coupon_already_reserved_by_user", code: c, userId }));
+      return false;
+    }
+    return true;
+  });
+}
+
+/**
+ * Release a coupon reservation that was taken for an order that could not be
+ * created. Called when the order write fails after the reservation was made.
+ */
+export async function releaseCouponReservation(code, userId) {
+  if (!code || !userId) return;
+  const c = String(code).trim().toUpperCase().slice(0, 32);
+  try {
+    await query(`DELETE FROM coupon_redemptions WHERE code=$1 AND user_id=$2`, [c, userId]);
+  } catch (err) {
+    console.error(JSON.stringify({ level: "error", msg: "coupon_reservation_release_failed", code: c, userId, error: String(err) }));
   }
-  const r = await query(`UPDATE coupons SET used = used + 1 WHERE code=$1 AND used < max_uses RETURNING percent_off`, [c]);
-  return r.rows[0] ? Number(r.rows[0].percent_off) : null;
 }

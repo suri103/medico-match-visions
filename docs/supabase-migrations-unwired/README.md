@@ -1,61 +1,59 @@
-# MedicoMatch Supabase Backend Architecture & Migrations
+# Supabase migration set — ARCHIVED, NOT WIRED
 
-> ⚠️ **NOT WIRED — REFERENCE ONLY.** No runtime code executes these files.
-> The shipped backend is `server/` (Express + JSON stores) and the SPA keeps
-> profiles/matches/chats in localStorage. This folder is kept purely as a
-> schema reference for the future server-backed implementation. Do not run it
-> against a production database and do not present it as the live backend.
+> ## ⛔ DO NOT RUN THESE FILES AGAINST ANY DATABASE
+>
+> These SQL files describe an **earlier, abandoned** Supabase-Auth-based
+> design. They are kept only as a written reference. Applying them to the
+> live database would:
+>
+> * create a **parallel schema** with different table names
+>   (`membership_plans` vs `plans`, `conversations` vs `channels`,
+>   `auth.users` vs `app_users`) — and because the live schema is created
+>   with `CREATE TABLE IF NOT EXISTS`, the conflicting shapes would NOT
+>   error, they would silently coexist;
+> * install ~24 Row Level Security policies keyed on `auth.uid()`, plus a
+>   `SECURITY DEFINER` `send_matrimonial_interest` RPC — which would expose
+>   the tables to direct authenticated access and **bypass every quota
+>   check** in `server/src/domain.mjs`;
+> * add triggers and enum types the live schema does not use.
+>
+> Every file in this directory now begins with a `RAISE EXCEPTION` guard, so
+> running any of them aborts immediately. The guard must be removed
+> deliberately, in a reviewed change, before the set is ever applied.
 
-Complete, production-ready PostgreSQL and Supabase migration suite for **MedicoMatch** — the exclusive matrimony platform for doctors and healthcare professionals.
+## What actually runs
 
----
+The live schema is **`server/migrations/schema.sql`** — a single idempotent
+DDL file applied at boot by `migrate()` in `server/src/db.mjs`, behind a
+Postgres advisory lock so concurrent replicas cannot race it.
 
-## 📁 Migration Structure
+| | This folder (archived) | The live schema |
+|---|---|---|
+| Auth model | Supabase Auth (`auth.users`, `auth.uid()`) | Email + password in `app_users` (`server/src/index.mjs`) |
+| Profiles key | `profiles.user_id UUID → auth.users` | `profiles.user_id TEXT → app_users` |
+| Plans | `membership_plans` + `plan_tier_enum` | `plans` (`TEXT` sku + `rank`) |
+| Chat | `conversations` | `channels` (`user_a` / `user_b`) |
+| Money unit | `amount_inr INT` (rupees) | `amount_paise INT` (paise) |
+| Quotas | one row per user, `*_total` columns | one row per `(user_id, period)`, `*_used` columns |
+| RLS | ~24 policies + a SECURITY DEFINER RPC | deny-all on every table (service-role only) |
+| Migrations run by | never | `server/src/db.mjs` → `migrate()` at boot |
+
+## File index (archived names)
 
 | File | Module | Description |
 | :--- | :--- | :--- |
-| **`001_initial_schema.sql`** | Core Doctor Profiles | Profiles, medical degrees (`MBBS`, `MD`, `MS`, `DM`), specialties, hospital, MCI/NMC verification status, multi-photo galleries, Kundali attributes (`Rashi`, `Nakshatra`, `Manglik`), lifestyle, and partner preferences. |
-| **`002_interactions_and_matching.sql`** | Matrimonial Interactions | Favorites (Star ⭐), Shortlists (Bookmark 🔖), Matrimonial Interests (Proposals with accept/decline workflows), 1-on-1 Chat channels, messages, and Video Dates scheduling. |
-| **`003_moderation_and_safety.sql`** | Trust & Moderation | Doctor reports with violation categories (fake MCI credentials, harassment, spam, impersonation), blocked doctor relationships, and safety audit logs. |
-| **`004_plans_quotas_and_billing.sql`** | Plans & Quota Management | Membership tiers (`Free`, `Gold`, `Platinum`), active subscriptions, live quota tracking (video date tokens, direct contacts, monthly interests), and payment transaction logs. |
-| **`005_events_and_notifications.sql`** | Events & In-App Alerts | Doctor speed dating meets, city networking mixers, event attendance registrations, and real-time user notification queues. |
-| **`006_rls_security_and_functions.sql`** | Security & Procedures | Row Level Security (RLS) policies for all tables, automated profile & quota creation on `auth.users` signup, timestamp triggers, and atomic `send_matrimonial_interest` RPC. |
-| **`007_seed_data.sql`** | Doctor Seed Data | Realistic verified doctor profiles across major medical specialties (Cardiology, Neurology, Pediatrics, Dermatology, Surgery, Radiology, Orthopedics, Gynecology) with full biodata. |
+| `20260815000001_initial_schema.sql` | Core Doctor Profiles | Profiles, medical degrees, specialties, hospital, MCI/NMC verification, photo galleries, kundali attributes. |
+| `20260815000002_interactions_and_matching.sql` | Matrimonial Interactions | Favorites, shortlists, proposals with accept/decline, chat channels, messages, video dates. |
+| `20260815000003_moderation_and_safety.sql` | Trust & Moderation | Reports with violation categories, blocks, safety audit logs. |
+| `20260815000004_plans_quotas_and_billing.sql` | Plans & Quota Management | Membership tiers, subscriptions, quota tracking, payment transaction logs. |
+| `20260815000005_events_and_notifications.sql` | Events & In-App Alerts | Meetups, registrations, notification queues. |
+| `20260815000006_rls_security_and_functions.sql` | Security & Procedures | RLS policies, auth-signup triggers, timestamp triggers, the quota-enforcing RPC. |
+| `20260815000007_seed_data.sql` | Doctor Seed Data | Sample doctor profiles. |
 
----
+## If you are reviving this design
 
-## 🚀 How to Run Migrations
-
-### Option A: Via Supabase CLI (Recommended)
-```bash
-# 1. Login to your Supabase account
-supabase login
-
-# 2. Link your remote Supabase project
-supabase link --project-ref your-project-ref
-
-# 3. Push migrations to Supabase database
-supabase db push
-```
-
-### Option B: Via Supabase Web Dashboard (SQL Editor)
-1. Open your [Supabase Dashboard](https://app.supabase.com).
-2. Go to **SQL Editor**.
-3. Run the files sequentially from `001_initial_schema.sql` to `007_seed_data.sql`.
-
----
-
-## ⚙️ Environment Configuration
-
-> **Note:** The frontend Supabase client (`src/lib/supabase.ts`) and the
-> `VITE_SUPABASE_*` env typings were intentionally removed pre-launch because no
-> runtime integration existed yet. When you connect the app to a real Supabase
-> project, re-add `@supabase/supabase-js`, recreate the client, and restore the
-> env types in `src/vite-env.d.ts`.
-
-Add the following environment variables to your `.env` file at that point:
-
-```env
-VITE_SUPABASE_URL=https://your-project.supabase.co
-VITE_SUPABASE_ANON_KEY=your-anon-key-here
-```
+Do not apply these files as-is. Instead, port the *ideas* into
+`server/migrations/schema.sql` (which is additive and idempotent), keep the
+deny-all RLS posture, and express quotas as server-side conditional
+`UPDATE`s — the live quota enforcement lives in `consumeQuotaTx()` in
+`server/src/domain.mjs`, not in the database.

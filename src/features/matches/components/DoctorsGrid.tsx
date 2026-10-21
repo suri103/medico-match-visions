@@ -107,7 +107,7 @@ const DoctorsGrid: React.FC<DoctorsGridProps> = ({
   const handleSendDirectMessage = (doctorId: string, _text: string) => {
     const doc = doctors.find(d => d.id === doctorId);
     if (doc) {
-      sendInterest(doc);
+      void sendInterest(doc);
       onLike(doctorId);
     }
   };
@@ -175,8 +175,12 @@ const DoctorsGrid: React.FC<DoctorsGridProps> = ({
         isOpen={!!videoDoctor}
         onClose={() => setVideoDoctor(null)}
         doctor={videoDoctor}
-        onInviteSent={(id) => {
-          onLike(id);
+        onInviteSent={() => {
+          // Audit H-3: the modal now creates the server-side video-date
+          // booking itself and toasts the honest outcome. It used to call
+          // `onLike(id)`, which sent a MATRIMONIAL INTEREST — so clicking
+          // "Send Video Date Invite" silently sent an interest to the peer
+          // and booked nothing. The invite is its own action.
         }}
       />
       

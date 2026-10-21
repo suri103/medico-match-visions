@@ -346,12 +346,15 @@ const Chat: React.FC<ChatProps> = ({
     });
     if (serverChannelId) {
       void sendServerMessage(serverChannelId, message.content)
-        .then((ok) => {
-          if (ok) {
+        .then((res) => {
+          // Audit H-7: the API client now returns a MutationResult, so the
+          // outcome must be read from `res.ok` — reading the object itself
+          // would always be truthy and every send would look delivered.
+          if (res.ok) {
             setMessages(prev => prev.map(m => (m.id === message.id ? { ...m, status: 'sent' as const } : m)));
           } else {
             setMessages(prev => prev.map(m => (m.id === message.id ? { ...m, status: 'failed' as const } : m)));
-            toast({ title: "Message not delivered", description: "The message could not be synced. Please try again.", variant: "destructive" });
+            toast({ title: "Message not delivered", description: res.error || "The message could not be synced. Please try again.", variant: "destructive" });
           }
         })
         .catch(() => {
@@ -360,11 +363,12 @@ const Chat: React.FC<ChatProps> = ({
           setMessages(prev => prev.map(m => (m.id === message.id ? { ...m, status: 'failed' as const } : m)));
           toast({ title: "Message not delivered", description: "The message could not be synced. Please try again.", variant: "destructive" });
         });
-    } else {
-      setTimeout(() => {
-        setMessages(prev => prev.map(m => m.id === message.id ? { ...m, status: 'delivered' as const } : m));
-      }, 1200);
     }
+    // Audit H-7: there is NO server channel, so no delivery receipt may be
+    // fabricated. The old code flipped the bubble to "✓✓ delivered" after
+    // 1.2s regardless — the peer never received the message. The message
+    // keeps the status it was created with ('sent'), which is the truth for a
+    // local/demo conversation.
     setNewMessage('');
     setIsComposing(false);
   };
@@ -451,7 +455,7 @@ const Chat: React.FC<ChatProps> = ({
   };
 
   const handlePhoneCall = () => {
-    navigate('/video-dates');
+    void navigate('/video-dates');
     toast({ title: "Voice call", description: "Redirected to video call — voice calls connect through video." });
   };
 
@@ -470,20 +474,41 @@ const Chat: React.FC<ChatProps> = ({
   };
 
   const handleReport = () => {
-    void reportProfile(doctorId, "Inappropriate chat behavior", "Reported from chat conversation").catch(() => false);
-    try {
-      const raw = localStorage.getItem('mm:reports');
-      const arr = raw ? JSON.parse(raw) : [];
-      arr.push({ doctorId, doctorName, at: new Date().toISOString() });
-      // Cap the store so it cannot grow unbounded.
-      localStorage.setItem('mm:reports', JSON.stringify(arr.slice(0, 100)));
-    } catch { /* ignore */ }
-    toast({ title: "Report recorded", description: "The report is saved on this device and the profile is hidden from your feed." });
+    // Audit H-2 / L-12: the result was DISCARDED, so a failed report still
+    // produced "Report recorded … the profile is hidden from your feed" —
+    // while nothing was filed and nothing was hidden. The report is now
+    // verified with the server before it is claimed.
+    void reportProfile(doctorId, "Inappropriate chat behavior", "Reported from chat conversation")
+      .then((res) => {
+        if (!res.ok) {
+          toast({
+            title: "Report not sent",
+            description: res.error || "We could not reach the moderation service. Your report was NOT filed — please try again.",
+            variant: "destructive",
+          });
+          return;
+        }
+        try {
+          const raw = localStorage.getItem('mm:reports');
+          const arr = raw ? JSON.parse(raw) : [];
+          arr.push({ doctorId, doctorName, at: new Date().toISOString() });
+          // Cap the store so it cannot grow unbounded.
+          localStorage.setItem('mm:reports', JSON.stringify(arr.slice(0, 100)));
+        } catch { /* ignore */ }
+        toast({ title: "Report recorded", description: "Our compliance team will review this conversation." });
+      })
+      .catch(() => {
+        toast({
+          title: "Report not sent",
+          description: "We could not reach the moderation service. Your report was NOT filed — please try again.",
+          variant: "destructive",
+        });
+      });
   };
 
   const handleViewProfile = () => {
     toast({ title: "Doctor profile", description: `Dr. ${doctorName} — view full details on Matches or Online.` });
-    navigate('/matches');
+    void navigate('/matches');
   };
   
   const handleKeyDown = (e: React.KeyboardEvent) => {

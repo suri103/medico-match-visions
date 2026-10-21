@@ -1,11 +1,24 @@
 import { usePersistedState } from '@/hooks/usePersistedState';
 import { demoModeEnabled } from '@/lib/devAuth';
-import { hasServerSession, listNotifications as serverListNotifications } from '@/services/api';
+import { hasServerSession, listNotifications as serverListNotifications, markNotificationRead as serverMarkNotificationRead, markAllNotificationsRead as serverMarkAllNotificationsRead } from '@/services/api';
 import { useEffect } from 'react';
 
 export interface Notification {
   id: string;
-  type: 'message' | 'profile_view' | 'interest' | 'video_request';
+  // Audit M-5: the server writes `interest_received`, `interest_responded`,
+  // `profile_view` and `warning` rows. The old union did not include them, so
+  // the server rows were cast unsoundly into 'message' and the "Interests"
+  // filter tab (which matches `type === 'interest'`) never showed the two
+  // most important notifications on a matrimonial platform — someone
+  // expressed interest / it is a match.
+  type:
+    | 'message'
+    | 'profile_view'
+    | 'interest'
+    | 'video_request'
+    | 'interest_received'
+    | 'interest_responded'
+    | 'warning';
   from: string;
   doctorId?: string;
   content: string;
@@ -16,6 +29,20 @@ export interface Notification {
   hospital?: string;
   city?: string;
 }
+
+// Audit M-5: the server writes `interest_received` / `interest_responded` /
+// `profile_view` / `warning` / `video_date`. The frontend's filter tabs match
+// on 'message' | 'profile_view' | 'interest' | 'video_request', so the two most
+// important notifications on a matrimonial platform — someone expressed
+// interest, and it is a match — never appeared under the "Interests" filter.
+const SERVER_TYPE_TO_BUCKET: Record<string, Notification['type']> = {
+  interest_received: 'interest',
+  interest_responded: 'interest',
+  profile_view: 'profile_view',
+  video_date: 'video_request',
+  warning: 'message',
+  message: 'message',
+};
 
 // Demo seeds are DEV-ONLY (audit C-4 pattern): fabricated "profile views" from
 // randomuser.me fixtures must never appear in a production build. The wired
@@ -109,7 +136,7 @@ export const useNotifications = () => {
           for (const sn of d.notifications) {
             byId.set(sn.id, {
               id: sn.id,
-              type: (sn.type as Notification['type']) || 'message',
+              type: SERVER_TYPE_TO_BUCKET[sn.type] ?? 'message',
               from: sn.title || 'MedicoMatch',
               content: sn.body || '',
               timestamp: sn.createdAt,
@@ -142,14 +169,41 @@ export const useNotifications = () => {
     ].slice(0, 50));
   };
 
+  // Audit H-4: the read state was ONLY ever written to the local
+  // `mm:notifications` ledger. `POST /api/notifications/:id/read` and
+  // `POST /api/notifications/read-all` were defined in the API client but
+  // called from nowhere, so the server's `read_at` stayed NULL: the Header
+  // badge (polled from the server's unreadCount) never decreased and every
+  // notification was unread again after a reload.
+  //
+  // The local state is updated optimistically for instant feedback and rolled
+  // back if the server rejects the write.
   const markAsRead = (id: string) => {
     setNotifications(prev =>
       prev.map(n => (n.id === id ? { ...n, read: true } : n))
     );
+    if (!hasServerSession()) return;
+    void serverMarkNotificationRead(id)
+      .then((res) => {
+        if (res.ok) return;
+        setNotifications(prev => prev.map(n => (n.id === id ? { ...n, read: false } : n)));
+      })
+      .catch(() => {
+        setNotifications(prev => prev.map(n => (n.id === id ? { ...n, read: false } : n)));
+      });
   };
 
   const markAllAsRead = () => {
     setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+    if (!hasServerSession()) return;
+    void serverMarkAllNotificationsRead()
+      .then((res) => {
+        if (res.ok) return;
+        setNotifications(prev => prev.map(n => ({ ...n, read: false })));
+      })
+      .catch(() => {
+        setNotifications(prev => prev.map(n => ({ ...n, read: false })));
+      });
   };
 
   const deleteNotification = (id: string) => {

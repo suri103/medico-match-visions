@@ -89,7 +89,7 @@ const SignUp: React.FC = () => {
             title: "Verify your email",
             description: "We've sent a verification link to your inbox. Click it to activate your account.",
           });
-          navigate('/sign-in');
+          void navigate('/sign-in');
           return;
         }
         if (res.status === 400) {
@@ -166,7 +166,7 @@ const SignUp: React.FC = () => {
           degree: chosenDegree,
         });
         // ** END SIGN IN **
-        navigate('/matches');
+        void navigate('/matches');
         toast({
           title: "Account created!",
           description: "Account server unreachable — created a local demo session. Your password is not protected.",

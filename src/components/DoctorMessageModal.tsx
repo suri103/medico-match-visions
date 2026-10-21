@@ -171,7 +171,7 @@ export const DoctorMessageModal: React.FC<DoctorMessageModalProps> = ({
                     className="h-7 px-2.5 text-[11px] bg-amber-600 hover:bg-amber-700 text-white rounded-lg shrink-0"
                     onClick={() => {
                       onClose();
-                      navigate('/plan');
+                      void navigate('/plan');
                     }}
                   >
                     Upgrade <ArrowRight size={11} className="ml-1" />
