@@ -770,6 +770,17 @@ async function main() {
   // documents, GST invoices, kundali reports, view history or contact
   // purchases (DPDP Act Sec. 11 / GDPR Art. 20 gap).
   // =====================================================================
+  const pgModExport = await import("pg");
+  const dbcExp = new pgModExport.Client({ connectionString: DATABASE_URL });
+  await dbcExp.connect();
+  await dbcExp.query(
+    `INSERT INTO invoices (invoice_number, user_id, token_hash, sku, amount_paise, gst_paise, doctor_name)
+     VALUES ($1,$2,$3,'premium',149900,21200,'Dr. Rohan Verma')
+     ON CONFLICT DO NOTHING`,
+    [`MM-INV-EXP-${Date.now()}`, userIdB, `hash_exp_${Date.now()}`]
+  );
+  await dbcExp.end();
+
   const exportRes = await api("GET", "/api/me/export", undefined, userB);
   const exported = exportRes.json || {};
   const EXPORT_KEYS = [
@@ -814,7 +825,12 @@ async function main() {
     );
 
     // Make sure the per-user rate-limit bucket exists before the deletion.
-    await api("GET", "/api/quota", undefined, userD);
+    await dbc5.query(
+      `INSERT INTO rate_limit_buckets (bucket_key, window_start, hits)
+       VALUES ($1, date_trunc('minute', NOW()), 1)
+       ON CONFLICT (bucket_key, window_start) DO UPDATE SET hits = rate_limit_buckets.hits + 1`,
+      [`user:${userDId}`]
+    );
     const bucketBefore = await dbc5.query(
       `SELECT count(*)::int AS n FROM rate_limit_buckets WHERE bucket_key = $1`,
       [`user:${userDId}`]
