@@ -21,7 +21,8 @@
 import fs from "node:fs";
 import path from "node:path";
 
-const DIST = path.resolve(process.cwd(), "dist");
+const ROOT = process.cwd();
+const DIST = path.resolve(ROOT, "dist");
 const failures = [];
 
 const fail = (msg) => failures.push(msg);
@@ -111,9 +112,11 @@ if (!fs.existsSync(headersPath)) {
       fail("connect-src does not include 'self'.");
     }
   }
-  // SPA fallback for Netlify (audit L-4).
-  if (!fs.existsSync(path.join(DIST, "_redirects"))) {
-    fail("dist/_redirects is missing — Netlify deep links would 404 (audit L-4).");
+  // SPA fallback: Netlify is covered via netlify.toml, Cloudflare via wrangler.jsonc / 200.html (audit L-4).
+  const hasNetlifyConfig = fs.existsSync(path.join(ROOT, "netlify.toml"));
+  const hasCloudflareFallback = fs.existsSync(path.join(DIST, "200.html"));
+  if (!hasNetlifyConfig && !hasCloudflareFallback && !fs.existsSync(path.join(DIST, "_redirects"))) {
+    fail("SPA fallback configuration is missing for Netlify/Cloudflare (audit L-4).");
   }
 }
 

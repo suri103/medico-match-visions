@@ -140,6 +140,13 @@ const lines = [
 
 fs.writeFileSync(OUT, lines.join("\n") + "\n", "utf8");
 
+// Cloudflare Pages / static host native SPA fallback: generate 200.html alongside index.html
+const indexHtml = path.join(ROOT, "dist", "index.html");
+const fallback200 = path.join(ROOT, "dist", "200.html");
+if (fs.existsSync(indexHtml)) {
+  fs.copyFileSync(indexHtml, fallback200);
+}
+
 console.log(
   `headers:generate: wrote dist/_headers (api origin: ${origin ?? "NOT CONFIGURED"})`
 );

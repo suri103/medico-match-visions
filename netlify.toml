@@ -1,0 +1,11 @@
+# Netlify SPA configuration (audit L-4).
+# Replaces public/_redirects to avoid conflicting with Cloudflare Wrangler's
+# strict catch-all loop validator (Cloudflare error 100324).
+[build]
+  publish = "dist"
+  command = "npm run build"
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

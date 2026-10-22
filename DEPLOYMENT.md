@@ -6,7 +6,7 @@
   hosting (Netlify/Vercel/Cloudflare). SPA deep links are handled by the host
   config: `vercel.json` rewrites everything to `/index.html`,
   `wrangler.jsonc` sets `not_found_handling: single-page-application` for
-  Cloudflare, and `public/_redirects` covers Netlify. Build with the production
+  Cloudflare, and `netlify.toml` covers Netlify. Build with the production
   `VITE_*` values baked in — a `dist/` built against a local `.env` ships an API
   base of `localhost`.
   - **Requires npm >= 11** (`packageManager` is pinned to `npm@11.21.1`).

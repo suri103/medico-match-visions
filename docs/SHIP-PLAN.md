@@ -63,7 +63,7 @@ Provisioning checklist (SRE):
 - [ ] Create Postgres instance; save connection string; enable automated backups/PITR
 - [ ] Supabase Storage bucket `profile-photos` (public read) if object storage wanted; else bounded data URLs stay in DB (works today)
 - [ ] Backend service: health check `/health`, restart always, **single instance** (SSE hub + auth mirror are single-writer by design; scale-out needs Redis pub/sub first — documented in code)
-- [ ] Static hosting for SPA: `dist/` + `public/_redirects` (Netlify SPA fallback — the file is now present)
+- [ ] Static hosting for SPA: `dist/` + `netlify.toml` (Netlify SPA fallback) / `wrangler.jsonc` (Cloudflare)
 - [ ] Secrets in host vault only (git ignores `.env*`; verified)
 
 ---
