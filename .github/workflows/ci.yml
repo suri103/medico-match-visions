@@ -23,10 +23,10 @@ jobs:
         # Pinned to a commit SHA (supply-chain hardening, not a mutable tag).
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
-      - name: Setup Node 20
+      - name: Setup Node 22
         uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       # npm 10.x crashes with an arborist peer-resolution error ("Cannot read
@@ -107,10 +107,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
-      - name: Setup Node 20
+      - name: Setup Node 22
         uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: server/package-lock.json
 
